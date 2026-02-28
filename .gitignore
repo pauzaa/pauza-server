@@ -1,0 +1,25 @@
+# Binaries
+/pauza-server
+*.exe
+
+# Environment (contains secrets)
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+/vendor/
+
+# Test
+*.test
+*.out
+coverage.html
