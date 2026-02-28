@@ -1,0 +1,1890 @@
+# Pauza Backend Specification
+
+## Table of Contents
+
+1. [Overview](#1-overview)
+2. [Authentication & Account Management](#2-authentication--account-management)
+3. [Database Schema](#3-database-schema)
+4. [Sync Protocol](#4-sync-protocol)
+5. [REST API Endpoints](#5-rest-api-endpoints)
+6. [Subscription System](#6-subscription-system)
+7. [Friendships](#7-friendships)
+8. [Leaderboard](#8-leaderboard)
+9. [Push Notifications](#9-push-notifications)
+10. [Rate Limiting](#10-rate-limiting)
+11. [Error Handling](#11-error-handling)
+12. [Deployment](#12-deployment)
+13. [Out of Scope](#13-out-of-scope)
+
+---
+
+## 1. Overview
+
+### 1.1 Purpose
+
+The Pauza backend provides server-side infrastructure for the Pauza digital wellbeing mobile application. Its primary responsibilities are:
+
+- **User authentication** (registration, login, password reset)
+- **Bidirectional data sync** between the client's local SQLite database and the server's PostgreSQL database
+- **Subscription management** (plan definitions, RevenueCat webhook processing, entitlement enforcement)
+- **Social features** (friendships, shared stats)
+- **Leaderboards** (streak-based and focus-time-based rankings)
+- **Push notifications** via Firebase Cloud Messaging
+- **Admin panel API** for user management, subscription plan configuration, and platform analytics
+
+### 1.2 Tech Stack
+
+| Component | Technology |
+|---|---|
+| Language | Go |
+| Database | PostgreSQL |
+| Authentication | JWT (access + refresh tokens) |
+| In-App Purchases | RevenueCat (webhook + API verification) |
+| Push Notifications | Firebase Cloud Messaging (Admin SDK) |
+| Student Verification | Third-party service (SheerID / UNiDAYS) |
+| Containerization | Docker / Docker Compose |
+| DB Migrations | golang-migrate |
+
+### 1.3 Architecture Principles
+
+- **Offline-first**: The mobile client's local SQLite database is the source of truth. The backend serves as a synchronized replica for backup, restore, and social/leaderboard features.
+- **Bidirectional sync**: Data flows both ways. The client pushes local changes to the server, and pulls server-side changes back (e.g., after restoring on a new device).
+- **Timestamp-based sync with last-write-wins**: Each record has an `updated_at` timestamp. During sync, the most recently updated version of a record wins.
+- **Single-device model**: One account is expected to be active on one device at a time. Sync is not designed for concurrent multi-device editing.
+- **Subscription enforcement on both client and server**: The client hides premium UI features, and the server rejects requests to premium-only endpoints for non-subscribers.
+
+---
+
+## 2. Authentication & Account Management
+
+### 2.1 Registration Flow
+
+```
+Client                          Server
+  |                               |
+  |  POST /auth/register          |
+  |  { email, password }          |
+  |------------------------------>|
+  |                               |  If email already exists:
+  |  409 CONFLICT                 |    return error (use /auth/login)
+  |<------------------------------|
+  |                               |  If email is new:
+  |                               |    hash password, store pending user
+  |                               |    generate 6-digit OTP, send to email
+  |  200 { otp_required: true }   |    OTP expires in 10 minutes
+  |<------------------------------|
+  |                               |
+  |  POST /auth/verify-otp        |
+  |  { email, otp }               |
+  |------------------------------>|
+  |                               |  Verify OTP, activate user account
+  |                               |  Generate JWT access + refresh tokens
+  |  200 { access_token,          |
+  |        refresh_token, user }  |
+  |<------------------------------|
+```
+
+- Passwords are hashed using **bcrypt** with a cost factor of at least 12.
+- OTP codes are 6-digit numeric, valid for 10 minutes, single-use.
+- A maximum of 3 OTP verification attempts are allowed per email per 10-minute window.
+
+### 2.2 Login Flow
+
+```
+Client                          Server
+  |                               |
+  |  POST /auth/login             |
+  |  { email, password }          |
+  |------------------------------>|
+  |                               |  Verify email exists and password matches
+  |  200 { access_token,          |
+  |        refresh_token, user }  |
+  |<------------------------------|
+```
+
+- Returns `401 UNAUTHORIZED` if email does not exist or password is incorrect.
+- The error message must not reveal whether the email exists (prevent enumeration).
+
+### 2.3 Token Strategy
+
+| Token | Lifetime | Storage |
+|---|---|---|
+| Access token (JWT) | 15 minutes | Client memory / secure storage |
+| Refresh token (opaque) | 30 days | Server-side in `refresh_tokens` table |
+
+**Access token JWT claims:**
+
+```json
+{
+  "sub": "<user_id>",
+  "email": "<email>",
+  "iat": 1700000000,
+  "exp": 1700000900
+}
+```
+
+**Refresh token flow:**
+
+```
+Client                          Server
+  |                               |
+  |  POST /auth/refresh           |
+  |  { refresh_token }            |
+  |------------------------------>|
+  |                               |  Validate token exists, not revoked,
+  |                               |  not expired. Rotate: revoke old token,
+  |                               |  issue new access + refresh tokens.
+  |  200 { access_token,          |
+  |        refresh_token }        |
+  |<------------------------------|
+```
+
+- Refresh tokens are stored as **hashed values** (SHA-256) in the database.
+- On each refresh, the old token is revoked and a new pair is issued (token rotation).
+- If a revoked refresh token is reused, **all refresh tokens for that user are revoked** (indicates token theft).
+
+### 2.4 Password Reset Flow
+
+```
+Client                          Server
+  |                               |
+  |  POST /auth/forgot-password   |
+  |  { email }                    |
+  |------------------------------>|
+  |                               |  If email exists: generate OTP, send email
+  |  200 { message }              |  Always return 200 (prevent enumeration)
+  |<------------------------------|
+  |                               |
+  |  POST /auth/reset-password    |
+  |  { email, otp, new_password } |
+  |------------------------------>|
+  |                               |  Verify OTP, update password hash
+  |                               |  Revoke all existing refresh tokens
+  |  200 { message }              |
+  |<------------------------------|
+```
+
+### 2.5 Account Deletion
+
+`DELETE /api/v1/me` permanently deletes the user account and all associated data (modes, sessions, friendships, subscriptions, etc.). This is irreversible. The endpoint should require the user to confirm by providing their current password in the request body.
+
+---
+
+## 3. Database Schema
+
+All timestamps are stored as `TIMESTAMPTZ` (PostgreSQL timestamp with time zone). UUIDs use `UUID` type with `gen_random_uuid()` as default.
+
+### 3.1 Backend-Only Tables
+
+#### `users`
+
+```sql
+CREATE TABLE users (
+  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email               TEXT NOT NULL UNIQUE,
+  password_hash       TEXT NOT NULL,
+  name                TEXT NOT NULL DEFAULT '',
+  username            TEXT NOT NULL UNIQUE,
+  profile_picture_url TEXT,
+  leaderboard_visible BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX idx_users_email ON users (email);
+CREATE UNIQUE INDEX idx_users_username ON users (lower(username));
+```
+
+#### `otp_codes`
+
+```sql
+CREATE TABLE otp_codes (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_email TEXT NOT NULL,
+  code       TEXT NOT NULL,
+  purpose    TEXT NOT NULL CHECK (purpose IN ('email_verification', 'password_reset')),
+  expires_at TIMESTAMPTZ NOT NULL,
+  used       BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_otp_codes_email_purpose ON otp_codes (user_email, purpose, used, expires_at);
+```
+
+#### `refresh_tokens`
+
+```sql
+CREATE TABLE refresh_tokens (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  revoked    BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_refresh_tokens_user ON refresh_tokens (user_id, revoked);
+```
+
+#### `admin_credentials`
+
+```sql
+CREATE TABLE admin_credentials (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  username      TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+#### `subscription_plans`
+
+```sql
+CREATE TABLE subscription_plans (
+  id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name                     TEXT NOT NULL,
+  duration_type            TEXT NOT NULL CHECK (duration_type IN ('monthly', 'yearly', 'lifetime')),
+  price_cents              INTEGER NOT NULL CHECK (price_cents >= 0),
+  currency                 TEXT NOT NULL DEFAULT 'USD',
+  features_json            JSONB NOT NULL DEFAULT '{}',
+  is_active                BOOLEAN NOT NULL DEFAULT TRUE,
+  student_discount_percent INTEGER NOT NULL DEFAULT 0 CHECK (student_discount_percent BETWEEN 0 AND 100),
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+`features_json` stores a JSON object describing which premium features this plan unlocks. Example:
+
+```json
+{
+  "friendships": true,
+  "advanced_stats": true,
+  "unlimited_modes": true
+}
+```
+
+#### `subscription_plan_discounts`
+
+```sql
+CREATE TABLE subscription_plan_discounts (
+  id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  plan_id          UUID NOT NULL REFERENCES subscription_plans(id) ON DELETE CASCADE,
+  discount_percent INTEGER NOT NULL CHECK (discount_percent BETWEEN 1 AND 100),
+  starts_at        TIMESTAMPTZ NOT NULL,
+  ends_at          TIMESTAMPTZ NOT NULL,
+  description      TEXT NOT NULL DEFAULT '',
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CHECK (ends_at > starts_at)
+);
+
+CREATE INDEX idx_plan_discounts_plan ON subscription_plan_discounts (plan_id, starts_at, ends_at);
+```
+
+#### `user_subscriptions`
+
+```sql
+CREATE TABLE user_subscriptions (
+  id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id                  UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  plan_id                  UUID NOT NULL REFERENCES subscription_plans(id),
+  revenuecat_subscription_id TEXT,
+  status                   TEXT NOT NULL CHECK (status IN ('active', 'expired', 'cancelled', 'trial')),
+  current_period_start     TIMESTAMPTZ,
+  current_period_end       TIMESTAMPTZ,
+  is_student               BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_user_subscriptions_user ON user_subscriptions (user_id, status);
+CREATE INDEX idx_user_subscriptions_revenuecat ON user_subscriptions (revenuecat_subscription_id);
+```
+
+#### `friendships`
+
+```sql
+CREATE TABLE friendships (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  requester_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  addressee_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  status       TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'declined')),
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CHECK (requester_id != addressee_id),
+  UNIQUE (requester_id, addressee_id)
+);
+
+CREATE INDEX idx_friendships_addressee ON friendships (addressee_id, status);
+CREATE INDEX idx_friendships_requester ON friendships (requester_id, status);
+```
+
+#### `device_tokens`
+
+```sql
+CREATE TABLE device_tokens (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  fcm_token  TEXT NOT NULL UNIQUE,
+  platform   TEXT NOT NULL CHECK (platform IN ('android', 'ios')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_device_tokens_user ON device_tokens (user_id);
+```
+
+#### `sync_tombstones`
+
+Tracks hard-deleted records so the sync protocol can propagate deletions.
+
+```sql
+CREATE TABLE sync_tombstones (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  table_name TEXT NOT NULL,
+  record_id  TEXT NOT NULL,
+  deleted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_sync_tombstones_user_time ON sync_tombstones (user_id, deleted_at);
+```
+
+Tombstones older than 90 days are garbage-collected by a periodic background job.
+
+### 3.2 Synced Tables
+
+These tables mirror the client's local SQLite schema. Each table gains a `user_id` column as a foreign key to `users`. Column types are adapted from SQLite to PostgreSQL:
+
+- `INTEGER` timestamps (milliseconds since epoch in SQLite) become `BIGINT` in PostgreSQL (preserving the client's format for sync compatibility).
+- `TEXT` remains `TEXT`.
+- `INTEGER` flags (0/1) remain `INTEGER` (not `BOOLEAN`) to match client format.
+
+#### `modes`
+
+```sql
+CREATE TABLE modes (
+  user_id                UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id                     TEXT NOT NULL,
+  title                  TEXT NOT NULL,
+  text_on_screen         TEXT NOT NULL,
+  description            TEXT,
+  allowed_pauses_count   INTEGER NOT NULL DEFAULT 0 CHECK (allowed_pauses_count >= 0),
+  minimum_duration_ms    INTEGER CHECK (minimum_duration_ms IS NULL OR minimum_duration_ms >= 1000),
+  ending_pausing_scenario TEXT NOT NULL CHECK (ending_pausing_scenario IN ('nfc', 'qr', 'manual')),
+  icon_token             TEXT NOT NULL DEFAULT 'ms:v1:tune' CHECK (length(trim(icon_token)) > 0),
+  created_at             BIGINT NOT NULL,
+  updated_at             BIGINT NOT NULL,
+
+  PRIMARY KEY (user_id, id)
+);
+```
+
+#### `mode_blocked_apps`
+
+```sql
+CREATE TABLE mode_blocked_apps (
+  user_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  mode_id        TEXT NOT NULL,
+  platform       TEXT NOT NULL CHECK (platform IN ('android', 'ios')),
+  app_identifier TEXT NOT NULL,
+  created_at     BIGINT NOT NULL,
+  updated_at     BIGINT NOT NULL,
+
+  PRIMARY KEY (user_id, mode_id, platform, app_identifier)
+);
+```
+
+#### `schedules`
+
+```sql
+CREATE TABLE schedules (
+  user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id           TEXT NOT NULL,
+  mode_id      TEXT NOT NULL,
+  days         TEXT NOT NULL,
+  start_minute INTEGER NOT NULL CHECK (start_minute BETWEEN 0 AND 1439),
+  end_minute   INTEGER NOT NULL CHECK (end_minute BETWEEN 0 AND 1439),
+  enabled      INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+  created_at   BIGINT NOT NULL,
+  updated_at   BIGINT NOT NULL,
+
+  PRIMARY KEY (user_id, id),
+  UNIQUE (user_id, mode_id)
+);
+```
+
+#### `restriction_sessions`
+
+```sql
+CREATE TABLE restriction_sessions (
+  user_id              UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  session_id           TEXT NOT NULL,
+  mode_id              TEXT NOT NULL,
+  source               TEXT NOT NULL CHECK (source IN ('manual', 'schedule')),
+  started_at           BIGINT NOT NULL,
+  ended_at             BIGINT,
+  pause_count          INTEGER NOT NULL DEFAULT 0,
+  total_paused_ms      INTEGER NOT NULL DEFAULT 0,
+  last_paused_at       BIGINT,
+  integrity_status     TEXT NOT NULL DEFAULT 'ok' CHECK (integrity_status IN ('ok', 'anomaly')),
+  last_anomaly_reason  TEXT,
+  last_event_id        TEXT NOT NULL,
+  created_at           BIGINT NOT NULL,
+  updated_at           BIGINT NOT NULL,
+
+  PRIMARY KEY (user_id, session_id)
+);
+
+CREATE INDEX idx_restriction_sessions_mode ON restriction_sessions (user_id, mode_id);
+CREATE INDEX idx_restriction_sessions_started ON restriction_sessions (user_id, started_at DESC);
+```
+
+#### `restriction_lifecycle_events`
+
+```sql
+CREATE TABLE restriction_lifecycle_events (
+  user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id          TEXT NOT NULL,
+  session_id  TEXT NOT NULL,
+  mode_id     TEXT NOT NULL,
+  action      TEXT NOT NULL CHECK (action IN ('START', 'PAUSE', 'RESUME', 'END')),
+  source      TEXT NOT NULL CHECK (source IN ('manual', 'schedule')),
+  reason      TEXT NOT NULL,
+  occurred_at BIGINT NOT NULL,
+  created_at  BIGINT NOT NULL,
+
+  PRIMARY KEY (user_id, id)
+);
+
+CREATE INDEX idx_lifecycle_events_session ON restriction_lifecycle_events (user_id, session_id);
+```
+
+#### `nfc_linked_chips`
+
+```sql
+CREATE TABLE nfc_linked_chips (
+  user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id              TEXT NOT NULL,
+  chip_identifier TEXT NOT NULL CHECK (length(trim(chip_identifier)) > 0),
+  name            TEXT NOT NULL,
+  created_at      BIGINT NOT NULL,
+  updated_at      BIGINT NOT NULL,
+
+  PRIMARY KEY (user_id, id),
+  UNIQUE (user_id, chip_identifier)
+);
+```
+
+#### `qr_linked_codes`
+
+```sql
+CREATE TABLE qr_linked_codes (
+  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id         TEXT NOT NULL,
+  scan_value TEXT NOT NULL CHECK (length(trim(scan_value)) > 0),
+  name       TEXT NOT NULL,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+
+  PRIMARY KEY (user_id, id),
+  UNIQUE (user_id, scan_value)
+);
+```
+
+#### `streak_session_daily_rollups`
+
+```sql
+CREATE TABLE streak_session_daily_rollups (
+  user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  session_id   TEXT NOT NULL,
+  local_day    TEXT NOT NULL CHECK (length(local_day) = 10),
+  effective_ms INTEGER NOT NULL DEFAULT 0 CHECK (effective_ms >= 0),
+  updated_at   BIGINT NOT NULL,
+
+  PRIMARY KEY (user_id, session_id, local_day)
+);
+```
+
+#### `streak_daily_aggregates`
+
+```sql
+CREATE TABLE streak_daily_aggregates (
+  user_id              UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  local_day            TEXT NOT NULL CHECK (length(local_day) = 10),
+  effective_ms         INTEGER NOT NULL DEFAULT 0 CHECK (effective_ms >= 0),
+  qualified            INTEGER NOT NULL CHECK (qualified IN (0, 1)),
+  source_session_count INTEGER NOT NULL DEFAULT 0 CHECK (source_session_count >= 0),
+  updated_at           BIGINT NOT NULL,
+
+  PRIMARY KEY (user_id, local_day)
+);
+
+CREATE INDEX idx_streak_aggregates_qualified ON streak_daily_aggregates (user_id, qualified, local_day);
+```
+
+### 3.3 Tables NOT Synced
+
+| Client Table | Reason |
+|---|---|
+| `streak_rollup_state` | Client-only processing cursor. Tracks which sessions have been rolled up locally. Has no meaning on the server. |
+
+---
+
+## 4. Sync Protocol
+
+### 4.1 Overview
+
+The sync protocol uses a single endpoint (`POST /api/v1/sync`) to exchange data bidirectionally between client and server. It is designed for an offline-first, single-device architecture.
+
+### 4.2 Sync Request
+
+The client sends:
+
+```json
+{
+  "tables": {
+    "modes": {
+      "last_synced_at": 1700000000000,
+      "upserts": [
+        {
+          "id": "uuid-1",
+          "title": "Focus Mode",
+          "text_on_screen": "Stay focused!",
+          "description": null,
+          "allowed_pauses_count": 2,
+          "minimum_duration_ms": 3600000,
+          "ending_pausing_scenario": "manual",
+          "icon_token": "ms:v1:work",
+          "created_at": 1700000000000,
+          "updated_at": 1700000500000
+        }
+      ],
+      "deletions": ["uuid-3", "uuid-7"]
+    },
+    "mode_blocked_apps": {
+      "last_synced_at": 1700000000000,
+      "upserts": [ ... ],
+      "deletions": [
+        { "mode_id": "uuid-1", "platform": "android", "app_identifier": "com.example.app" }
+      ]
+    }
+  }
+}
+```
+
+**Field definitions:**
+
+| Field | Description |
+|---|---|
+| `last_synced_at` | Milliseconds-since-epoch timestamp of the client's last successful sync for this table. `0` for first sync (full download). |
+| `upserts` | Array of records created or updated locally since `last_synced_at`. |
+| `deletions` | Array of primary key values for records deleted locally since `last_synced_at`. For single-column PKs, this is an array of strings. For composite PKs, this is an array of objects with all PK fields. |
+
+### 4.3 Sync Response
+
+The server responds with:
+
+```json
+{
+  "server_time": 1700001000000,
+  "tables": {
+    "modes": {
+      "upserts": [
+        {
+          "id": "uuid-2",
+          "title": "Sleep Mode",
+          "..."
+        }
+      ],
+      "deletions": ["uuid-5"]
+    },
+    "mode_blocked_apps": {
+      "upserts": [ ... ],
+      "deletions": [ ... ]
+    }
+  }
+}
+```
+
+**Field definitions:**
+
+| Field | Description |
+|---|---|
+| `server_time` | The server's current time in milliseconds-since-epoch. The client should store this and use it as `last_synced_at` on the next sync. |
+| `upserts` | Records that were updated on the server since the client's `last_synced_at` (includes conflict-resolved records). |
+| `deletions` | Primary keys of records that were deleted on the server since the client's `last_synced_at` (from `sync_tombstones`). |
+
+### 4.4 Sync Processing (Server-Side)
+
+For each table in the request, the server performs the following steps **within a single database transaction**:
+
+1. **Process client upserts**: For each record in the client's `upserts` array:
+   - Look up the existing server record by primary key.
+   - If no server record exists: insert the client record.
+   - If a server record exists and the client's `updated_at` > server's `updated_at`: update with client data (**last-write-wins**).
+   - If a server record exists and the client's `updated_at` <= server's `updated_at`: skip (server version is newer; it will be sent back in the response).
+
+2. **Process client deletions**: For each primary key in the client's `deletions` array:
+   - Delete the server record.
+   - Insert a row into `sync_tombstones` with the current timestamp.
+
+3. **Gather server changes**: Query for all records where `updated_at` > client's `last_synced_at`.
+   - Exclude records that were just upserted from the client in step 1 (to avoid echo).
+   - Query `sync_tombstones` for this table where `deleted_at` > client's `last_synced_at`.
+
+4. **Return server changes** in the response.
+
+### 4.5 Synced Tables Reference
+
+| Table | Primary Key (for sync) | Notes |
+|---|---|---|
+| `modes` | `id` | |
+| `mode_blocked_apps` | `(mode_id, platform, app_identifier)` | Composite PK |
+| `schedules` | `id` | |
+| `restriction_sessions` | `session_id` | |
+| `restriction_lifecycle_events` | `id` | No `updated_at` column; use `created_at` for sync cursor |
+| `nfc_linked_chips` | `id` | |
+| `qr_linked_codes` | `id` | |
+| `streak_session_daily_rollups` | `(session_id, local_day)` | Composite PK |
+| `streak_daily_aggregates` | `local_day` | |
+
+### 4.6 Tombstone Garbage Collection
+
+A background job runs periodically (e.g., daily) and deletes rows from `sync_tombstones` where `deleted_at` is older than 90 days. Clients that have not synced in over 90 days should perform a full sync (`last_synced_at = 0` for all tables).
+
+### 4.7 First Sync / Full Restore
+
+When `last_synced_at = 0` for a table:
+
+- The client sends all its local records as `upserts`.
+- The server returns all records it has for that user.
+- Last-write-wins applies to any overlapping records.
+
+This enables restoring data on a new device: the client sends `last_synced_at = 0` with empty `upserts`, and receives the full server-side dataset.
+
+---
+
+## 5. REST API Endpoints
+
+All endpoints are prefixed with `/api/v1` unless otherwise noted.
+
+**Common headers:**
+
+| Header | Value | Required |
+|---|---|---|
+| `Content-Type` | `application/json` | All requests with a body |
+| `Authorization` | `Bearer <access_token>` | All authenticated endpoints |
+
+### 5.1 Authentication
+
+#### `POST /api/v1/auth/register`
+
+Start registration for a new account.
+
+**Request:**
+
+```json
+{
+  "email": "user@example.com",
+  "password": "securePassword123"
+}
+```
+
+**Validation:**
+
+- `email`: valid email format, max 255 characters, case-insensitive (stored lowercase).
+- `password`: minimum 8 characters.
+
+**Responses:**
+
+| Status | Body | Condition |
+|---|---|---|
+| `200` | `{ "otp_required": true }` | New email; OTP sent |
+| `409` | `{ "error": { "code": "CONFLICT", "message": "Email already registered" } }` | Email exists |
+| `422` | `{ "error": { "code": "VALIDATION_ERROR", ... } }` | Invalid input |
+
+#### `POST /api/v1/auth/verify-otp`
+
+Verify email OTP to complete registration.
+
+**Request:**
+
+```json
+{
+  "email": "user@example.com",
+  "otp": "123456"
+}
+```
+
+**Responses:**
+
+| Status | Body | Condition |
+|---|---|---|
+| `200` | `{ "access_token": "...", "refresh_token": "...", "user": { ... } }` | OTP valid, account created |
+| `401` | `{ "error": { "code": "UNAUTHORIZED", "message": "Invalid or expired OTP" } }` | Wrong/expired OTP |
+| `429` | `{ "error": { "code": "RATE_LIMITED", ... } }` | Too many attempts |
+
+The `user` object in the response follows the profile format described in [Section 5.3](#53-profile).
+
+#### `POST /api/v1/auth/login`
+
+Authenticate an existing user.
+
+**Request:**
+
+```json
+{
+  "email": "user@example.com",
+  "password": "securePassword123"
+}
+```
+
+**Responses:**
+
+| Status | Body | Condition |
+|---|---|---|
+| `200` | `{ "access_token": "...", "refresh_token": "...", "user": { ... } }` | Credentials valid |
+| `401` | `{ "error": { "code": "UNAUTHORIZED", "message": "Invalid email or password" } }` | Invalid credentials |
+
+#### `POST /api/v1/auth/refresh`
+
+Exchange a refresh token for a new token pair.
+
+**Request:**
+
+```json
+{
+  "refresh_token": "opaque-token-string"
+}
+```
+
+**Responses:**
+
+| Status | Body | Condition |
+|---|---|---|
+| `200` | `{ "access_token": "...", "refresh_token": "..." }` | Token valid |
+| `401` | `{ "error": { "code": "UNAUTHORIZED", ... } }` | Token invalid/revoked/expired |
+
+#### `POST /api/v1/auth/forgot-password`
+
+Request a password reset OTP.
+
+**Request:**
+
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+**Response:**
+
+Always returns `200` with `{ "message": "If the email is registered, a reset code has been sent." }` to prevent email enumeration.
+
+#### `POST /api/v1/auth/reset-password`
+
+Reset password using OTP.
+
+**Request:**
+
+```json
+{
+  "email": "user@example.com",
+  "otp": "123456",
+  "new_password": "newSecurePassword456"
+}
+```
+
+**Responses:**
+
+| Status | Body | Condition |
+|---|---|---|
+| `200` | `{ "message": "Password reset successfully" }` | Success; all refresh tokens revoked |
+| `401` | `{ "error": { "code": "UNAUTHORIZED", ... } }` | Invalid/expired OTP |
+| `422` | `{ "error": { "code": "VALIDATION_ERROR", ... } }` | Password too weak |
+
+### 5.2 Sync
+
+#### `POST /api/v1/sync`
+
+**Auth:** Required (JWT).
+
+Bidirectional data synchronization. See [Section 4](#4-sync-protocol) for full protocol details.
+
+**Request:** See [Section 4.2](#42-sync-request).
+
+**Response:** See [Section 4.3](#43-sync-response).
+
+| Status | Body | Condition |
+|---|---|---|
+| `200` | Sync response payload | Success |
+| `401` | Error | Unauthorized |
+| `422` | Error | Malformed sync payload |
+
+### 5.3 Profile
+
+#### `GET /api/v1/me`
+
+Returns the authenticated user's profile and current subscription status.
+
+**Auth:** Required (JWT).
+
+**Response (`200`):**
+
+```json
+{
+  "id": "uuid",
+  "email": "user@example.com",
+  "name": "John Doe",
+  "username": "johndoe",
+  "profile_picture_url": "https://storage.example.com/photos/uuid.jpg",
+  "leaderboard_visible": true,
+  "created_at": "2024-01-15T10:30:00Z",
+  "subscription": {
+    "plan_id": "uuid",
+    "plan_name": "Premium",
+    "status": "active",
+    "is_student": false,
+    "current_period_end": "2024-02-15T10:30:00Z",
+    "features": {
+      "friendships": true,
+      "advanced_stats": true,
+      "unlimited_modes": true
+    }
+  }
+}
+```
+
+If the user has no active subscription, `subscription` is `null`.
+
+#### `PATCH /api/v1/me`
+
+Update profile fields.
+
+**Auth:** Required (JWT).
+
+**Request:**
+
+```json
+{
+  "name": "Jane Doe",
+  "username": "janedoe",
+  "leaderboard_visible": false
+}
+```
+
+All fields are optional. Only provided fields are updated.
+
+**Validation:**
+
+- `name`: max 100 characters.
+- `username`: 3-30 characters, alphanumeric + underscores only, case-insensitive unique.
+- `leaderboard_visible`: boolean.
+
+**Responses:**
+
+| Status | Body | Condition |
+|---|---|---|
+| `200` | Updated user object (same format as `GET /me`) | Success |
+| `409` | Error with code `CONFLICT` | Username already taken |
+| `422` | Error with code `VALIDATION_ERROR` | Invalid input |
+
+#### `POST /api/v1/me/photo`
+
+Upload a profile photo.
+
+**Auth:** Required (JWT).
+
+**Request:** `multipart/form-data` with a single `photo` field. Accepted formats: JPEG, PNG. Max size: 5 MB.
+
+**Response (`200`):**
+
+```json
+{
+  "profile_picture_url": "https://storage.example.com/photos/uuid.jpg"
+}
+```
+
+#### `GET /api/v1/me/username-available`
+
+Check if a username is available.
+
+**Auth:** Required (JWT).
+
+**Query parameters:** `username` (required).
+
+**Response (`200`):**
+
+```json
+{
+  "available": true
+}
+```
+
+#### `DELETE /api/v1/me`
+
+Permanently delete the user account and all associated data.
+
+**Auth:** Required (JWT).
+
+**Request:**
+
+```json
+{
+  "password": "currentPassword123"
+}
+```
+
+**Responses:**
+
+| Status | Body | Condition |
+|---|---|---|
+| `200` | `{ "message": "Account deleted" }` | Success |
+| `401` | Error | Wrong password |
+
+### 5.4 Friendships
+
+All friendship endpoints require an active premium subscription. Returns `403` with error code `SUBSCRIPTION_REQUIRED` if the user is on the free tier.
+
+#### `GET /api/v1/friends`
+
+List accepted friends.
+
+**Auth:** Required (JWT). **Subscription:** Premium.
+
+**Query parameters:** `page` (default 1), `limit` (default 20, max 100).
+
+**Response (`200`):**
+
+```json
+{
+  "friends": [
+    {
+      "friendship_id": "uuid",
+      "user": {
+        "id": "uuid",
+        "name": "Jane Doe",
+        "username": "janedoe",
+        "profile_picture_url": "https://..."
+      },
+      "since": "2024-01-20T15:00:00Z"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 5
+  }
+}
+```
+
+#### `POST /api/v1/friends/request`
+
+Send a friendship request.
+
+**Auth:** Required (JWT). **Subscription:** Premium.
+
+**Request:**
+
+```json
+{
+  "query": "janedoe"
+}
+```
+
+The `query` field is matched against both username (exact, case-insensitive) and email (exact, case-insensitive). The server determines which field it matches.
+
+**Responses:**
+
+| Status | Body | Condition |
+|---|---|---|
+| `201` | `{ "friendship_id": "uuid", "status": "pending" }` | Request sent |
+| `404` | Error | User not found |
+| `409` | Error with code `CONFLICT` | Request already exists or already friends |
+| `422` | Error | Trying to add self |
+
+Triggers a push notification to the addressee (see [Section 9](#9-push-notifications)).
+
+#### `GET /api/v1/friends/requests/incoming`
+
+List pending friendship requests received by the current user.
+
+**Auth:** Required (JWT). **Subscription:** Premium.
+
+**Response (`200`):**
+
+```json
+{
+  "requests": [
+    {
+      "friendship_id": "uuid",
+      "from": {
+        "id": "uuid",
+        "name": "John Doe",
+        "username": "johndoe",
+        "profile_picture_url": "https://..."
+      },
+      "created_at": "2024-01-20T15:00:00Z"
+    }
+  ]
+}
+```
+
+#### `GET /api/v1/friends/requests/outgoing`
+
+List pending friendship requests sent by the current user.
+
+**Auth:** Required (JWT). **Subscription:** Premium.
+
+**Response (`200`):**
+
+```json
+{
+  "requests": [
+    {
+      "friendship_id": "uuid",
+      "to": {
+        "id": "uuid",
+        "name": "Jane Doe",
+        "username": "janedoe",
+        "profile_picture_url": "https://..."
+      },
+      "created_at": "2024-01-20T15:00:00Z"
+    }
+  ]
+}
+```
+
+#### `POST /api/v1/friends/requests/:id/accept`
+
+Accept a pending friendship request.
+
+**Auth:** Required (JWT). **Subscription:** Premium.
+
+**Responses:**
+
+| Status | Body | Condition |
+|---|---|---|
+| `200` | `{ "friendship_id": "uuid", "status": "accepted" }` | Accepted |
+| `404` | Error | Request not found or not addressed to current user |
+| `409` | Error | Already accepted or declined |
+
+Triggers a push notification to the requester (see [Section 9](#9-push-notifications)).
+
+#### `POST /api/v1/friends/requests/:id/decline`
+
+Decline a pending friendship request. The friendship record is **hard-deleted**.
+
+**Auth:** Required (JWT). **Subscription:** Premium.
+
+**Responses:**
+
+| Status | Body | Condition |
+|---|---|---|
+| `200` | `{ "message": "Request declined" }` | Declined and deleted |
+| `404` | Error | Request not found |
+
+#### `DELETE /api/v1/friends/:id`
+
+Remove an accepted friend. The friendship record is **hard-deleted**.
+
+**Auth:** Required (JWT). **Subscription:** Premium.
+
+**Responses:**
+
+| Status | Body | Condition |
+|---|---|---|
+| `200` | `{ "message": "Friend removed" }` | Removed |
+| `404` | Error | Friendship not found |
+
+#### `GET /api/v1/friends/:id/stats`
+
+View a friend's stats. Only accessible if the two users are accepted friends.
+
+**Auth:** Required (JWT). **Subscription:** Premium.
+
+**Response (`200`):**
+
+```json
+{
+  "user": {
+    "id": "uuid",
+    "name": "Jane Doe",
+    "username": "janedoe",
+    "profile_picture_url": "https://..."
+  },
+  "stats": {
+    "current_streak_days": 12,
+    "longest_streak_days": 30,
+    "total_focus_time_ms": 86400000,
+    "daily_trends": [
+      {
+        "local_day": "2024-01-20",
+        "effective_ms": 7200000,
+        "qualified": true,
+        "session_count": 3
+      }
+    ]
+  }
+}
+```
+
+`daily_trends` returns the last 30 days by default. An optional `days` query parameter can be used to request a different range (max 90).
+
+#### `GET /api/v1/friends/search`
+
+Search for users to add as friends.
+
+**Auth:** Required (JWT). **Subscription:** Premium.
+
+**Query parameters:** `q` (required, min 3 characters).
+
+Searches by username (prefix match, case-insensitive) and email (exact match, case-insensitive). Does not return the current user. Does not reveal whether a result is from username or email match.
+
+**Response (`200`):**
+
+```json
+{
+  "users": [
+    {
+      "id": "uuid",
+      "name": "Jane Doe",
+      "username": "janedoe",
+      "profile_picture_url": "https://..."
+    }
+  ]
+}
+```
+
+Results are capped at 20 entries.
+
+### 5.5 Leaderboard
+
+#### `GET /api/v1/leaderboard/streaks`
+
+Leaderboard ranked by current streak length (consecutive qualified days up to today).
+
+**Auth:** Required (JWT).
+
+**Query parameters:** `page` (default 1), `limit` (default 20, max 100).
+
+**Response (`200`):**
+
+```json
+{
+  "entries": [
+    {
+      "rank": 1,
+      "user": {
+        "id": "uuid",
+        "name": "Jane Doe",
+        "username": "janedoe",
+        "profile_picture_url": "https://..."
+      },
+      "current_streak_days": 45
+    }
+  ],
+  "my_rank": {
+    "rank": 23,
+    "current_streak_days": 12
+  },
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 150
+  }
+}
+```
+
+Only includes users where `leaderboard_visible = true`. The `my_rank` field is always included regardless of the user's visibility setting, so the user can see their own position.
+
+#### `GET /api/v1/leaderboard/focus-time`
+
+Leaderboard ranked by total cumulative focus time.
+
+**Auth:** Required (JWT).
+
+**Query parameters:** `page` (default 1), `limit` (default 20, max 100).
+
+**Response (`200`):**
+
+```json
+{
+  "entries": [
+    {
+      "rank": 1,
+      "user": {
+        "id": "uuid",
+        "name": "Top Focuser",
+        "username": "topfocuser",
+        "profile_picture_url": "https://..."
+      },
+      "total_focus_time_ms": 360000000
+    }
+  ],
+  "my_rank": {
+    "rank": 42,
+    "total_focus_time_ms": 86400000
+  },
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 150
+  }
+}
+```
+
+### 5.6 Subscriptions (Client-Facing)
+
+#### `GET /api/v1/subscriptions/plans`
+
+List all active subscription plans with any currently running discounts.
+
+**Auth:** Not required.
+
+**Response (`200`):**
+
+```json
+{
+  "plans": [
+    {
+      "id": "uuid",
+      "name": "Premium Monthly",
+      "duration_type": "monthly",
+      "price_cents": 499,
+      "currency": "USD",
+      "student_discount_percent": 50,
+      "features": {
+        "friendships": true,
+        "advanced_stats": true,
+        "unlimited_modes": true
+      },
+      "active_discount": {
+        "discount_percent": 20,
+        "ends_at": "2024-02-01T00:00:00Z",
+        "description": "New Year Sale"
+      }
+    }
+  ]
+}
+```
+
+`active_discount` is `null` if no time-limited discount is currently running for that plan. Only plans where `is_active = true` are returned.
+
+#### `POST /api/v1/subscriptions/verify-student`
+
+Initiate third-party student verification.
+
+**Auth:** Required (JWT).
+
+**Request:**
+
+```json
+{
+  "verification_provider": "sheerid"
+}
+```
+
+**Response (`200`):**
+
+```json
+{
+  "verification_url": "https://verify.sheerid.com/...",
+  "expires_at": "2024-01-21T10:30:00Z"
+}
+```
+
+The client opens the verification URL in a webview. Upon successful verification, the third-party service calls a webhook (or the client polls) to confirm student status. The backend then sets `is_student = true` on the user's subscription.
+
+### 5.7 Push Notification Device Registration
+
+#### `POST /api/v1/devices`
+
+Register an FCM device token.
+
+**Auth:** Required (JWT).
+
+**Request:**
+
+```json
+{
+  "fcm_token": "firebase-device-token-string",
+  "platform": "android"
+}
+```
+
+**Validation:**
+
+- `platform`: must be `"android"` or `"ios"`.
+- `fcm_token`: non-empty string.
+
+If the token already exists for this user, its `updated_at` is refreshed. If the token exists for a different user, it is reassigned to the current user (device changed hands).
+
+**Response:**
+
+| Status | Body | Condition |
+|---|---|---|
+| `200` | `{ "message": "Device registered" }` | Success |
+
+#### `DELETE /api/v1/devices/:token`
+
+Unregister an FCM device token (e.g., on logout).
+
+**Auth:** Required (JWT).
+
+**Response:**
+
+| Status | Body | Condition |
+|---|---|---|
+| `200` | `{ "message": "Device unregistered" }` | Success (also returned if token not found, for idempotency) |
+
+### 5.8 RevenueCat Webhook
+
+#### `POST /api/v1/webhooks/revenuecat`
+
+Receives subscription lifecycle events from RevenueCat.
+
+**Auth:** Verified via a shared webhook secret in the `Authorization` header (configured in RevenueCat dashboard and the backend's environment variables).
+
+**Handled event types:**
+
+| RevenueCat Event | Backend Action |
+|---|---|
+| `INITIAL_PURCHASE` | Create `user_subscriptions` row with status `active` |
+| `RENEWAL` | Update `current_period_start`/`current_period_end`, set status `active` |
+| `CANCELLATION` | Set status `cancelled` |
+| `EXPIRATION` | Set status `expired` |
+| `PRODUCT_CHANGE` | Update `plan_id` to the new product |
+| `BILLING_ISSUE` | Optionally flag the subscription for follow-up |
+
+The backend maps the RevenueCat `app_user_id` to the internal `user_id`.
+
+**Response:**
+
+Always returns `200` to acknowledge receipt. RevenueCat retries on non-2xx responses.
+
+### 5.9 Admin Endpoints
+
+All admin endpoints are prefixed with `/api/v1/admin` and require admin authentication via a separate admin JWT obtained from the admin login endpoint.
+
+#### `POST /api/v1/admin/login`
+
+**Request:**
+
+```json
+{
+  "username": "admin",
+  "password": "adminPassword"
+}
+```
+
+**Response (`200`):**
+
+```json
+{
+  "access_token": "admin-jwt-token"
+}
+```
+
+Admin JWT has a 1-hour lifetime. Claims include `"role": "admin"`.
+
+#### `GET /api/v1/admin/users`
+
+List users with search and pagination.
+
+**Query parameters:** `page`, `limit`, `search` (searches by email, username, or name).
+
+**Response (`200`):**
+
+```json
+{
+  "users": [
+    {
+      "id": "uuid",
+      "email": "user@example.com",
+      "name": "John Doe",
+      "username": "johndoe",
+      "profile_picture_url": "https://...",
+      "subscription_status": "active",
+      "created_at": "2024-01-15T10:30:00Z"
+    }
+  ],
+  "pagination": { "page": 1, "limit": 20, "total": 500 }
+}
+```
+
+#### `GET /api/v1/admin/users/:id`
+
+Get detailed user info including subscription history, friend count, sync activity.
+
+#### `GET /api/v1/admin/stats`
+
+Aggregate platform statistics.
+
+**Response (`200`):**
+
+```json
+{
+  "total_users": 1500,
+  "active_users_30d": 800,
+  "total_subscribers": 200,
+  "active_subscriptions": {
+    "monthly": 120,
+    "yearly": 60,
+    "lifetime": 20
+  },
+  "student_subscribers": 45,
+  "total_friendships": 350,
+  "avg_streak_days": 8.5,
+  "avg_daily_focus_time_ms": 5400000
+}
+```
+
+#### Subscription Plan CRUD
+
+**`GET /api/v1/admin/subscription-plans`** — List all plans (including inactive).
+
+**`POST /api/v1/admin/subscription-plans`** — Create a new plan.
+
+```json
+{
+  "name": "Premium Monthly",
+  "duration_type": "monthly",
+  "price_cents": 499,
+  "currency": "USD",
+  "features_json": { "friendships": true, "advanced_stats": true, "unlimited_modes": true },
+  "is_active": true,
+  "student_discount_percent": 50
+}
+```
+
+**`GET /api/v1/admin/subscription-plans/:id`** — Get plan details with active discount info.
+
+**`PUT /api/v1/admin/subscription-plans/:id`** — Update a plan. Accepts the same body as POST (all fields optional).
+
+**`DELETE /api/v1/admin/subscription-plans/:id`** — Deactivate a plan (sets `is_active = false`). Plans with active subscribers cannot be hard-deleted.
+
+#### Discount Management
+
+**`POST /api/v1/admin/subscription-plans/:id/discounts`** — Create a time-limited discount for a plan.
+
+```json
+{
+  "discount_percent": 20,
+  "starts_at": "2024-02-01T00:00:00Z",
+  "ends_at": "2024-02-14T23:59:59Z",
+  "description": "Valentine's Day Sale"
+}
+```
+
+**`PUT /api/v1/admin/discounts/:id`** — Update a discount.
+
+**`DELETE /api/v1/admin/discounts/:id`** — Delete a discount.
+
+#### Manual Subscription Management
+
+**`POST /api/v1/admin/users/:id/subscription`** — Manually grant or revoke a subscription.
+
+```json
+{
+  "action": "grant",
+  "plan_id": "uuid",
+  "expires_at": "2024-12-31T23:59:59Z",
+  "is_student": false
+}
+```
+
+`action` must be `"grant"` or `"revoke"`.
+
+**`GET /api/v1/admin/subscriptions`** — List all subscriptions with filters.
+
+**Query parameters:** `status` (active/expired/cancelled/trial), `page`, `limit`.
+
+### 5.10 Health Check
+
+#### `GET /health`
+
+Not prefixed with `/api/v1`. Used for container health checks and load balancer probes.
+
+**Response (`200`):**
+
+```json
+{
+  "status": "ok",
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+Returns `503` if the database is unreachable.
+
+---
+
+## 6. Subscription System
+
+### 6.1 Architecture
+
+```
+App Store / Google Play
+        |
+        v
+    RevenueCat  ----webhook---->  Pauza Backend
+        |                              |
+        v                              v
+  Client SDK                   user_subscriptions table
+  (purchase flow)              (source of truth for
+                                entitlement checks)
+```
+
+1. **Plan definitions** are managed in the Pauza backend via the admin panel. The admin creates/edits subscription plans with pricing, features, and discount configurations.
+2. **Payment processing** is handled by RevenueCat. The Flutter app uses the RevenueCat SDK to present purchase UI and process payments through App Store / Google Play.
+3. **Entitlement sync**: RevenueCat sends webhook events to `POST /api/v1/webhooks/revenuecat` on subscription lifecycle changes. The backend updates `user_subscriptions` accordingly.
+4. **Entitlement verification**: The backend can also verify entitlements by calling the RevenueCat REST API as a fallback (e.g., if a webhook is missed).
+
+### 6.2 Subscription Tiers
+
+| Tier | Cost | Access |
+|---|---|---|
+| **Free** | $0 | Core features: modes (limited count), basic stats, basic streaks |
+| **Premium** | Defined per plan (monthly/yearly/lifetime) | All features: friendships, advanced stats, unlimited modes, leaderboard participation, and any future premium features |
+
+The specific feature gates are defined in the plan's `features_json` and returned in the `GET /api/v1/me` response.
+
+### 6.3 Enforcement
+
+Subscription status is enforced on **both** client and server:
+
+- **Client-side**: The Flutter app reads the `subscription` field from `GET /api/v1/me` and hides/disables premium UI features for free-tier users.
+- **Server-side**: Endpoints that require a premium subscription (e.g., all `/friends/*` endpoints) check the user's subscription status. If the user does not have an active subscription, the server returns:
+
+```json
+{
+  "error": {
+    "code": "SUBSCRIPTION_REQUIRED",
+    "message": "This feature requires a premium subscription"
+  }
+}
+```
+
+HTTP status: `403 Forbidden`.
+
+Premium-gated endpoints are marked in their documentation with **Subscription: Premium**.
+
+### 6.4 Student Discounts
+
+1. User initiates verification via `POST /api/v1/subscriptions/verify-student`.
+2. Backend generates a verification session with the third-party provider (SheerID / UNiDAYS) and returns a `verification_url`.
+3. User completes verification in a webview.
+4. Third-party provider confirms student status via a callback/webhook to the backend.
+5. Backend sets `is_student = true` on the user's subscription record.
+6. The discounted price is applied on the next renewal (managed via RevenueCat promotional offers or introductory pricing).
+
+---
+
+## 7. Friendships
+
+### 7.1 Overview
+
+Friendships allow premium users to connect with each other and view detailed stats. The friendship system uses a request/accept model.
+
+### 7.2 Lifecycle
+
+```
+ Requester                    Addressee
+     |                            |
+     |  send request              |
+     |  (status: pending)         |
+     |--------------------------->|
+     |                            |  push notification received
+     |                            |
+     |                            |  accept / decline
+     |                            |---> accept: status -> accepted
+     |                            |     push notification to requester
+     |  can view each other's     |
+     |  stats                     |
+     |<-------------------------->|
+     |                            |---> decline: record hard-deleted
+```
+
+### 7.3 Data Access Rules
+
+- Only **accepted** friends can view each other's stats.
+- Stats include: current streak, longest streak, total focus time, and daily trends (last 30-90 days from `streak_daily_aggregates`).
+- Friend stats are computed from the friend's synced data on the server.
+
+### 7.4 Subscription Dependency
+
+- All friendship endpoints require an active premium subscription.
+- If a user's subscription expires, they cannot access friendship features, but their existing friendship records are **preserved** (not deleted). If they re-subscribe, their friends are restored.
+- If both users have expired subscriptions, neither can view the other's stats, but the friendship record remains.
+
+---
+
+## 8. Leaderboard
+
+### 8.1 Overview
+
+Two independent leaderboards rank users based on different metrics:
+
+1. **Streak Leaderboard**: Ranked by current streak length (number of consecutive `qualified = 1` days in `streak_daily_aggregates` up to and including today).
+2. **Focus Time Leaderboard**: Ranked by total cumulative `effective_ms` across all entries in `streak_daily_aggregates`.
+
+### 8.2 Visibility
+
+- Users are visible on leaderboards by default (`leaderboard_visible = true` in `users` table).
+- Users can opt out by setting `leaderboard_visible = false` via `PATCH /api/v1/me`.
+- Opted-out users do not appear in leaderboard listings but can still see their own rank via the `my_rank` field in the response.
+
+### 8.3 Computation
+
+Leaderboard rankings are computed on-demand from the synced `streak_daily_aggregates` table. For performance at scale, consider:
+
+- Materialized views or summary tables refreshed periodically (e.g., every 15 minutes).
+- Caching leaderboard pages with a short TTL.
+
+The initial implementation may compute rankings directly with SQL queries. Optimization should be applied when query latency exceeds acceptable thresholds.
+
+### 8.4 Streak Calculation (Server-Side)
+
+The current streak is calculated as the count of consecutive days with `qualified = 1` ending at the most recent qualified day, which must be either today or yesterday (to allow for timezone differences and partial days). If the most recent qualified day is older than yesterday, the current streak is 0.
+
+```sql
+-- Pseudocode for current streak calculation
+WITH recent_days AS (
+  SELECT local_day, qualified
+  FROM streak_daily_aggregates
+  WHERE user_id = $1
+  ORDER BY local_day DESC
+)
+-- Count consecutive qualified = 1 days from the top
+```
+
+---
+
+## 9. Push Notifications
+
+### 9.1 Architecture
+
+The Go backend sends push notifications directly via the **Firebase Admin SDK** (using a Firebase service account). The client registers its FCM device token with the backend.
+
+```
+Flutter App                    Pauza Backend                Firebase
+    |                               |                          |
+    |  POST /api/v1/devices         |                          |
+    |  { fcm_token, platform }      |                          |
+    |------------------------------>|                          |
+    |                               |  store in device_tokens  |
+    |                               |                          |
+    |                               |  (event occurs)          |
+    |                               |  send FCM message ------>|
+    |                               |                          |
+    |  push notification displayed  |<---- FCM delivery -------|
+    |<------------------------------|                          |
+```
+
+### 9.2 Notification Triggers
+
+| Event | Recipient | Payload |
+|---|---|---|
+| Friendship request received | Addressee | `{ "type": "friend_request", "from_username": "...", "friendship_id": "..." }` |
+| Friendship request accepted | Requester | `{ "type": "friend_accepted", "by_username": "...", "friendship_id": "..." }` |
+| Schedule reminder | User | `{ "type": "schedule_reminder", "mode_title": "...", "starts_in_minutes": 15 }` |
+
+### 9.3 Schedule Reminders
+
+The backend runs a periodic job (e.g., every minute) that checks `schedules` (synced) for upcoming scheduled mode activations. If a schedule is due to start within 15 minutes, and a reminder has not already been sent for this occurrence, a push notification is sent to the user.
+
+To avoid duplicate reminders, the backend tracks sent reminders in memory or in a lightweight table/cache with a TTL.
+
+### 9.4 Token Lifecycle
+
+- Tokens are registered via `POST /api/v1/devices`.
+- Tokens are unregistered via `DELETE /api/v1/devices/:token` (e.g., on user logout).
+- If Firebase returns a `messaging/registration-token-not-registered` error when sending a notification, the token is automatically deleted from `device_tokens`.
+- A user may have multiple tokens (e.g., after app reinstall before old token is cleaned up). All valid tokens are targeted when sending a notification.
+
+---
+
+## 10. Rate Limiting
+
+Rate limits are enforced per the following rules. Responses that exceed the limit return HTTP `429 Too Many Requests` with a `Retry-After` header.
+
+| Endpoint Group | Limit | Scope |
+|---|---|---|
+| Auth endpoints (`/auth/*`) | 5 requests / minute | Per IP address |
+| OTP verification (`/auth/verify-otp`) | 3 requests / minute | Per email address |
+| Sync (`/sync`) | 30 requests / minute | Per authenticated user |
+| General API (all other authenticated endpoints) | 60 requests / minute | Per authenticated user |
+| Admin endpoints (`/admin/*`) | 30 requests / minute | Per admin |
+| Webhooks (`/webhooks/*`) | 100 requests / minute | Per IP address |
+
+**Implementation notes:**
+
+- Use a sliding window or token bucket algorithm.
+- Rate limit state can be stored in-memory (for single-instance deployments) or in Redis (for multi-instance).
+- Rate limit headers should be included in all responses: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`.
+
+---
+
+## 11. Error Handling
+
+### 11.1 Standard Error Response Format
+
+All error responses follow this structure:
+
+```json
+{
+  "error": {
+    "code": "ERROR_CODE",
+    "message": "Human-readable description of what went wrong",
+    "details": {}
+  }
+}
+```
+
+The `details` field is optional and may contain additional structured information (e.g., field-level validation errors).
+
+### 11.2 Error Codes
+
+| Code | HTTP Status | Description |
+|---|---|---|
+| `VALIDATION_ERROR` | `422` | Request body or query parameters failed validation |
+| `UNAUTHORIZED` | `401` | Missing, invalid, or expired authentication |
+| `FORBIDDEN` | `403` | Authenticated but not authorized for this action |
+| `SUBSCRIPTION_REQUIRED` | `403` | Feature requires an active premium subscription |
+| `NOT_FOUND` | `404` | Requested resource does not exist |
+| `CONFLICT` | `409` | Resource already exists (e.g., duplicate email, username) |
+| `RATE_LIMITED` | `429` | Too many requests |
+| `INTERNAL_ERROR` | `500` | Unexpected server error |
+
+### 11.3 Validation Error Details
+
+For `VALIDATION_ERROR`, the `details` field contains per-field errors:
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Invalid request body",
+    "details": {
+      "fields": {
+        "email": "must be a valid email address",
+        "password": "must be at least 8 characters"
+      }
+    }
+  }
+}
+```
+
+---
+
+## 12. Deployment
+
+### 12.1 Docker Compose
+
+The application is deployed as two Docker containers managed by Docker Compose:
+
+```yaml
+# docker-compose.yml (reference structure)
+version: "3.8"
+
+services:
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_URL=postgres://pauza:password@db:5432/pauza?sslmode=disable
+      - JWT_SECRET=<secret>
+      - JWT_ACCESS_TOKEN_TTL=15m
+      - JWT_REFRESH_TOKEN_TTL=720h
+      - REVENUECAT_API_KEY=<key>
+      - REVENUECAT_WEBHOOK_SECRET=<secret>
+      - FIREBASE_SERVICE_ACCOUNT_JSON=<path-or-base64>
+      - SMTP_HOST=<host>
+      - SMTP_PORT=587
+      - SMTP_USERNAME=<username>
+      - SMTP_PASSWORD=<password>
+      - SMTP_FROM=noreply@pauza.app
+      - ADMIN_SEED_USERNAME=admin
+      - ADMIN_SEED_PASSWORD=<password>
+      - STUDENT_VERIFICATION_PROVIDER=sheerid
+      - STUDENT_VERIFICATION_API_KEY=<key>
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=pauza
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=pauza
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pauza"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+```
+
+### 12.2 Environment Variables
+
+| Variable | Description | Required |
+|---|---|---|
+| `DATABASE_URL` | PostgreSQL connection string | Yes |
+| `JWT_SECRET` | HMAC secret for signing JWTs | Yes |
+| `JWT_ACCESS_TOKEN_TTL` | Access token lifetime (e.g., `15m`) | Yes |
+| `JWT_REFRESH_TOKEN_TTL` | Refresh token lifetime (e.g., `720h`) | Yes |
+| `REVENUECAT_API_KEY` | RevenueCat REST API key | Yes |
+| `REVENUECAT_WEBHOOK_SECRET` | Shared secret for webhook verification | Yes |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | Path to Firebase service account JSON or base64-encoded content | Yes |
+| `SMTP_HOST` | SMTP server hostname | Yes |
+| `SMTP_PORT` | SMTP server port | Yes |
+| `SMTP_USERNAME` | SMTP authentication username | Yes |
+| `SMTP_PASSWORD` | SMTP authentication password | Yes |
+| `SMTP_FROM` | Email sender address | Yes |
+| `ADMIN_SEED_USERNAME` | Initial admin username (created on first startup) | Yes |
+| `ADMIN_SEED_PASSWORD` | Initial admin password | Yes |
+| `STUDENT_VERIFICATION_PROVIDER` | Third-party student verification provider (`sheerid` or `unidays`) | Yes |
+| `STUDENT_VERIFICATION_API_KEY` | API key for student verification provider | Yes |
+| `PORT` | Server listen port (default `8080`) | No |
+| `LOG_LEVEL` | Logging level: `debug`, `info`, `warn`, `error` (default `info`) | No |
+
+### 12.3 Database Migrations
+
+Migrations are managed using [golang-migrate](https://github.com/golang-migrate/migrate). Migration files are stored in a `migrations/` directory within the backend repository.
+
+On startup, the application automatically runs pending migrations before accepting traffic. Migrations run within transactions and are rolled back on failure.
+
+### 12.4 Admin Seeding
+
+On first startup (when the `admin_credentials` table is empty), the backend creates an initial admin account using `ADMIN_SEED_USERNAME` and `ADMIN_SEED_PASSWORD`. The password is hashed with bcrypt before storage.
+
+---
+
+## 13. Out of Scope
+
+The following items are intentionally excluded from this specification:
+
+| Item | Reason |
+|---|---|
+| **Usage stats collection** | Device usage data comes from OS APIs (Android UsageStatsManager, iOS Screen Time). This data is collected natively on the device and is not sent to or processed by the backend. |
+| **App blocking enforcement** | Blocking is enforced natively on the device via platform-specific APIs. The backend has no role in enforcement. |
+| **Specific premium feature definitions** | Which exact features are paywalled is a product decision. The backend provides the `features_json` mechanism on subscription plans; the specific keys and their meanings are defined at the product level. |
+| **User blocking** | The ability to block other users (preventing friend requests, hiding from search) is deferred to a future iteration. |
+| **Contact-based friend discovery** | Syncing phone contacts to find existing Pauza users is deferred to a future iteration. |
+| **Push notification preferences** | Per-notification-type opt-in/opt-out settings are deferred. All notification types are sent to all users initially. |
+| **File/photo storage infrastructure** | The spec assumes profile photos are stored in an external object storage service (e.g., AWS S3, Google Cloud Storage). The specific storage provider and configuration are deployment decisions. |
+| **Web frontend for admin panel** | This spec covers the admin REST API only. The admin web UI is a separate project that consumes these endpoints. |
