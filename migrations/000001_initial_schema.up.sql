@@ -166,7 +166,7 @@ CREATE TABLE modes (
   PRIMARY KEY (user_id, id)
 );
 
--- 12. mode_blocked_apps (FK -> users)
+-- 12. mode_blocked_apps (FK -> users, modes)
 CREATE TABLE mode_blocked_apps (
   user_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   mode_id        TEXT NOT NULL,
@@ -175,10 +175,12 @@ CREATE TABLE mode_blocked_apps (
   created_at     BIGINT NOT NULL,
   updated_at     BIGINT NOT NULL,
 
-  PRIMARY KEY (user_id, mode_id, platform, app_identifier)
+  PRIMARY KEY (user_id, mode_id, platform, app_identifier),
+  CONSTRAINT fk_mode_blocked_apps_mode
+    FOREIGN KEY (user_id, mode_id) REFERENCES modes (user_id, id) ON DELETE CASCADE
 );
 
--- 13. schedules (FK -> users)
+-- 13. schedules (FK -> users, modes)
 CREATE TABLE schedules (
   user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   id           TEXT NOT NULL,
@@ -191,10 +193,12 @@ CREATE TABLE schedules (
   updated_at   BIGINT NOT NULL,
 
   PRIMARY KEY (user_id, id),
-  UNIQUE (user_id, mode_id)
+  UNIQUE (user_id, mode_id),
+  CONSTRAINT fk_schedules_mode
+    FOREIGN KEY (user_id, mode_id) REFERENCES modes (user_id, id) ON DELETE CASCADE
 );
 
--- 14. restriction_sessions (FK -> users)
+-- 14. restriction_sessions (FK -> users, modes)
 CREATE TABLE restriction_sessions (
   user_id              UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   session_id           TEXT NOT NULL,
@@ -211,13 +215,15 @@ CREATE TABLE restriction_sessions (
   created_at           BIGINT NOT NULL,
   updated_at           BIGINT NOT NULL,
 
-  PRIMARY KEY (user_id, session_id)
+  PRIMARY KEY (user_id, session_id),
+  CONSTRAINT fk_restriction_sessions_mode
+    FOREIGN KEY (user_id, mode_id) REFERENCES modes (user_id, id) ON DELETE CASCADE
 );
 
 CREATE INDEX idx_restriction_sessions_mode ON restriction_sessions (user_id, mode_id);
 CREATE INDEX idx_restriction_sessions_started ON restriction_sessions (user_id, started_at DESC);
 
--- 15. restriction_lifecycle_events (FK -> users)
+-- 15. restriction_lifecycle_events (FK -> users, modes, restriction_sessions)
 -- NOTE: No updated_at column — this is an append-only events table.
 CREATE TABLE restriction_lifecycle_events (
   user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -230,7 +236,11 @@ CREATE TABLE restriction_lifecycle_events (
   occurred_at BIGINT NOT NULL,
   created_at  BIGINT NOT NULL,
 
-  PRIMARY KEY (user_id, id)
+  PRIMARY KEY (user_id, id),
+  CONSTRAINT fk_lifecycle_events_mode
+    FOREIGN KEY (user_id, mode_id) REFERENCES modes (user_id, id) ON DELETE CASCADE,
+  CONSTRAINT fk_lifecycle_events_session
+    FOREIGN KEY (user_id, session_id) REFERENCES restriction_sessions (user_id, session_id) ON DELETE CASCADE
 );
 
 CREATE INDEX idx_lifecycle_events_session ON restriction_lifecycle_events (user_id, session_id);
@@ -261,7 +271,7 @@ CREATE TABLE qr_linked_codes (
   UNIQUE (user_id, scan_value)
 );
 
--- 18. streak_session_daily_rollups (FK -> users)
+-- 18. streak_session_daily_rollups (FK -> users, restriction_sessions)
 CREATE TABLE streak_session_daily_rollups (
   user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   session_id   TEXT NOT NULL,
@@ -269,7 +279,9 @@ CREATE TABLE streak_session_daily_rollups (
   effective_ms INTEGER NOT NULL DEFAULT 0 CHECK (effective_ms >= 0),
   updated_at   BIGINT NOT NULL,
 
-  PRIMARY KEY (user_id, session_id, local_day)
+  PRIMARY KEY (user_id, session_id, local_day),
+  CONSTRAINT fk_streak_rollups_session
+    FOREIGN KEY (user_id, session_id) REFERENCES restriction_sessions (user_id, session_id) ON DELETE CASCADE
 );
 
 -- 19. streak_daily_aggregates (FK -> users)

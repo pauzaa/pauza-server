@@ -27,7 +27,7 @@ services:
 
       FIREBASE_SERVICE_ACCOUNT_JSON: "{}"
 
-      STUDENT_VERIFICATION_PROVIDER: "dev"
+      STUDENT_VERIFICATION_PROVIDER: "sheerid"
       STUDENT_VERIFICATION_API_KEY: "dev"
     depends_on:
       db:

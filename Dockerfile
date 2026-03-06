@@ -14,10 +14,13 @@ FROM alpine:3.21
 
 RUN apk --no-cache add ca-certificates wget
 
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
 WORKDIR /app
 
-COPY --from=builder /pauza-server .
-COPY migrations/ ./migrations/
+COPY --from=builder --chown=appuser:appgroup /pauza-server .
+
+USER appuser
 
 EXPOSE 8080
 

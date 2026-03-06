@@ -42,7 +42,7 @@ func Health(pool *pgxpool.Pool) http.HandlerFunc {
 		w.WriteHeader(code)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
 			// Response might already be partially written; just log.
-			slog.Default().Error("failed to encode health response", "err", err)
+			slog.Error("failed to encode health response", "err", err)
 		}
 	}
 }

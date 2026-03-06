@@ -2,7 +2,9 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
+	"time"
 )
 
 // setRequiredEnvVars sets all required environment variables with test values.
@@ -47,6 +49,12 @@ func TestLoad_AllRequiredVarsSet(t *testing.T) {
 	}
 	if cfg.JWTSecret != "test-secret" {
 		t.Errorf("unexpected JWTSecret: %s", cfg.JWTSecret)
+	}
+	if cfg.JWTAccessTokenTTL != 15*time.Minute {
+		t.Errorf("unexpected JWTAccessTokenTTL: %s", cfg.JWTAccessTokenTTL)
+	}
+	if cfg.JWTRefreshTokenTTL != 720*time.Hour {
+		t.Errorf("unexpected JWTRefreshTokenTTL: %s", cfg.JWTRefreshTokenTTL)
 	}
 	if cfg.SMTPPort != 587 {
 		t.Errorf("unexpected SMTPPort: %d", cfg.SMTPPort)
@@ -127,5 +135,118 @@ func TestLoad_MissingRequiredVar(t *testing.T) {
 	_, err := Load()
 	if err == nil {
 		t.Fatal("expected error for missing required vars, got nil")
+	}
+}
+
+func TestLoad_InvalidPort(t *testing.T) {
+	tests := []struct {
+		name string
+		port string
+	}{
+		{"zero", "0"},
+		{"negative", "-1"},
+		{"too_high", "70000"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setRequiredEnvVars(t)
+			t.Setenv("PORT", tt.port)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatal("expected error for invalid port, got nil")
+			}
+			if !strings.Contains(err.Error(), "PORT") {
+				t.Errorf("expected error to mention PORT, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoad_InvalidLogLevel(t *testing.T) {
+	setRequiredEnvVars(t)
+	t.Setenv("LOG_LEVEL", "verbose")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for invalid log level, got nil")
+	}
+	if !strings.Contains(err.Error(), "LOG_LEVEL") {
+		t.Errorf("expected error to mention LOG_LEVEL, got: %v", err)
+	}
+}
+
+func TestLoad_NonPositiveJWTTTL(t *testing.T) {
+	tests := []struct {
+		name    string
+		envVar  string
+		value   string
+		mention string
+	}{
+		{"zero_access", "JWT_ACCESS_TOKEN_TTL", "0s", "JWT_ACCESS_TOKEN_TTL"},
+		{"negative_access", "JWT_ACCESS_TOKEN_TTL", "-5m", "JWT_ACCESS_TOKEN_TTL"},
+		{"zero_refresh", "JWT_REFRESH_TOKEN_TTL", "0s", "JWT_REFRESH_TOKEN_TTL"},
+		{"negative_refresh", "JWT_REFRESH_TOKEN_TTL", "-1h", "JWT_REFRESH_TOKEN_TTL"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setRequiredEnvVars(t)
+			t.Setenv(tt.envVar, tt.value)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatal("expected error for non-positive TTL, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.mention) {
+				t.Errorf("expected error to mention %s, got: %v", tt.mention, err)
+			}
+		})
+	}
+}
+
+func TestLoad_ShortAdminSeedPassword(t *testing.T) {
+	setRequiredEnvVars(t)
+	t.Setenv("ADMIN_SEED_PASSWORD", "short")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for short admin password, got nil")
+	}
+	if !strings.Contains(err.Error(), "ADMIN_SEED_PASSWORD") {
+		t.Errorf("expected error to mention ADMIN_SEED_PASSWORD, got: %v", err)
+	}
+}
+
+func TestLoad_InvalidStudentVerificationProvider(t *testing.T) {
+	setRequiredEnvVars(t)
+	t.Setenv("STUDENT_VERIFICATION_PROVIDER", "unknown_provider")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for unknown provider, got nil")
+	}
+	if !strings.Contains(err.Error(), "STUDENT_VERIFICATION_PROVIDER") {
+		t.Errorf("expected error to mention STUDENT_VERIFICATION_PROVIDER, got: %v", err)
+	}
+}
+
+func TestLoad_ValidLogLevels(t *testing.T) {
+	levels := []string{"debug", "info", "warn", "error"}
+
+	for _, level := range levels {
+		t.Run(level, func(t *testing.T) {
+			setRequiredEnvVars(t)
+			t.Setenv("LOG_LEVEL", level)
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("expected no error for log level %q, got: %v", level, err)
+			}
+			if cfg.LogLevel != level {
+				t.Errorf("expected LogLevel %q, got: %s", level, cfg.LogLevel)
+			}
+		})
 	}
 }

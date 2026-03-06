@@ -2,26 +2,52 @@ package database
 
 import (
 	"errors"
+	"fmt"
+	"io/fs"
 	"log/slog"
-	"strings"
+	"net/url"
 
 	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/source/iofs"
 
 	// Register the pgx/v5 database driver for golang-migrate.
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
-	// Register the file source driver for golang-migrate.
-	_ "github.com/golang-migrate/migrate/v4/source/file"
 )
 
-// RunMigrations applies all pending database migrations from the given
-// directory. It rewrites the postgres:// URL scheme to pgx5:// as required
-// by golang-migrate's pgx/v5 driver registration.
-func RunMigrations(databaseURL string, migrationsPath string) error {
-	pgx5URL := strings.Replace(databaseURL, "postgres://", "pgx5://", 1)
+// migrateDSN rewrites a postgres:// or postgresql:// URL to the pgx5://
+// scheme required by golang-migrate's pgx/v5 driver. It parses the URL
+// so only the scheme is touched, avoiding fragile string replacement.
+func migrateDSN(databaseURL string) (string, error) {
+	u, err := url.Parse(databaseURL)
+	if err != nil {
+		return "", fmt.Errorf("parsing database URL: %w", err)
+	}
+	switch u.Scheme {
+	case "postgres", "postgresql":
+		u.Scheme = "pgx5"
+	default:
+		return "", fmt.Errorf("unsupported database URL scheme: %q", u.Scheme)
+	}
+	return u.String(), nil
+}
 
-	m, err := migrate.New("file://"+migrationsPath, pgx5URL)
+// RunMigrations applies all pending database migrations from the given
+// embedded filesystem. It rewrites the postgres:// or postgresql:// URL
+// scheme to pgx5:// as required by golang-migrate's pgx/v5 driver.
+func RunMigrations(databaseURL string, migrationsFS fs.FS) error {
+	pgx5URL, err := migrateDSN(databaseURL)
 	if err != nil {
 		return err
+	}
+
+	src, err := iofs.New(migrationsFS, ".")
+	if err != nil {
+		return fmt.Errorf("opening migration source: %w", err)
+	}
+
+	m, err := migrate.NewWithSourceInstance("iofs", src, pgx5URL)
+	if err != nil {
+		return fmt.Errorf("creating migrate instance: %w", err)
 	}
 	defer func() {
 		srcErr, dbErr := m.Close()
@@ -38,7 +64,7 @@ func RunMigrations(databaseURL string, migrationsPath string) error {
 			slog.Info("no new migrations to apply")
 			return nil
 		}
-		return err
+		return fmt.Errorf("applying migrations: %w", err)
 	}
 
 	slog.Info("migrations applied successfully")

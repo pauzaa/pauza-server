@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -118,5 +119,101 @@ func TestNew_ServerAddr(t *testing.T) {
 
 	if srv.Addr != ":9090" {
 		t.Errorf("expected addr ':9090', got: %q", srv.Addr)
+	}
+}
+
+func TestNew_RequestLoggerEmitsStructuredFields(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	srv := New(testConfig(), logger, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Header.Set("X-Request-Id", "log-test-id-456")
+	rec := httptest.NewRecorder()
+
+	srv.Handler.ServeHTTP(rec, req)
+
+	logOutput := buf.String()
+	if logOutput == "" {
+		t.Fatal("expected log output, got empty string")
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(logOutput), &entry); err != nil {
+		t.Fatalf("expected valid JSON log entry, got: %q: %v", logOutput, err)
+	}
+
+	// Verify message
+	if msg, ok := entry["msg"].(string); !ok || msg != "http request" {
+		t.Errorf("expected msg 'http request', got: %v", entry["msg"])
+	}
+
+	// Verify structured fields are present and correct
+	if method, ok := entry["method"].(string); !ok || method != "GET" {
+		t.Errorf("expected method 'GET', got: %v", entry["method"])
+	}
+	if path, ok := entry["path"].(string); !ok || path != "/health" {
+		t.Errorf("expected path '/health', got: %v", entry["path"])
+	}
+	if status, ok := entry["status"].(float64); !ok || int(status) != http.StatusServiceUnavailable {
+		t.Errorf("expected status %d, got: %v", http.StatusServiceUnavailable, entry["status"])
+	}
+	if reqID, ok := entry["request_id"].(string); !ok || reqID != "log-test-id-456" {
+		t.Errorf("expected request_id 'log-test-id-456', got: %v", entry["request_id"])
+	}
+	if _, ok := entry["duration"]; !ok {
+		t.Error("expected 'duration' field in log entry")
+	}
+	if _, ok := entry["bytes"]; !ok {
+		t.Error("expected 'bytes' field in log entry")
+	}
+	if _, ok := entry["remote_addr"]; !ok {
+		t.Error("expected 'remote_addr' field in log entry")
+	}
+}
+
+func TestNew_RequestLoggerLevelByStatus(t *testing.T) {
+	tests := []struct {
+		name          string
+		method        string
+		path          string
+		expectedLevel string
+	}{
+		{
+			name:          "5xx logs at ERROR",
+			method:        http.MethodGet,
+			path:          "/health",
+			expectedLevel: "ERROR",
+		},
+		{
+			name:          "4xx logs at WARN",
+			method:        http.MethodGet,
+			path:          "/nonexistent",
+			expectedLevel: "WARN",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+			srv := New(testConfig(), logger, nil)
+
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			rec := httptest.NewRecorder()
+
+			srv.Handler.ServeHTTP(rec, req)
+
+			var entry map[string]any
+			if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+				t.Fatalf("expected valid JSON log entry, got: %q: %v", buf.String(), err)
+			}
+
+			if level, ok := entry["level"].(string); !ok || level != tt.expectedLevel {
+				t.Errorf("expected level %q, got: %v", tt.expectedLevel, entry["level"])
+			}
+		})
 	}
 }

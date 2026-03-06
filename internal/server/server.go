@@ -25,16 +25,48 @@ func respondRequestID(next http.Handler) http.Handler {
 	})
 }
 
+// requestLogger returns a middleware that logs every HTTP request using the
+// provided slog.Logger with structured fields: method, path, status, duration,
+// bytes written, request_id, and remote_addr.
+func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+
+			next.ServeHTTP(ww, r)
+
+			status := ww.Status()
+			level := slog.LevelInfo
+			if status >= 500 {
+				level = slog.LevelError
+			} else if status >= 400 {
+				level = slog.LevelWarn
+			}
+
+			logger.LogAttrs(r.Context(), level, "http request",
+				slog.String("method", r.Method),
+				slog.String("path", r.URL.Path),
+				slog.Int("status", status),
+				slog.Int("bytes", ww.BytesWritten()),
+				slog.Duration("duration", time.Since(start)),
+				slog.String("request_id", middleware.GetReqID(r.Context())),
+				slog.String("remote_addr", r.RemoteAddr),
+			)
+		})
+	}
+}
+
 // New creates and configures the HTTP server with all routes and middleware.
 func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http.Server {
 	r := chi.NewRouter()
 
 	// Base middleware
-	r.Use(middleware.RequestID) // Generate/forward X-Request-Id in context
-	r.Use(respondRequestID)     // Echo request ID back in response header
-	r.Use(middleware.RealIP)    // Extract real client IP from proxy headers
-	r.Use(middleware.Logger)    // Log each request: method, path, status, duration
-	r.Use(middleware.Recoverer) // Recover from panics, return 500
+	r.Use(middleware.RequestID)  // Generate/forward X-Request-Id in context
+	r.Use(respondRequestID)      // Echo request ID back in response header
+	r.Use(middleware.RealIP)     // Extract real client IP from proxy headers
+	r.Use(requestLogger(logger)) // Log each request: method, path, status, duration
+	r.Use(middleware.Recoverer)  // Recover from panics, return 500
 
 	// Health check (not under /api/v1, used for container health checks)
 	r.Get("/health", handler.Health(pool))

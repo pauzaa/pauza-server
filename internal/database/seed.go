@@ -9,30 +9,29 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// SeedAdmin creates an initial admin account in admin_credentials if none exists.
-// It is idempotent: subsequent calls after the first seed are no-ops.
+// SeedAdmin creates an initial admin account when admin_credentials is empty.
+// It is idempotent and safe across concurrent startups: a single atomic
+// INSERT … WHERE NOT EXISTS is used so only the first writer succeeds.
 func SeedAdmin(ctx context.Context, pool *pgxpool.Pool, username string, password string) error {
-	var count int
-	err := pool.QueryRow(ctx, "SELECT count(*) FROM admin_credentials").Scan(&count)
-	if err != nil {
-		return fmt.Errorf("querying admin_credentials count: %w", err)
-	}
-
-	if count > 0 {
-		slog.Info("admin account already exists, skipping seed")
-		return nil
-	}
-
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
 	if err != nil {
 		return fmt.Errorf("hashing admin password: %w", err)
 	}
 
-	_, err = pool.Exec(ctx, "INSERT INTO admin_credentials (username, password_hash) VALUES ($1, $2)", username, hash)
+	tag, err := pool.Exec(ctx,
+		`INSERT INTO admin_credentials (username, password_hash)
+		 SELECT $1, $2
+		 WHERE NOT EXISTS (SELECT 1 FROM admin_credentials)`,
+		username, hash)
 	if err != nil {
 		return fmt.Errorf("inserting admin credentials: %w", err)
 	}
 
-	slog.Info("admin account seeded successfully")
+	if tag.RowsAffected() == 0 {
+		slog.Info("admin_credentials table is not empty, skipping seed")
+	} else {
+		slog.Info("admin account seeded successfully")
+	}
+
 	return nil
 }
