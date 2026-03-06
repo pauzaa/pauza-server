@@ -2,10 +2,11 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,9 +21,7 @@ func testConfig() *config.Config {
 }
 
 func testLogger() *slog.Logger {
-	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelError, // Suppress output during tests
-	}))
+	return slog.New(slog.NewJSONHandler(io.Discard, nil))
 }
 
 func TestNew_HealthEndpoint(t *testing.T) {
@@ -45,9 +44,14 @@ func TestNew_HealthEndpoint(t *testing.T) {
 	if resp["status"] != "ok" {
 		t.Errorf("expected status 'ok', got: %q", resp["status"])
 	}
-
+	if resp["timestamp"] == "" {
+		t.Fatal("expected timestamp to be set, got empty string")
+	}
 	if _, err := time.Parse(time.RFC3339, resp["timestamp"]); err != nil {
-		t.Errorf("invalid timestamp: %q", resp["timestamp"])
+		t.Fatalf("expected RFC3339 timestamp, got %q: %v", resp["timestamp"], err)
+	}
+	if !strings.HasSuffix(resp["timestamp"], "Z") {
+		t.Errorf("expected UTC timestamp ending in 'Z', got: %q", resp["timestamp"])
 	}
 }
 
@@ -85,11 +89,32 @@ func TestNew_RequestIDHeader(t *testing.T) {
 
 	srv.Handler.ServeHTTP(rec, req)
 
-	// The RequestID middleware sets the header on the request context,
-	// but chi's middleware.RequestID also sets it in the response via
-	// the middleware chain. Let's verify the request was processed.
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected status 200, got: %d", rec.Code)
+	}
+
+	reqID := rec.Header().Get("X-Request-Id")
+	if reqID == "" {
+		t.Error("expected X-Request-Id header to be set in response, got empty string")
+	}
+}
+
+func TestNew_RequestIDEchoesClientValue(t *testing.T) {
+	srv := New(testConfig(), testLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Header.Set("X-Request-Id", "test-client-id-123")
+	rec := httptest.NewRecorder()
+
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected status 200, got: %d", rec.Code)
+	}
+
+	got := rec.Header().Get("X-Request-Id")
+	if got != "test-client-id-123" {
+		t.Errorf("expected X-Request-Id 'test-client-id-123', got: %q", got)
 	}
 }
 

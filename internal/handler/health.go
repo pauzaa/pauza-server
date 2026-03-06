@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -24,6 +25,9 @@ func Health() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(resp)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			// Response might already be partially written; just log.
+			slog.Default().Error("failed to encode health response", "err", err)
+		}
 	}
 }

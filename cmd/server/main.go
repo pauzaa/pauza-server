@@ -29,20 +29,25 @@ func main() {
 	// 3. Create HTTP server
 	srv := server.New(cfg, logger)
 
-	// 4. Start server in a goroutine
+	// 4. Start server in a goroutine; report fatal errors via channel
+	listenErr := make(chan error, 1)
 	go func() {
 		logger.Info("server starting", "port", cfg.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("server listen error", "error", err)
-			os.Exit(1)
+			listenErr <- err
 		}
 	}()
 
-	// 5. Wait for interrupt signal (SIGINT or SIGTERM)
+	// 5. Wait for interrupt signal (SIGINT or SIGTERM) or listen error
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-quit
-	logger.Info("received shutdown signal", "signal", sig.String())
+
+	select {
+	case sig := <-quit:
+		logger.Info("received shutdown signal", "signal", sig.String())
+	case err := <-listenErr:
+		logger.Error("server listen error", "error", err)
+	}
 
 	// 6. Graceful shutdown with 10-second timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
