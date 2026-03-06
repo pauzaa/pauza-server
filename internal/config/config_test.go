@@ -93,10 +93,36 @@ func TestLoad_CustomPortAndLogLevel(t *testing.T) {
 }
 
 func TestLoad_MissingRequiredVar(t *testing.T) {
-	// Clear all env vars that envconfig might read
-	// Only set a subset — omit DATABASE_URL
-	os.Clearenv()
+	// Set all required vars except DATABASE_URL.
+	// Avoid os.Clearenv() since it is process-wide and can cause flaky tests
+	// if tests ever run in parallel.
 	t.Setenv("JWT_SECRET", "test-secret")
+	t.Setenv("JWT_ACCESS_TOKEN_TTL", "15m")
+	t.Setenv("JWT_REFRESH_TOKEN_TTL", "720h")
+	t.Setenv("SMTP_HOST", "smtp.test.com")
+	t.Setenv("SMTP_PORT", "587")
+	t.Setenv("SMTP_USERNAME", "testuser")
+	t.Setenv("SMTP_PASSWORD", "testpass")
+	t.Setenv("SMTP_FROM", "test@test.com")
+	t.Setenv("ADMIN_SEED_USERNAME", "admin")
+	t.Setenv("ADMIN_SEED_PASSWORD", "adminpass")
+	t.Setenv("REVENUECAT_API_KEY", "rc_test_key")
+	t.Setenv("REVENUECAT_WEBHOOK_SECRET", "rc_test_secret")
+	t.Setenv("FIREBASE_SERVICE_ACCOUNT_JSON", "{}")
+	t.Setenv("STUDENT_VERIFICATION_PROVIDER", "sheerid")
+	t.Setenv("STUDENT_VERIFICATION_API_KEY", "sv_test_key")
+
+	// Ensure DATABASE_URL is unset even if the developer has it in their shell.
+	// t.Setenv cannot clear a variable, so use a save/restore pattern instead.
+	prev, hadPrev := os.LookupEnv("DATABASE_URL")
+	os.Unsetenv("DATABASE_URL")
+	t.Cleanup(func() {
+		if hadPrev {
+			os.Setenv("DATABASE_URL", prev)
+		} else {
+			os.Unsetenv("DATABASE_URL")
+		}
+	})
 
 	_, err := Load()
 	if err == nil {

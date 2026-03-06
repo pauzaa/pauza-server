@@ -1,5 +1,6 @@
 # Binaries
 /pauza-server
+/server
 *.exe
 
 # Environment (contains secrets)
