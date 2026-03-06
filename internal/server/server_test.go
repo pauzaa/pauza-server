@@ -25,15 +25,15 @@ func testLogger() *slog.Logger {
 }
 
 func TestNew_HealthEndpoint(t *testing.T) {
-	srv := New(testConfig(), testLogger())
+	srv := New(testConfig(), testLogger(), nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
 
 	srv.Handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected status 200, got: %d", rec.Code)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected status 503, got: %d", rec.Code)
 	}
 
 	var resp map[string]string
@@ -41,8 +41,8 @@ func TestNew_HealthEndpoint(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	if resp["status"] != "ok" {
-		t.Errorf("expected status 'ok', got: %q", resp["status"])
+	if resp["status"] != "degraded" {
+		t.Errorf("expected status 'degraded', got: %q", resp["status"])
 	}
 	if resp["timestamp"] == "" {
 		t.Fatal("expected timestamp to be set, got empty string")
@@ -56,7 +56,7 @@ func TestNew_HealthEndpoint(t *testing.T) {
 }
 
 func TestNew_NotFoundRoute(t *testing.T) {
-	srv := New(testConfig(), testLogger())
+	srv := New(testConfig(), testLogger(), nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/nonexistent", nil)
 	rec := httptest.NewRecorder()
@@ -69,7 +69,7 @@ func TestNew_NotFoundRoute(t *testing.T) {
 }
 
 func TestNew_HealthMethodNotAllowed(t *testing.T) {
-	srv := New(testConfig(), testLogger())
+	srv := New(testConfig(), testLogger(), nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -82,16 +82,12 @@ func TestNew_HealthMethodNotAllowed(t *testing.T) {
 }
 
 func TestNew_RequestIDHeader(t *testing.T) {
-	srv := New(testConfig(), testLogger())
+	srv := New(testConfig(), testLogger(), nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
 
 	srv.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected status 200, got: %d", rec.Code)
-	}
 
 	reqID := rec.Header().Get("X-Request-Id")
 	if reqID == "" {
@@ -100,17 +96,13 @@ func TestNew_RequestIDHeader(t *testing.T) {
 }
 
 func TestNew_RequestIDEchoesClientValue(t *testing.T) {
-	srv := New(testConfig(), testLogger())
+	srv := New(testConfig(), testLogger(), nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	req.Header.Set("X-Request-Id", "test-client-id-123")
 	rec := httptest.NewRecorder()
 
 	srv.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected status 200, got: %d", rec.Code)
-	}
 
 	got := rec.Header().Get("X-Request-Id")
 	if got != "test-client-id-123" {
@@ -122,7 +114,7 @@ func TestNew_ServerAddr(t *testing.T) {
 	cfg := testConfig()
 	cfg.Port = 9090
 
-	srv := New(cfg, testLogger())
+	srv := New(cfg, testLogger(), nil)
 
 	if srv.Addr != ":9090" {
 		t.Errorf("expected addr ':9090', got: %q", srv.Addr)

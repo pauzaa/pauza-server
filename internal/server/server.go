@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/IsorilovA/pauza-server/internal/config"
 	"github.com/IsorilovA/pauza-server/internal/handler"
@@ -25,7 +26,7 @@ func respondRequestID(next http.Handler) http.Handler {
 }
 
 // New creates and configures the HTTP server with all routes and middleware.
-func New(cfg *config.Config, logger *slog.Logger) *http.Server {
+func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http.Server {
 	r := chi.NewRouter()
 
 	// Base middleware
@@ -36,7 +37,7 @@ func New(cfg *config.Config, logger *slog.Logger) *http.Server {
 	r.Use(middleware.Recoverer) // Recover from panics, return 500
 
 	// Health check (not under /api/v1, used for container health checks)
-	r.Get("/health", handler.Health())
+	r.Get("/health", handler.Health(pool))
 
 	return &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),

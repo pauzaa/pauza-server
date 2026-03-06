@@ -9,21 +9,21 @@ import (
 	"time"
 )
 
-func TestHealth_StatusOK(t *testing.T) {
-	h := Health()
+func TestHealth_NilPool_Returns503(t *testing.T) {
+	h := Health(nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
 
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected status 200, got: %d", rec.Code)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected status 503, got: %d", rec.Code)
 	}
 }
 
 func TestHealth_ContentType(t *testing.T) {
-	h := Health()
+	h := Health(nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -37,20 +37,24 @@ func TestHealth_ContentType(t *testing.T) {
 }
 
 func TestHealth_ResponseBody(t *testing.T) {
-	h := Health()
+	h := Health(nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
 
 	h.ServeHTTP(rec, req)
 
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected status 503, got: %d", rec.Code)
+	}
+
 	var resp healthResponse
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	if resp.Status != "ok" {
-		t.Errorf("expected status 'ok', got: %q", resp.Status)
+	if resp.Status != "degraded" {
+		t.Errorf("expected status 'degraded', got: %q", resp.Status)
 	}
 
 	if resp.Timestamp == "" {
@@ -65,7 +69,7 @@ func TestHealth_ResponseBody(t *testing.T) {
 }
 
 func TestHealth_ExactResponseShape(t *testing.T) {
-	h := Health()
+	h := Health(nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -82,8 +86,8 @@ func TestHealth_ExactResponseShape(t *testing.T) {
 		t.Errorf("expected exactly 2 keys in response, got %d: %v", len(raw), raw)
 	}
 
-	if raw["status"] != "ok" {
-		t.Errorf("expected status 'ok', got: %v", raw["status"])
+	if raw["status"] != "degraded" {
+		t.Errorf("expected status 'degraded', got: %v", raw["status"])
 	}
 	if _, ok := raw["timestamp"]; !ok {
 		t.Errorf("expected timestamp key to be present, got: %v", raw)
@@ -91,7 +95,7 @@ func TestHealth_ExactResponseShape(t *testing.T) {
 }
 
 func TestHealth_TimestampIsRecent(t *testing.T) {
-	h := Health()
+	h := Health(nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()

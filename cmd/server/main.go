@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/IsorilovA/pauza-server/internal/config"
+	"github.com/IsorilovA/pauza-server/internal/database"
 	"github.com/IsorilovA/pauza-server/internal/server"
 )
 
@@ -26,10 +27,32 @@ func main() {
 	logger := setupLogger(cfg.LogLevel)
 	slog.SetDefault(logger)
 
-	// 3. Create HTTP server
-	srv := server.New(cfg, logger)
+	// 3. Connect to database
+	startupCtx, startupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer startupCancel()
 
-	// 4. Start server in a goroutine; report fatal errors via channel
+	pool, err := database.Connect(startupCtx, cfg.DatabaseURL)
+	if err != nil {
+		logger.Error("failed to connect to database", "error", err)
+		os.Exit(1)
+	}
+
+	// 4. Run migrations
+	if err := database.RunMigrations(cfg.DatabaseURL, "migrations"); err != nil {
+		logger.Error("failed to run migrations", "error", err)
+		os.Exit(1)
+	}
+
+	// 5. Seed admin
+	if err := database.SeedAdmin(startupCtx, pool, cfg.AdminSeedUsername, cfg.AdminSeedPassword); err != nil {
+		logger.Error("failed to seed admin", "error", err)
+		os.Exit(1)
+	}
+
+	// 6. Create HTTP server
+	srv := server.New(cfg, logger, pool)
+
+	// 7. Start server in a goroutine; report fatal errors via channel
 	listenErr := make(chan error, 1)
 	go func() {
 		logger.Info("server starting", "port", cfg.Port)
@@ -38,7 +61,7 @@ func main() {
 		}
 	}()
 
-	// 5. Wait for interrupt signal (SIGINT or SIGTERM) or listen error
+	// 8. Wait for interrupt signal (SIGINT or SIGTERM) or listen error
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -49,7 +72,7 @@ func main() {
 		logger.Error("server listen error", "error", err)
 	}
 
-	// 6. Graceful shutdown with 10-second timeout
+	// 9. Graceful shutdown with 10-second timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -58,6 +81,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	pool.Close()
 	logger.Info("server stopped")
 }
 
