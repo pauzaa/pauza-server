@@ -60,6 +60,7 @@ func TestPassword_Valid(t *testing.T) {
 		{"exact_min", "12345678"},
 		{"long_with_spaces", "a very long password with spaces"},
 		{"unicode", "pässwörd"},
+		{"exact_max_bytes", strings.Repeat("a", 72)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -79,6 +80,8 @@ func TestPassword_Invalid(t *testing.T) {
 		{"empty", "", "required"},
 		{"too_short", "short", "at least 8"},
 		{"one_below_min", "1234567", "at least 8"},
+		{"exceeds_bcrypt_limit", strings.Repeat("a", 73), "72 bytes"},
+		{"long_multibyte_over_72_bytes", strings.Repeat("é", 37), "72 bytes"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

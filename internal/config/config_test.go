@@ -219,6 +219,22 @@ func TestLoad_ShortAdminSeedPassword(t *testing.T) {
 	}
 }
 
+func TestLoad_TooLongAdminSeedPassword(t *testing.T) {
+	setRequiredEnvVars(t)
+	t.Setenv("ADMIN_SEED_PASSWORD", strings.Repeat("a", 73))
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for admin password exceeding 72 bytes, got nil")
+	}
+	if !strings.Contains(err.Error(), "ADMIN_SEED_PASSWORD") {
+		t.Errorf("expected error to mention ADMIN_SEED_PASSWORD, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "72 bytes") {
+		t.Errorf("expected error to mention 72 bytes, got: %v", err)
+	}
+}
+
 func TestLoad_InvalidStudentVerificationProvider(t *testing.T) {
 	setRequiredEnvVars(t)
 	t.Setenv("STUDENT_VERIFICATION_PROVIDER", "unknown_provider")

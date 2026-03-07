@@ -1,0 +1,593 @@
+package handler
+
+// This file contains unit tests for auth handler validation paths. The
+// handler is constructed with a nil database pool, so any test that reaches
+// a database call will panic — this is intentional. DB-backed flows
+// (credential checks, OTP verification, token persistence, anti-enumeration
+// at the DB layer, etc.) are covered by integration tests in
+// auth_integration_test.go which run against a real Postgres instance.
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/IsorilovA/pauza-server/internal/apperror"
+)
+
+// mockEmailSender is a no-op stub of mail.EmailSender for validation-only
+// handler tests. None of the unit tests here reach the mailer, so the
+// implementation simply returns nil.
+//
+// No explicit compile-time interface check (var _ mail.EmailSender = ...) is
+// needed: NewAuthHandler's mailer parameter is typed mail.EmailSender, so the
+// compiler already verifies satisfaction at the call site in newTestAuthHandler.
+type mockEmailSender struct{}
+
+func (m *mockEmailSender) SendOTP(_ context.Context, _, _, _ string) error {
+	return nil
+}
+
+// newTestAuthHandler builds an AuthHandler with nil pool (DB calls will panic
+// if reached) and the given mock email sender. This is suitable for tests that
+// exercise only request validation, which returns before any DB interaction.
+func newTestAuthHandler(mailer *mockEmailSender) *AuthHandler {
+	return NewAuthHandler(
+		nil, // pool – nil is fine for validation-only tests
+		mailer,
+		"test-secret",
+		0,
+		0,
+		noopLogger(),
+	)
+}
+
+// noopLogger returns a slog.Logger that discards all output.
+func noopLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// assertValidationEnvelope is a test helper that verifies a 422 response
+// matches the BACKEND_SPEC error envelope. It checks status, Content-Type,
+// the single top-level "error" key, the VALIDATION_ERROR code, the expected
+// message, and that details.fields contains exactly the expectedFields (no
+// extra, no missing).
+func assertValidationEnvelope(t *testing.T, rec *httptest.ResponseRecorder, expectedFields []string) {
+	t.Helper()
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
+
+	ct := rec.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(rec.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(raw) != 1 {
+		t.Fatalf("expected 1 top-level key, got %d: %v", len(raw), raw)
+	}
+	if _, ok := raw["error"]; !ok {
+		t.Fatal("expected top-level 'error' key")
+	}
+
+	var inner struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+		Details struct {
+			Fields map[string]string `json:"fields"`
+		} `json:"details"`
+	}
+	if err := json.Unmarshal(raw["error"], &inner); err != nil {
+		t.Fatalf("decode inner: %v", err)
+	}
+	if inner.Code != apperror.CodeValidationError {
+		t.Errorf("code = %q, want %q", inner.Code, apperror.CodeValidationError)
+	}
+	if inner.Message != "Invalid request body" {
+		t.Errorf("message = %q, want %q", inner.Message, "Invalid request body")
+	}
+	for _, f := range expectedFields {
+		if _, ok := inner.Details.Fields[f]; !ok {
+			t.Errorf("missing expected field %q in details.fields (got %v)", f, inner.Details.Fields)
+		}
+	}
+
+	// Report unexpected extra fields so mismatches are easy to diagnose.
+	expected := make(map[string]struct{}, len(expectedFields))
+	for _, f := range expectedFields {
+		expected[f] = struct{}{}
+	}
+	for f := range inner.Details.Fields {
+		if _, ok := expected[f]; !ok {
+			t.Errorf("unexpected extra field %q in details.fields (got %v)", f, inner.Details.Fields)
+		}
+	}
+}
+
+// ---------- Register – validation tests ----------
+
+// TestRegister_Validation groups simple input-validation cases that should all
+// return 422 with VALIDATION_ERROR. Each subtest verifies status code and error
+// code without inspecting field-level details.
+func TestRegister_Validation(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"missing_email", `{"password":"securepass1"}`},
+		{"short_password", `{"email":"user@example.com","password":"short"}`},
+		{"invalid_email", `{"email":"not-an-email","password":"securepass1"}`},
+		{"invalid_json", `{invalid json`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newTestAuthHandler(&mockEmailSender{})
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			h.Register(rec, req)
+
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+			}
+
+			var resp apperror.ErrorResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if resp.Error.Code != apperror.CodeValidationError {
+				t.Errorf("code = %q, want %q", resp.Error.Code, apperror.CodeValidationError)
+			}
+		})
+	}
+}
+
+// TestRegister_ValidationError_MatchesSpecEnvelope verifies the full JSON
+// envelope structure including per-field error details, Content-Type header,
+// and the spec-mandated message casing.
+func TestRegister_ValidationError_MatchesSpecEnvelope(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	// Both fields invalid.
+	body := `{"email":"","password":""}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.Register(rec, req)
+
+	assertValidationEnvelope(t, rec, []string{"email", "password"})
+}
+
+// TestRegister_MissingBothFields_ReturnsBothFieldErrors verifies that when
+// both email and password are missing, the per-field details include errors
+// for both fields.
+func TestRegister_MissingBothFields_ReturnsBothFieldErrors(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.Register(rec, req)
+
+	assertValidationEnvelope(t, rec, []string{"email", "password"})
+}
+
+// ---------- VerifyOTP – validation tests ----------
+
+// TestVerifyOTP_Validation groups input-validation cases that should all
+// return 422 with VALIDATION_ERROR. Each subtest verifies status code and
+// error code without reaching the database.
+func TestVerifyOTP_Validation(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"missing_email", `{"otp":"123456"}`},
+		{"missing_otp", `{"email":"user@example.com"}`},
+		{"invalid_otp_too_short", `{"email":"user@example.com","otp":"123"}`},
+		{"invalid_otp_letters", `{"email":"user@example.com","otp":"abcdef"}`},
+		{"invalid_otp_too_long", `{"email":"user@example.com","otp":"1234567"}`},
+		{"invalid_email", `{"email":"not-an-email","otp":"123456"}`},
+		{"invalid_json", `{invalid json`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newTestAuthHandler(&mockEmailSender{})
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verify-otp", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			h.VerifyOTP(rec, req)
+
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+			}
+
+			var resp apperror.ErrorResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if resp.Error.Code != apperror.CodeValidationError {
+				t.Errorf("code = %q, want %q", resp.Error.Code, apperror.CodeValidationError)
+			}
+		})
+	}
+}
+
+// TestVerifyOTP_ValidationError_MatchesSpecEnvelope verifies the full JSON
+// envelope structure including per-field error details, Content-Type header,
+// and the spec-mandated message casing for verify-otp validation errors.
+func TestVerifyOTP_ValidationError_MatchesSpecEnvelope(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	// Both fields invalid.
+	body := `{"email":"","otp":""}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verify-otp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.VerifyOTP(rec, req)
+
+	assertValidationEnvelope(t, rec, []string{"email", "otp"})
+}
+
+// TestVerifyOTP_MissingBothFields_ReturnsBothFieldErrors verifies that when
+// both email and otp are missing, the per-field details include errors for
+// both fields.
+func TestVerifyOTP_MissingBothFields_ReturnsBothFieldErrors(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verify-otp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.VerifyOTP(rec, req)
+
+	assertValidationEnvelope(t, rec, []string{"email", "otp"})
+}
+
+// ---------- Login – validation tests ----------
+
+// TestLogin_Validation groups input-validation cases that should all return
+// 422 with VALIDATION_ERROR. Each subtest verifies status code and error code
+// without reaching the database.
+func TestLogin_Validation(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"missing_email", `{"password":"securepass1"}`},
+		{"missing_password", `{"email":"user@example.com"}`},
+		{"short_password", `{"email":"user@example.com","password":"short"}`},
+		{"invalid_email", `{"email":"not-an-email","password":"securepass1"}`},
+		{"invalid_json", `{invalid json`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newTestAuthHandler(&mockEmailSender{})
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			h.Login(rec, req)
+
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+			}
+
+			var resp apperror.ErrorResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if resp.Error.Code != apperror.CodeValidationError {
+				t.Errorf("code = %q, want %q", resp.Error.Code, apperror.CodeValidationError)
+			}
+		})
+	}
+}
+
+// TestLogin_ValidationError_MatchesSpecEnvelope verifies the full JSON
+// envelope structure for login validation errors.
+func TestLogin_ValidationError_MatchesSpecEnvelope(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{"email":"","password":""}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.Login(rec, req)
+
+	assertValidationEnvelope(t, rec, []string{"email", "password"})
+}
+
+// TestLogin_MissingBothFields_ReturnsBothFieldErrors verifies that when
+// both email and password are missing, the per-field details include errors
+// for both fields.
+func TestLogin_MissingBothFields_ReturnsBothFieldErrors(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.Login(rec, req)
+
+	assertValidationEnvelope(t, rec, []string{"email", "password"})
+}
+
+// ---------- Refresh – validation tests ----------
+
+// TestRefresh_Validation groups input-validation cases that should all return
+// 422 with VALIDATION_ERROR. Each subtest verifies status code and error code
+// without reaching the database.
+func TestRefresh_Validation(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"missing_refresh_token", `{}`},
+		{"empty_refresh_token", `{"refresh_token":""}`},
+		{"whitespace_refresh_token", `{"refresh_token":"   "}`},
+		{"invalid_json", `{invalid json`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newTestAuthHandler(&mockEmailSender{})
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			h.Refresh(rec, req)
+
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+			}
+
+			var resp apperror.ErrorResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if resp.Error.Code != apperror.CodeValidationError {
+				t.Errorf("code = %q, want %q", resp.Error.Code, apperror.CodeValidationError)
+			}
+		})
+	}
+}
+
+// TestRefresh_ValidationError_MatchesSpecEnvelope verifies the JSON envelope
+// structure for refresh validation errors.
+func TestRefresh_ValidationError_MatchesSpecEnvelope(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{"refresh_token":""}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.Refresh(rec, req)
+
+	assertValidationEnvelope(t, rec, []string{"refresh_token"})
+}
+
+// ---------- ForgotPassword – validation tests ----------
+
+// TestForgotPassword_Validation groups input-validation cases that should all
+// return 422 with VALIDATION_ERROR. Each subtest verifies status code and
+// error code without reaching the database.
+func TestForgotPassword_Validation(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"invalid_email", `{"email":"not-an-email"}`},
+		{"empty_email", `{"email":""}`},
+		{"missing_email", `{}`},
+		{"invalid_json", `{invalid`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newTestAuthHandler(&mockEmailSender{})
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/forgot-password", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			h.ForgotPassword(rec, req)
+
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+			}
+
+			var resp apperror.ErrorResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if resp.Error.Code != apperror.CodeValidationError {
+				t.Errorf("code = %q, want %q", resp.Error.Code, apperror.CodeValidationError)
+			}
+		})
+	}
+}
+
+// TestForgotPassword_ValidationError_MatchesSpecEnvelope verifies the JSON
+// envelope structure for forgot-password validation errors.
+func TestForgotPassword_ValidationError_MatchesSpecEnvelope(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{"email":""}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/forgot-password", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ForgotPassword(rec, req)
+
+	assertValidationEnvelope(t, rec, []string{"email"})
+}
+
+// ---------- ResetPassword – validation tests ----------
+
+// TestResetPassword_Validation groups input-validation cases that should all
+// return 422 with VALIDATION_ERROR. Each subtest verifies status code and
+// error code without reaching the database.
+func TestResetPassword_Validation(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"missing_email", `{"otp":"123456","new_password":"securepass1"}`},
+		{"missing_otp", `{"email":"user@example.com","new_password":"securepass1"}`},
+		{"missing_new_password", `{"email":"user@example.com","otp":"123456"}`},
+		{"short_new_password", `{"email":"user@example.com","otp":"123456","new_password":"short"}`},
+		{"invalid_email", `{"email":"not-an-email","otp":"123456","new_password":"securepass1"}`},
+		{"invalid_otp", `{"email":"user@example.com","otp":"abc","new_password":"securepass1"}`},
+		{"invalid_json", `{invalid json`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newTestAuthHandler(&mockEmailSender{})
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/reset-password", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			h.ResetPassword(rec, req)
+
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+			}
+
+			var resp apperror.ErrorResponse
+			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if resp.Error.Code != apperror.CodeValidationError {
+				t.Errorf("code = %q, want %q", resp.Error.Code, apperror.CodeValidationError)
+			}
+		})
+	}
+}
+
+// TestResetPassword_ValidationError_MatchesSpecEnvelope verifies the full JSON
+// envelope structure for reset-password validation errors.
+func TestResetPassword_ValidationError_MatchesSpecEnvelope(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	// All fields invalid.
+	body := `{"email":"","otp":"","new_password":""}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/reset-password", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ResetPassword(rec, req)
+
+	assertValidationEnvelope(t, rec, []string{"email", "otp", "new_password"})
+}
+
+// TestResetPassword_MissingAllFields_ReturnsAllFieldErrors verifies that when
+// all fields are missing, the per-field details include errors for all three.
+func TestResetPassword_MissingAllFields_ReturnsAllFieldErrors(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/reset-password", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ResetPassword(rec, req)
+
+	assertValidationEnvelope(t, rec, []string{"email", "otp", "new_password"})
+}
+
+// ---------- MaxBytesError – body too large tests ----------
+
+// TestRegister_OversizedBody_ReturnsBodyTooLarge verifies that a request body
+// exceeding MaxBytesReader's limit returns 422 with the "Request body too
+// large" message rather than the generic "Invalid request body".
+//
+// In production, MaxBytesReader is applied by middleware in server.go before
+// the handler runs. This test wraps the body manually to exercise the
+// decodeJSONBody branch that distinguishes MaxBytesError from other decode
+// failures.
+func TestRegister_OversizedBody_ReturnsBodyTooLarge(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	// Build a valid-looking JSON payload that exceeds the byte limit.
+	bigBody := `{"email":"` + strings.Repeat("a", 256) + `@example.com","password":"test"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", strings.NewReader(bigBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	req.Body = http.MaxBytesReader(rec, req.Body, 10) // 10-byte limit
+
+	h.Register(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
+
+	var resp apperror.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error.Code != apperror.CodeValidationError {
+		t.Errorf("code = %q, want %q", resp.Error.Code, apperror.CodeValidationError)
+	}
+	if resp.Error.Message != "Request body too large" {
+		t.Errorf("message = %q, want %q", resp.Error.Message, "Request body too large")
+	}
+}

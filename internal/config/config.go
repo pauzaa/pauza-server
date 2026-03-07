@@ -86,9 +86,12 @@ func (c *Config) validate() error {
 		return fmt.Errorf("JWT_REFRESH_TOKEN_TTL must be positive, got %s", c.JWTRefreshTokenTTL)
 	}
 
-	// Admin seed password length
+	// Admin seed password length and bcrypt limit
 	if len(c.AdminSeedPassword) < minAdminSeedPasswordLen {
 		return fmt.Errorf("ADMIN_SEED_PASSWORD must be at least %d characters", minAdminSeedPasswordLen)
+	}
+	if len(c.AdminSeedPassword) > 72 {
+		return fmt.Errorf("ADMIN_SEED_PASSWORD must not exceed 72 bytes (bcrypt limit)")
 	}
 
 	// Student verification provider

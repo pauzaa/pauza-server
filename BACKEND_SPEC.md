@@ -142,6 +142,7 @@ Client                          Server
 - Refresh tokens are stored as **hashed values** (SHA-256) in the database.
 - On each refresh, the old token is revoked and a new pair is issued (token rotation).
 - If a revoked refresh token is reused, **all refresh tokens for that user are revoked** (indicates token theft).
+- Refresh-token rows will grow over time; cleanup is a later operational concern. A periodic cleanup job should eventually delete expired and long-revoked rows.
 
 ### 2.4 Password Reset Flow
 

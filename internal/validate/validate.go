@@ -35,6 +35,11 @@ func Email(v string) string {
 	return ""
 }
 
+// maxPasswordBytes is the maximum input length bcrypt will process.
+// Passwords longer than this are rejected at the validation layer so callers
+// get a clean 422 instead of an internal bcrypt error.
+const maxPasswordBytes = 72
+
 // Password validates a password.
 // Returns "" when valid, otherwise a human-readable error message.
 func Password(v string) string {
@@ -43,6 +48,9 @@ func Password(v string) string {
 	}
 	if utf8.RuneCountInString(v) < 8 {
 		return "password must be at least 8 characters"
+	}
+	if len(v) > maxPasswordBytes {
+		return "password must not exceed 72 bytes"
 	}
 	return ""
 }
