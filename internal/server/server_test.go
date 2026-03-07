@@ -38,7 +38,8 @@ func testLogger() *slog.Logger {
 }
 
 func TestNew_HealthEndpoint(t *testing.T) {
-	srv := New(testConfig(), testLogger(), nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil)
+	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -69,7 +70,8 @@ func TestNew_HealthEndpoint(t *testing.T) {
 }
 
 func TestNew_NotFoundRoute(t *testing.T) {
-	srv := New(testConfig(), testLogger(), nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil)
+	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/nonexistent", nil)
 	rec := httptest.NewRecorder()
@@ -82,7 +84,8 @@ func TestNew_NotFoundRoute(t *testing.T) {
 }
 
 func TestNew_HealthMethodNotAllowed(t *testing.T) {
-	srv := New(testConfig(), testLogger(), nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil)
+	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodPost, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -95,7 +98,8 @@ func TestNew_HealthMethodNotAllowed(t *testing.T) {
 }
 
 func TestNew_RequestIDHeader(t *testing.T) {
-	srv := New(testConfig(), testLogger(), nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil)
+	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -109,7 +113,8 @@ func TestNew_RequestIDHeader(t *testing.T) {
 }
 
 func TestNew_RequestIDEchoesClientValue(t *testing.T) {
-	srv := New(testConfig(), testLogger(), nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil)
+	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	req.Header.Set("X-Request-Id", "test-client-id-123")
@@ -127,7 +132,8 @@ func TestNew_ServerAddr(t *testing.T) {
 	cfg := testConfig()
 	cfg.Port = 9090
 
-	srv := New(cfg, testLogger(), nil)
+	srv, cleanup := New(cfg, testLogger(), nil)
+	defer cleanup()
 
 	if srv.Addr != ":9090" {
 		t.Errorf("expected addr ':9090', got: %q", srv.Addr)
@@ -277,7 +283,8 @@ func TestNew_AuthRoutesExist(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := New(testConfig(), testLogger(), nil)
+			srv, cleanup := New(testConfig(), testLogger(), nil)
+			defer cleanup()
 
 			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
 			req.Header.Set("Content-Type", "application/json")
@@ -293,7 +300,8 @@ func TestNew_AuthRoutesExist(t *testing.T) {
 }
 
 func TestNew_ProtectedRouteUnauthorized(t *testing.T) {
-	srv := New(testConfig(), testLogger(), nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil)
+	defer cleanup()
 
 	// GET /api/v1/me is a protected route. Without an Authorization header,
 	// the JWT middleware must reject the request with 401.

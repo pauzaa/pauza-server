@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/smtp"
 	"strings"
+
+	"github.com/IsorilovA/pauza-server/internal/redact"
 )
 
 // SMTPSender sends emails via an SMTP server.
@@ -70,7 +72,7 @@ func containsCRLF(s string) bool {
 // so already-cancelled callers fail fast.
 func (s *SMTPSender) SendOTP(ctx context.Context, to, otp, purpose string) error {
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("sending otp email to %s: %w", to, err)
+		return fmt.Errorf("sending otp email: %w", err)
 	}
 
 	if to == "" || otp == "" || purpose == "" {
@@ -86,7 +88,7 @@ func (s *SMTPSender) SendOTP(ctx context.Context, to, otp, purpose string) error
 		return fmt.Errorf("sending otp email: unknown purpose %q", purpose)
 	}
 
-	s.logger.InfoContext(ctx, "sending otp email", "to", to, "purpose", purpose)
+	s.logger.InfoContext(ctx, "sending otp email", "to", redact.Email(to), "purpose", purpose)
 
 	body := fmt.Sprintf(
 		"Your Pauza verification code is: %s\r\n\r\n"+
@@ -102,7 +104,10 @@ func (s *SMTPSender) SendOTP(ctx context.Context, to, otp, purpose string) error
 	smtpAuth := smtp.PlainAuth("", s.username, s.password, s.host)
 
 	if err := smtp.SendMail(addr, smtpAuth, s.from, []string{to}, []byte(msg)); err != nil {
-		return fmt.Errorf("sending otp email to %s: %w", to, err)
+		// Deliberately use %s (not %w) to prevent callers from using
+		// errors.Is / errors.As to match or unwrap the original SMTP
+		// error, which may embed the raw recipient address.
+		return fmt.Errorf("sending otp email: %s", redact.SanitizeEmail(err.Error()))
 	}
 
 	return nil

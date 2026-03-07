@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -104,11 +105,11 @@ func testDatabaseURL(t *testing.T) string {
 	return url
 }
 
-// setupTestServer resets the test database, applies migrations, and returns
-// an httptest.Server backed by the full chi router, the underlying
-// pgxpool.Pool for direct DB access, and the capture sender so tests can
-// retrieve OTPs.
-func setupTestServer(t *testing.T) (*httptest.Server, *pgxpool.Pool, *captureSender) {
+// setupTestServerWithMailer resets the test database, applies migrations, and
+// returns an httptest.Server backed by the full chi router and the underlying
+// pgxpool.Pool for direct DB access. The caller provides the mail.EmailSender
+// implementation, which allows tests to inject controllable or failing senders.
+func setupTestServerWithMailer(t *testing.T, mailer mail.EmailSender) (*httptest.Server, *pgxpool.Pool) {
 	t.Helper()
 
 	dbURL := testDatabaseURL(t)
@@ -134,7 +135,6 @@ func setupTestServer(t *testing.T) (*httptest.Server, *pgxpool.Pool, *captureSen
 		t.Fatalf("applying migrations: %v", err)
 	}
 
-	mailer := &captureSender{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	// Build a chi router that mirrors the production route tree in
@@ -190,6 +190,17 @@ func setupTestServer(t *testing.T) (*httptest.Server, *pgxpool.Pool, *captureSen
 		pool.Close()
 	})
 
+	return ts, pool
+}
+
+// setupTestServer resets the test database, applies migrations, and returns
+// an httptest.Server backed by the full chi router, the underlying
+// pgxpool.Pool for direct DB access, and the capture sender so tests can
+// retrieve OTPs.
+func setupTestServer(t *testing.T) (*httptest.Server, *pgxpool.Pool, *captureSender) {
+	t.Helper()
+	mailer := &captureSender{}
+	ts, pool := setupTestServerWithMailer(t, mailer)
 	return ts, pool, mailer
 }
 
@@ -715,6 +726,134 @@ func TestIntegration_RefreshRevokedTokenRevokesAll(t *testing.T) {
 	discardBody(t, resp)
 }
 
+// TestIntegration_ConcurrentRefreshSameToken verifies that when multiple
+// goroutines attempt to refresh using the same token concurrently, exactly one
+// succeeds (200) and the rest fail (401). The winning new refresh token must
+// remain usable afterward.
+func TestIntegration_ConcurrentRefreshSameToken(t *testing.T) {
+	ts, _, mailer := setupTestServer(t)
+
+	const email = "concurrent-refresh@example.com"
+	const password = "StrongPass123!"
+	const concurrency = 5
+
+	// Register and verify to obtain an initial refresh token.
+	verifyResp := registerAndVerify(t, ts.URL, mailer, email, password)
+	originalRefreshToken := verifyResp.RefreshToken
+
+	// Launch N goroutines that all try to refresh with the same token,
+	// synchronized by a sync.WaitGroup acting as a start gate.
+	type result struct {
+		status  int
+		body    refreshResponse
+		rawBody string // captured on 200 for diagnostics if decode fails
+	}
+	results := make([]result, concurrency)
+
+	var ready sync.WaitGroup
+	ready.Add(concurrency)
+	var start sync.WaitGroup
+	start.Add(1)
+	var done sync.WaitGroup
+	done.Add(concurrency)
+
+	for i := range concurrency {
+		go func(idx int) {
+			defer done.Done()
+
+			// Marshal the request body before waiting so only the HTTP
+			// call itself is synchronized.
+			bodyBytes, err := json.Marshal(map[string]string{
+				"refresh_token": originalRefreshToken,
+			})
+			if err != nil {
+				t.Errorf("goroutine %d: marshal: %v", idx, err)
+				ready.Done()
+				return
+			}
+
+			ready.Done()
+			start.Wait() // all goroutines fire at once
+
+			resp, err := http.Post(
+				ts.URL+"/api/v1/auth/refresh",
+				"application/json",
+				bytes.NewReader(bodyBytes),
+			)
+			if err != nil {
+				t.Errorf("goroutine %d: POST: %v", idx, err)
+				return
+			}
+			defer resp.Body.Close()
+
+			results[idx].status = resp.StatusCode
+			if resp.StatusCode == http.StatusOK {
+				raw, readErr := io.ReadAll(resp.Body)
+				if readErr != nil {
+					t.Errorf("goroutine %d: reading 200 body: %v", idx, readErr)
+					return
+				}
+				results[idx].rawBody = string(raw)
+				if decErr := json.Unmarshal(raw, &results[idx].body); decErr != nil {
+					t.Errorf("goroutine %d: malformed JSON in 200 response: %v\nbody: %s", idx, decErr, raw)
+				}
+			} else {
+				if _, discardErr := io.Copy(io.Discard, resp.Body); discardErr != nil {
+					t.Errorf("goroutine %d: draining non-200 body: %v", idx, discardErr)
+				}
+			}
+		}(i)
+	}
+
+	ready.Wait() // wait for all goroutines to be ready
+	start.Done() // release them all at once
+	done.Wait()  // wait for all to finish
+
+	// Count successes and failures. Every non-winning request must be 401;
+	// a 500 would indicate a serialization bug in the handler and should
+	// not be silently accepted.
+	successCount := 0
+	winnerIdx := -1
+	for i, r := range results {
+		switch r.status {
+		case http.StatusOK:
+			successCount++
+			winnerIdx = i
+		case http.StatusUnauthorized:
+			// expected for losers
+		default:
+			t.Errorf("goroutine %d: unexpected status %d (want 200 or 401)", i, r.status)
+		}
+	}
+
+	if successCount != 1 {
+		for i, r := range results {
+			t.Logf("  goroutine %d: status=%d", i, r.status)
+		}
+		t.Fatalf("expected exactly 1 success, got %d", successCount)
+	}
+
+	// The winner must have received valid tokens.
+	winner := results[winnerIdx]
+	if winner.body.AccessToken == "" {
+		t.Errorf("winning response has empty access_token (raw body: %s)", winner.rawBody)
+	}
+	winningToken := winner.body.RefreshToken
+	if winningToken == "" {
+		t.Fatalf("winning response has empty refresh_token (raw body: %s)", winner.rawBody)
+	}
+
+	// The winning new refresh token should still be usable.
+	resp := postJSON(t, ts.URL+"/api/v1/auth/refresh", map[string]string{
+		"refresh_token": winningToken,
+	})
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("refresh with winning token: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	discardBody(t, resp)
+}
+
 // TestIntegration_ForgotPasswordNonExistentEmail verifies that forgot-password
 // with a non-existent email returns 200 (anti-enumeration).
 func TestIntegration_ForgotPasswordNonExistentEmail(t *testing.T) {
@@ -806,11 +945,20 @@ func TestIntegration_VerifyOTPExpired(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Look up the user_id for the registered email.
+	var userID string
+	err := pool.QueryRow(ctx,
+		`SELECT id FROM users WHERE lower(email) = $1`, email,
+	).Scan(&userID)
+	if err != nil {
+		t.Fatalf("looking up user_id: %v", err)
+	}
+
 	// Set the OTP's expires_at to the past.
 	tag, err := pool.Exec(ctx,
 		`UPDATE otp_codes SET expires_at = now() - interval '1 hour'
-		 WHERE user_email = $1 AND purpose = 'email_verification'`,
-		email,
+		 WHERE user_id = $1 AND purpose = 'email_verification'`,
+		userID,
 	)
 	if err != nil {
 		t.Fatalf("expiring OTP: %v", err)
@@ -831,5 +979,603 @@ func TestIntegration_VerifyOTPExpired(t *testing.T) {
 	decodeJSON(t, resp, &errResp)
 	if errResp.Error.Code != apperror.CodeUnauthorized {
 		t.Errorf("expected code %q, got %q", apperror.CodeUnauthorized, errResp.Error.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Concurrent registration race tests
+// ---------------------------------------------------------------------------
+
+// TestIntegration_ConcurrentRegistrationSameEmail fires N concurrent
+// registration requests for the same email and verifies the post-race state:
+//   - Exactly one user row exists for the email.
+//   - Exactly one active (unused, non-expired) email_verification OTP row
+//     exists for that user.
+//   - The surviving OTP can be successfully verified end-to-end.
+//
+// This test exercises the FOR UPDATE row locking in the Register handler that
+// prevents concurrent registrations from duplicating user rows or leaving
+// orphaned OTP records.
+func TestIntegration_ConcurrentRegistrationSameEmail(t *testing.T) {
+	ts, pool, mailer := setupTestServer(t)
+
+	const email = "concurrent-reg@example.com"
+	const password = "StrongPass123!"
+	const concurrency = 8
+
+	// Use a barrier so all goroutines fire their HTTP POST at (roughly) the
+	// same instant.
+	type result struct {
+		status int
+		err    error
+	}
+	results := make([]result, concurrency)
+
+	var ready sync.WaitGroup
+	ready.Add(concurrency)
+	var start sync.WaitGroup
+	start.Add(1)
+	var done sync.WaitGroup
+	done.Add(concurrency)
+
+	for i := range concurrency {
+		go func(idx int) {
+			defer done.Done()
+
+			bodyBytes, marshalErr := json.Marshal(map[string]string{
+				"email": email, "password": password,
+			})
+			if marshalErr != nil {
+				results[idx].err = fmt.Errorf("marshal: %w", marshalErr)
+				ready.Done()
+				return
+			}
+
+			ready.Done()
+			start.Wait() // all goroutines fire at once
+
+			resp, postErr := http.Post(
+				ts.URL+"/api/v1/auth/register",
+				"application/json",
+				bytes.NewReader(bodyBytes),
+			)
+			if postErr != nil {
+				results[idx].err = fmt.Errorf("POST register: %w", postErr)
+				return
+			}
+			results[idx].status = resp.StatusCode
+			if _, discardErr := io.Copy(io.Discard, resp.Body); discardErr != nil {
+				t.Errorf("goroutine %d: draining body: %v", idx, discardErr)
+			}
+			resp.Body.Close()
+		}(i)
+	}
+
+	ready.Wait() // wait for all goroutines to be ready
+	start.Done() // release them all at once
+	done.Wait()  // wait for all to finish
+
+	// Tally results. Every request must return one of the two expected
+	// outcomes:
+	//   200 — this goroutine won (or serialised after cleaning up the
+	//         previous unverified user).
+	//   409 — another goroutine already committed a user with this email
+	//         and that user is verified, or the concurrent insert hit
+	//         the unique constraint.
+	// Any other status (especially 500) indicates a bug in the handler's
+	// serialisation logic and must fail the test loudly.
+	successCount := 0
+	for i, r := range results {
+		if r.err != nil {
+			t.Errorf("goroutine %d: %v", i, r.err)
+			continue
+		}
+		switch r.status {
+		case http.StatusOK:
+			successCount++
+		case http.StatusConflict:
+			// Expected loser: another goroutine already owns the email.
+		default:
+			t.Errorf("goroutine %d: unexpected status %d; only 200 (OK) and 409 (Conflict) are valid outcomes for concurrent registration", i, r.status)
+		}
+	}
+
+	if successCount == 0 {
+		for i, r := range results {
+			t.Logf("  goroutine %d: status=%d err=%v", i, r.status, r.err)
+		}
+		t.Fatal("expected at least one successful (200) registration, got none")
+	}
+
+	// --- Verify post-race database state ---
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Exactly one user row must exist for this email.
+	var userCount int
+	err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM users WHERE lower(email) = $1", email,
+	).Scan(&userCount)
+	if err != nil {
+		t.Fatalf("counting user rows: %v", err)
+	}
+	if userCount != 1 {
+		t.Fatalf("expected exactly 1 user row for %q, got %d", email, userCount)
+	}
+
+	// The surviving user must be unverified (no OTP verified yet).
+	var survivingUserID string
+	var emailVerified bool
+	err = pool.QueryRow(ctx,
+		"SELECT id, email_verified FROM users WHERE lower(email) = $1", email,
+	).Scan(&survivingUserID, &emailVerified)
+	if err != nil {
+		t.Fatalf("querying surviving user: %v", err)
+	}
+	if emailVerified {
+		t.Fatal("surviving user should be unverified before OTP verification")
+	}
+
+	// Exactly one active (unused, non-expired) email_verification OTP must
+	// exist for the surviving user.
+	var otpCount int
+	err = pool.QueryRow(ctx,
+		`SELECT count(*) FROM otp_codes
+		 WHERE user_id = $1
+		   AND purpose = 'email_verification'
+		   AND used = false
+		   AND expires_at > now()`,
+		survivingUserID,
+	).Scan(&otpCount)
+	if err != nil {
+		t.Fatalf("counting active OTP rows: %v", err)
+	}
+	if otpCount != 1 {
+		t.Fatalf("expected exactly 1 active OTP for surviving user, got %d", otpCount)
+	}
+
+	// No orphaned OTP rows should reference non-existent users.
+	var orphanedOTPCount int
+	err = pool.QueryRow(ctx,
+		`SELECT count(*) FROM otp_codes oc
+		 WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = oc.user_id)`,
+	).Scan(&orphanedOTPCount)
+	if err != nil {
+		t.Fatalf("counting orphaned OTP rows: %v", err)
+	}
+	if orphanedOTPCount != 0 {
+		t.Errorf("found %d orphaned OTP rows referencing non-existent users", orphanedOTPCount)
+	}
+
+	// Retrieve the last OTP captured by the mailer and verify it end-to-end.
+	otp, err := mailer.lastOTP(email, mail.PurposeEmailVerification)
+	if err != nil {
+		t.Fatalf("no OTP captured for %s: %v", email, err)
+	}
+
+	resp := postJSON(t, ts.URL+"/api/v1/auth/verify-otp", map[string]string{
+		"email": email, "otp": otp,
+	})
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("verify-otp: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	var ar authResponse
+	decodeJSON(t, resp, &ar)
+	if ar.AccessToken == "" {
+		t.Error("verify-otp: expected non-empty access_token")
+	}
+	if ar.User.Email != email {
+		t.Errorf("verify-otp: expected email %q, got %q", email, ar.User.Email)
+	}
+
+	// After verification, the user should be verified and the surviving user ID
+	// should be the one in the auth response.
+	if ar.User.ID != survivingUserID {
+		t.Errorf("verify-otp: returned user ID %q does not match surviving user %q", ar.User.ID, survivingUserID)
+	}
+}
+
+// TestIntegration_ConcurrentReRegistrationLifecycle exercises the full lifecycle
+// of concurrent re-registration followed by verification and login. The scenario
+// is:
+//  1. Register email A (first registration, unverified).
+//  2. Fire N concurrent re-registrations for the same email.
+//  3. Verify that after the race the surviving user can verify OTP, login, and
+//     use the refresh token — proving the full auth lifecycle is intact.
+//
+// This is more end-to-end than TestIntegration_ConcurrentRegistrationSameEmail
+// because it starts from an existing unverified user (the common re-registration
+// case) and verifies the full post-verification lifecycle, not just DB state.
+func TestIntegration_ConcurrentReRegistrationLifecycle(t *testing.T) {
+	ts, pool, mailer := setupTestServer(t)
+
+	const email = "concurrent-rereg@example.com"
+	const password = "StrongPass123!"
+	const concurrency = 5
+
+	// Step 1: Create an initial unverified registration (we never verify it).
+	resp := postJSON(t, ts.URL+"/api/v1/auth/register", map[string]string{
+		"email": email, "password": password,
+	})
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("initial register: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	discardBody(t, resp)
+
+	// Step 2: Fire N concurrent re-registrations that all see the stale
+	// unverified user and race to clean it up.
+	type result struct {
+		status int
+		err    error
+	}
+	results := make([]result, concurrency)
+
+	var ready sync.WaitGroup
+	ready.Add(concurrency)
+	var start sync.WaitGroup
+	start.Add(1)
+	var done sync.WaitGroup
+	done.Add(concurrency)
+
+	for i := range concurrency {
+		go func(idx int) {
+			defer done.Done()
+
+			bodyBytes, marshalErr := json.Marshal(map[string]string{
+				"email": email, "password": password,
+			})
+			if marshalErr != nil {
+				results[idx].err = fmt.Errorf("marshal: %w", marshalErr)
+				ready.Done()
+				return
+			}
+
+			ready.Done()
+			start.Wait()
+
+			r, postErr := http.Post(
+				ts.URL+"/api/v1/auth/register",
+				"application/json",
+				bytes.NewReader(bodyBytes),
+			)
+			if postErr != nil {
+				results[idx].err = fmt.Errorf("POST register: %w", postErr)
+				return
+			}
+			results[idx].status = r.StatusCode
+			if _, discardErr := io.Copy(io.Discard, r.Body); discardErr != nil {
+				t.Errorf("goroutine %d: draining body: %v", idx, discardErr)
+			}
+			r.Body.Close()
+		}(i)
+	}
+
+	ready.Wait()
+	start.Done()
+	done.Wait()
+
+	// At least one re-registration must have succeeded.
+	successCount := 0
+	for i, r := range results {
+		if r.err != nil {
+			t.Errorf("goroutine %d: %v", i, r.err)
+			continue
+		}
+		if r.status == http.StatusOK {
+			successCount++
+		}
+	}
+	if successCount == 0 {
+		for i, r := range results {
+			t.Logf("  goroutine %d: status=%d err=%v", i, r.status, r.err)
+		}
+		t.Fatal("expected at least one successful re-registration")
+	}
+
+	// --- Verify post-race database state ---
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Exactly one user row for this email.
+	var userCount int
+	err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM users WHERE lower(email) = $1", email,
+	).Scan(&userCount)
+	if err != nil {
+		t.Fatalf("counting user rows: %v", err)
+	}
+	if userCount != 1 {
+		t.Fatalf("expected 1 user row, got %d", userCount)
+	}
+
+	// Step 3: Verify the surviving user's OTP.
+	otp, err := mailer.lastOTP(email, mail.PurposeEmailVerification)
+	if err != nil {
+		t.Fatalf("no OTP captured: %v", err)
+	}
+
+	resp = postJSON(t, ts.URL+"/api/v1/auth/verify-otp", map[string]string{
+		"email": email, "otp": otp,
+	})
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("verify-otp: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	var verifyResp authResponse
+	decodeJSON(t, resp, &verifyResp)
+	if verifyResp.AccessToken == "" {
+		t.Error("verify-otp: expected non-empty access_token")
+	}
+	if verifyResp.RefreshToken == "" {
+		t.Error("verify-otp: expected non-empty refresh_token")
+	}
+
+	// Step 4: Login should work with the password.
+	resp = postJSON(t, ts.URL+"/api/v1/auth/login", map[string]string{
+		"email": email, "password": password,
+	})
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("login: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	var loginResp authResponse
+	decodeJSON(t, resp, &loginResp)
+	if loginResp.AccessToken == "" {
+		t.Error("login: expected non-empty access_token")
+	}
+
+	// Step 5: Refresh token from verification should still work.
+	resp = postJSON(t, ts.URL+"/api/v1/auth/refresh", map[string]string{
+		"refresh_token": verifyResp.RefreshToken,
+	})
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("refresh: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	discardBody(t, resp)
+
+	// Step 6: Verify the user is marked as verified in the database.
+	var emailVerified bool
+	err = pool.QueryRow(ctx,
+		"SELECT email_verified FROM users WHERE lower(email) = $1", email,
+	).Scan(&emailVerified)
+	if err != nil {
+		t.Fatalf("querying email_verified: %v", err)
+	}
+	if !emailVerified {
+		t.Error("expected email_verified = true after OTP verification")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SMTP-failure cleanup race test
+// ---------------------------------------------------------------------------
+
+// smtpRaceSender is a mail.EmailSender that allows deterministic simulation
+// of the SMTP-failure cleanup race condition. The first SendOTP call blocks
+// until the gate channel is closed (simulating a slow/failing SMTP server),
+// then returns errSMTP. The second and subsequent calls succeed immediately
+// and record the OTP so the test can retrieve it for verification.
+type smtpRaceSender struct {
+	mu   sync.Mutex
+	call int           // incremented on each SendOTP invocation
+	gate chan struct{} // closed by the test to unblock the first call
+	otps []capturedOTP // OTPs captured by successful calls
+	err  error         // error to return from the first call
+}
+
+// Compile-time interface check.
+var _ mail.EmailSender = (*smtpRaceSender)(nil)
+
+func (s *smtpRaceSender) SendOTP(ctx context.Context, to, otp, purpose string) error {
+	s.mu.Lock()
+	// Snapshot the current call index before releasing the lock so the
+	// first-call check below is race-free even when multiple goroutines
+	// enter SendOTP concurrently.
+	n := s.call
+	s.call++
+	s.mu.Unlock()
+
+	if n == 0 {
+		// First call: block until the gate is released or the context is
+		// cancelled, whichever comes first. Honouring ctx.Done() prevents
+		// an indefinite hang if the test tears down early.
+		select {
+		case <-s.gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return s.err
+	}
+
+	// Subsequent calls: succeed and record the OTP.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.otps = append(s.otps, capturedOTP{To: to, OTP: otp, Purpose: purpose})
+	return nil
+}
+
+// lastOTP returns the most recently captured OTP for the given email and
+// purpose from a successful send, or an error if none was found.
+func (s *smtpRaceSender) lastOTP(email, purpose string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.otps) - 1; i >= 0; i-- {
+		c := s.otps[i]
+		if c.To == email && c.Purpose == purpose {
+			return c.OTP, nil
+		}
+	}
+	return "", fmt.Errorf("no OTP found for %s / %s", email, purpose)
+}
+
+// TestIntegration_RegisterSMTPFailureCleanupRace proves that when an earlier
+// registration's SMTP send fails, the ID-scoped cleanup does not accidentally
+// remove a newer concurrent registration for the same email.
+//
+// Timeline:
+//  1. Registration A commits user_A + otp_A to DB, then blocks on SendOTP.
+//  2. Registration B arrives for the same email while A is blocked.
+//     B cleans up the stale unverified user_A, inserts user_B + otp_B,
+//     commits, and its SendOTP succeeds.
+//  3. Registration A's SendOTP unblocks and returns an error.
+//     A's cleanup deletes by user_A's ID and otp_A's ID — both already gone.
+//  4. user_B and otp_B survive; the test verifies OTP for B.
+func TestIntegration_RegisterSMTPFailureCleanupRace(t *testing.T) {
+	sender := &smtpRaceSender{
+		gate: make(chan struct{}),
+		err:  errors.New("simulated SMTP failure"),
+	}
+	ts, pool := setupTestServerWithMailer(t, sender)
+
+	const email = "smtp-race@example.com"
+	const password = "StrongPass123!"
+
+	// Launch Registration A in a goroutine. It will block inside SendOTP
+	// until we close sender.gate.
+	//
+	// We intentionally avoid calling helpers like postJSON here because they
+	// use t.Fatalf, which panics when called from a non-test goroutine.
+	// Instead we do the HTTP work inline and report errors back via regAErr.
+	var regAStatus int
+	var regAErr error
+	var regADone sync.WaitGroup
+	regADone.Add(1)
+	go func() {
+		defer regADone.Done()
+		body, marshalErr := json.Marshal(map[string]string{
+			"email": email, "password": password,
+		})
+		if marshalErr != nil {
+			regAErr = fmt.Errorf("marshal: %w", marshalErr)
+			return
+		}
+		resp, postErr := http.Post(
+			ts.URL+"/api/v1/auth/register",
+			"application/json",
+			bytes.NewReader(body),
+		)
+		if postErr != nil {
+			regAErr = fmt.Errorf("POST register: %w", postErr)
+			return
+		}
+		regAStatus = resp.StatusCode
+		if _, discardErr := io.Copy(io.Discard, resp.Body); discardErr != nil {
+			regAErr = fmt.Errorf("draining body: %w", discardErr)
+		}
+		resp.Body.Close()
+	}()
+
+	// Wait for Registration A to have committed its DB rows and entered
+	// SendOTP (call count increments at the top of SendOTP, before blocking).
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	for {
+		sender.mu.Lock()
+		n := sender.call
+		sender.mu.Unlock()
+		if n >= 1 {
+			break
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("timed out waiting for Registration A to enter SendOTP")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// Registration B: same email. This should clean up A's stale unverified
+	// user, create a new user+OTP, and succeed (second SendOTP call succeeds).
+	respB := postJSON(t, ts.URL+"/api/v1/auth/register", map[string]string{
+		"email": email, "password": password,
+	})
+	if respB.StatusCode != http.StatusOK {
+		body := readBody(t, respB)
+		t.Fatalf("Registration B: expected 200, got %d: %s", respB.StatusCode, body)
+	}
+	discardBody(t, respB)
+
+	// Now unblock Registration A's SendOTP so it fails and runs cleanup.
+	close(sender.gate)
+	regADone.Wait()
+
+	if regAErr != nil {
+		t.Fatalf("Registration A goroutine failed: %v", regAErr)
+	}
+
+	// Registration A should have returned 500 (SMTP failure → internal error).
+	if regAStatus != http.StatusInternalServerError {
+		t.Errorf("Registration A: expected 500, got %d", regAStatus)
+	}
+
+	// --- Verify that Registration B's user survived ---
+
+	// The user row for this email must exist and be unverified (not yet OTP-confirmed).
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var emailVerified bool
+	err := pool.QueryRow(ctx,
+		"SELECT email_verified FROM users WHERE lower(email) = $1", email,
+	).Scan(&emailVerified)
+	if err != nil {
+		t.Fatalf("querying user after race: %v", err)
+	}
+	if emailVerified {
+		t.Fatal("user should be unverified before OTP verification")
+	}
+
+	// Look up the surviving user's ID for OTP assertions.
+	var survivingUserID string
+	err = pool.QueryRow(ctx,
+		"SELECT id FROM users WHERE lower(email) = $1", email,
+	).Scan(&survivingUserID)
+	if err != nil {
+		t.Fatalf("looking up surviving user_id: %v", err)
+	}
+
+	// Exactly one active (unused, non-expired) email_verification OTP must
+	// exist for Registration B's user. Registration A's cleanup targets its
+	// own otpID, so B's OTP must survive untouched.
+	var otpCount int
+	err = pool.QueryRow(ctx,
+		`SELECT count(*) FROM otp_codes
+		 WHERE user_id = $1
+		   AND purpose = 'email_verification'
+		   AND used = false
+		   AND expires_at > now()`,
+		survivingUserID,
+	).Scan(&otpCount)
+	if err != nil {
+		t.Fatalf("counting OTP rows after race: %v", err)
+	}
+	if otpCount != 1 {
+		t.Fatalf("expected exactly 1 active OTP row for Registration B's user, got %d", otpCount)
+	}
+
+	// Retrieve the OTP captured by B's successful send and verify it.
+	otp, err := sender.lastOTP(email, mail.PurposeEmailVerification)
+	if err != nil {
+		t.Fatalf("no OTP captured for Registration B: %v", err)
+	}
+
+	verifyResp := postJSON(t, ts.URL+"/api/v1/auth/verify-otp", map[string]string{
+		"email": email, "otp": otp,
+	})
+	if verifyResp.StatusCode != http.StatusOK {
+		body := readBody(t, verifyResp)
+		t.Fatalf("verify-otp for Registration B: expected 200, got %d: %s", verifyResp.StatusCode, body)
+	}
+	var ar authResponse
+	decodeJSON(t, verifyResp, &ar)
+	if ar.AccessToken == "" {
+		t.Error("verify-otp: expected non-empty access_token")
+	}
+	if ar.User.Email != email {
+		t.Errorf("verify-otp: expected email %q, got %q", email, ar.User.Email)
 	}
 }

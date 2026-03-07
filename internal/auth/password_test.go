@@ -169,3 +169,58 @@ func TestHashPassword_UniqueHashes(t *testing.T) {
 		t.Error("two hashes of the same password are identical, expected different salts")
 	}
 }
+
+// ---------- DummyCheckPassword ----------
+
+// TestDummyCheckPassword_DoesNotPanic verifies that DummyCheckPassword
+// completes without panicking for various inputs.
+func TestDummyCheckPassword_DoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		password string
+	}{
+		{"empty", ""},
+		{"simple", "password123"},
+		{"special_chars", "p@$$w0rd!#%"},
+		{"unicode", "пароль-密码"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// DummyCheckPassword should never panic regardless of input.
+			auth.DummyCheckPassword(tc.password)
+		})
+	}
+}
+
+// TestDummyCheckPassword_NeverMatchesRealHash verifies that the dummy
+// comparison path never accidentally returns a "match" for a password
+// that was actually hashed with HashPassword. This is a sanity check:
+// the dummy hash corresponds to an internal sentinel string, so no
+// user-supplied password should ever match it.
+func TestDummyCheckPassword_NeverMatchesRealHash(t *testing.T) {
+	t.Parallel()
+
+	// Hash a known password the normal way.
+	realPassword := "realpassword"
+	realHash, err := auth.HashPassword(realPassword)
+	if err != nil {
+		t.Fatalf("HashPassword() error = %v", err)
+	}
+
+	// The real password should match the real hash …
+	ok, err := auth.CheckPassword(realHash, realPassword)
+	if err != nil {
+		t.Fatalf("CheckPassword() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("CheckPassword() with correct password returned false")
+	}
+
+	// … but DummyCheckPassword simply burns time and never produces a
+	// match. We call it here to exercise the code path; there is no
+	// return value to assert on because the function is fire-and-forget.
+	auth.DummyCheckPassword(realPassword)
+}

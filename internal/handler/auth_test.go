@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/IsorilovA/pauza-server/internal/apperror"
 )
@@ -473,6 +474,34 @@ func TestForgotPassword_ValidationError_MatchesSpecEnvelope(t *testing.T) {
 	assertValidationEnvelope(t, rec, []string{"email"})
 }
 
+// TestForgotPassword_ValidationPath_NotDelayed verifies that validation
+// failures in ForgotPassword return immediately, without waiting for the
+// timing normalization floor that protects account-specific code paths.
+func TestForgotPassword_ValidationPath_NotDelayed(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{"email":"not-an-email"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/forgot-password", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	start := time.Now()
+	h.ForgotPassword(rec, req)
+	elapsed := time.Since(start)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
+
+	// The validation path should return well before the timing floor.
+	// Using half the floor as the threshold gives a generous margin
+	// without making the assertion timing-sensitive.
+	if elapsed >= forgotPasswordMinDuration/2 {
+		t.Errorf("validation path took %v, expected well under %v", elapsed, forgotPasswordMinDuration)
+	}
+}
+
 // ---------- ResetPassword – validation tests ----------
 
 // TestResetPassword_Validation groups input-validation cases that should all
@@ -551,6 +580,280 @@ func TestResetPassword_MissingAllFields_ReturnsAllFieldErrors(t *testing.T) {
 	h.ResetPassword(rec, req)
 
 	assertValidationEnvelope(t, rec, []string{"email", "otp", "new_password"})
+}
+
+// ---------- Strict JSON decoding – unknown fields ----------
+
+// assertBodyValidationError is a test helper that verifies a 422 response
+// matches the BACKEND_SPEC error envelope with VALIDATION_ERROR code, the
+// "Invalid request body" message, and no per-field details. This is the
+// shape produced by decodeJSONBody when it rejects unknown fields or trailing
+// JSON documents.
+func assertBodyValidationError(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
+
+	ct := rec.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	var resp apperror.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error.Code != apperror.CodeValidationError {
+		t.Errorf("code = %q, want %q", resp.Error.Code, apperror.CodeValidationError)
+	}
+	if resp.Error.Message != "Invalid request body" {
+		t.Errorf("message = %q, want %q", resp.Error.Message, "Invalid request body")
+	}
+}
+
+// TestRegister_UnknownField_Rejected verifies that Register rejects a request
+// containing an unknown JSON field and returns a VALIDATION_ERROR.
+func TestRegister_UnknownField_Rejected(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{"email":"user@example.com","password":"securepass1","unknown":"field"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.Register(rec, req)
+
+	assertBodyValidationError(t, rec)
+}
+
+// TestRegister_TrailingJSON_Rejected verifies that Register rejects a request
+// with a valid JSON object followed by a trailing JSON document.
+func TestRegister_TrailingJSON_Rejected(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{"email":"user@example.com","password":"securepass1"}{"extra":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.Register(rec, req)
+
+	assertBodyValidationError(t, rec)
+}
+
+// TestVerifyOTP_UnknownField_Rejected verifies that VerifyOTP rejects a
+// request containing an unknown JSON field.
+func TestVerifyOTP_UnknownField_Rejected(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{"email":"user@example.com","otp":"123456","extra":"value"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verify-otp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.VerifyOTP(rec, req)
+
+	assertBodyValidationError(t, rec)
+}
+
+// TestVerifyOTP_TrailingJSON_Rejected verifies that VerifyOTP rejects a
+// request with a valid JSON object followed by a trailing JSON document.
+func TestVerifyOTP_TrailingJSON_Rejected(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{"email":"user@example.com","otp":"123456"}{"trailing":1}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verify-otp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.VerifyOTP(rec, req)
+
+	assertBodyValidationError(t, rec)
+}
+
+// TestLogin_UnknownField_Rejected verifies that Login rejects a request
+// containing an unknown JSON field.
+func TestLogin_UnknownField_Rejected(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{"email":"user@example.com","password":"securepass1","remember":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.Login(rec, req)
+
+	assertBodyValidationError(t, rec)
+}
+
+// TestLogin_TrailingJSON_Rejected verifies that Login rejects a request with
+// a valid JSON object followed by a trailing JSON document.
+func TestLogin_TrailingJSON_Rejected(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{"email":"user@example.com","password":"securepass1"}null`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.Login(rec, req)
+
+	assertBodyValidationError(t, rec)
+}
+
+// TestRefresh_UnknownField_Rejected verifies that Refresh rejects a request
+// containing an unknown JSON field.
+func TestRefresh_UnknownField_Rejected(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{"refresh_token":"some-valid-token","device_id":"abc"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.Refresh(rec, req)
+
+	assertBodyValidationError(t, rec)
+}
+
+// TestRefresh_TrailingJSON_Rejected verifies that Refresh rejects a request
+// with a valid JSON object followed by a trailing JSON document.
+func TestRefresh_TrailingJSON_Rejected(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{"refresh_token":"some-valid-token"}[]`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.Refresh(rec, req)
+
+	assertBodyValidationError(t, rec)
+}
+
+// TestForgotPassword_UnknownField_Rejected verifies that ForgotPassword
+// rejects a request containing an unknown JSON field.
+func TestForgotPassword_UnknownField_Rejected(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{"email":"user@example.com","phone":"+1234567890"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/forgot-password", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ForgotPassword(rec, req)
+
+	assertBodyValidationError(t, rec)
+}
+
+// TestForgotPassword_TrailingJSON_Rejected verifies that ForgotPassword
+// rejects a request with a valid JSON object followed by trailing data.
+func TestForgotPassword_TrailingJSON_Rejected(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{"email":"user@example.com"}{"email":"other@example.com"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/forgot-password", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ForgotPassword(rec, req)
+
+	assertBodyValidationError(t, rec)
+}
+
+// TestResetPassword_UnknownField_Rejected verifies that ResetPassword rejects
+// a request containing an unknown JSON field.
+func TestResetPassword_UnknownField_Rejected(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{"email":"user@example.com","otp":"123456","new_password":"securepass1","confirm":"securepass1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/reset-password", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ResetPassword(rec, req)
+
+	assertBodyValidationError(t, rec)
+}
+
+// TestResetPassword_TrailingJSON_Rejected verifies that ResetPassword rejects
+// a request with a valid JSON object followed by trailing data.
+func TestResetPassword_TrailingJSON_Rejected(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{"email":"user@example.com","otp":"123456","new_password":"securepass1"}42`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/reset-password", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ResetPassword(rec, req)
+
+	assertBodyValidationError(t, rec)
+}
+
+// ---------- generateUsername – format and uniqueness ----------
+
+// TestGenerateUsername_Format verifies that generateUsername returns a string
+// with the "user_" prefix followed by exactly 24 lowercase hex characters
+// (12 random bytes = 96 bits of entropy).
+func TestGenerateUsername_Format(t *testing.T) {
+	t.Parallel()
+
+	u, err := generateUsername()
+	if err != nil {
+		t.Fatalf("generateUsername() error: %v", err)
+	}
+
+	// Total length: "user_" (5) + 24 hex chars = 29.
+	if len(u) != 29 {
+		t.Fatalf("len = %d, want 29; got %q", len(u), u)
+	}
+	if !strings.HasPrefix(u, "user_") {
+		t.Errorf("prefix = %q, want %q", u[:5], "user_")
+	}
+
+	// The hex suffix must be exactly 24 lowercase hex characters.
+	hexPart := u[5:]
+	for i, c := range hexPart {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			t.Errorf("hexPart[%d] = %q, not a lowercase hex digit", i, string(c))
+		}
+	}
+}
+
+// TestGenerateUsername_Uniqueness calls generateUsername 100 times and asserts
+// all results are distinct. With 96 bits of entropy the probability of any
+// collision in 100 draws is negligible (~2^-79); a failure here would indicate
+// a broken random source rather than a birthday collision.
+func TestGenerateUsername_Uniqueness(t *testing.T) {
+	t.Parallel()
+
+	const n = 100
+	seen := make(map[string]struct{}, n)
+	for range n {
+		u, err := generateUsername()
+		if err != nil {
+			t.Fatalf("generateUsername() error: %v", err)
+		}
+		if _, dup := seen[u]; dup {
+			t.Fatalf("duplicate username after %d calls: %q", len(seen)+1, u)
+		}
+		seen[u] = struct{}{}
+	}
 }
 
 // ---------- MaxBytesError – body too large tests ----------

@@ -54,7 +54,7 @@ func main() {
 	}
 
 	// 6. Create HTTP server
-	srv := server.New(cfg, logger, pool)
+	srv, cleanup := server.New(cfg, logger, pool)
 
 	// 7. Start server in a goroutine; report fatal errors via channel
 	listenErr := make(chan error, 1)
@@ -88,6 +88,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	cleanup()
 	pool.Close()
 	logger.Info("server stopped")
 

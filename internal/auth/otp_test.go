@@ -51,3 +51,64 @@ func TestGenerateOTP_Uniqueness(t *testing.T) {
 		t.Errorf("GenerateOTP() produced %d unique values out of %d, want at least 90", len(seen), n)
 	}
 }
+
+func TestHashOTP_ReturnsBcryptHash(t *testing.T) {
+	code := "123456"
+	h, err := auth.HashOTP(code)
+	if err != nil {
+		t.Fatalf("HashOTP() error: %v", err)
+	}
+	// bcrypt hashes start with "$2a$" or "$2b$" and are 60 characters long.
+	if len(h) != 60 {
+		t.Errorf("HashOTP() length = %d, want 60 (bcrypt)", len(h))
+	}
+	if h[0] != '$' {
+		t.Errorf("HashOTP() does not look like a bcrypt hash: %q", h)
+	}
+}
+
+func TestHashOTP_DifferentHashesForSameInput(t *testing.T) {
+	code := "123456"
+	h1, err := auth.HashOTP(code)
+	if err != nil {
+		t.Fatalf("HashOTP() first call error: %v", err)
+	}
+	h2, err := auth.HashOTP(code)
+	if err != nil {
+		t.Fatalf("HashOTP() second call error: %v", err)
+	}
+	// bcrypt produces unique salts, so hashes must differ.
+	if h1 == h2 {
+		t.Error("HashOTP() returned identical hashes for same input; expected unique bcrypt salts")
+	}
+}
+
+func TestVerifyOTP_CorrectCode(t *testing.T) {
+	code := "654321"
+	h, err := auth.HashOTP(code)
+	if err != nil {
+		t.Fatalf("HashOTP() error: %v", err)
+	}
+	match, err := auth.VerifyOTP(h, code)
+	if err != nil {
+		t.Fatalf("VerifyOTP() error: %v", err)
+	}
+	if !match {
+		t.Error("VerifyOTP() = false, want true for correct code")
+	}
+}
+
+func TestVerifyOTP_WrongCode(t *testing.T) {
+	code := "123456"
+	h, err := auth.HashOTP(code)
+	if err != nil {
+		t.Fatalf("HashOTP() error: %v", err)
+	}
+	match, err := auth.VerifyOTP(h, "654321")
+	if err != nil {
+		t.Fatalf("VerifyOTP() error: %v", err)
+	}
+	if match {
+		t.Error("VerifyOTP() = true, want false for wrong code")
+	}
+}

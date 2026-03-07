@@ -1,9 +1,13 @@
 package mail
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"strings"
 	"testing"
 )
@@ -241,4 +245,111 @@ func TestSendOTP_HeaderInjectionInPassword(t *testing.T) {
 	if !strings.Contains(err.Error(), "header injection") {
 		t.Errorf("error = %q, want it to contain %q", err, "header injection")
 	}
+}
+
+// fakeSMTPServer starts a TCP listener that speaks just enough SMTP to reach
+// the RCPT TO stage and then rejects the recipient with a 550 error that
+// embeds the raw email address — mimicking real SMTP bounce diagnostics.
+// It returns the listener (caller must close) and the "host:port" address.
+func fakeSMTPServer(t *testing.T, recipientEmail string) (net.Listener, string) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return // listener closed
+		}
+		defer conn.Close()
+
+		w := bufio.NewWriter(conn)
+		r := bufio.NewReader(conn)
+
+		// Greet the client.
+		fmt.Fprintf(w, "220 fake SMTP ready\r\n")
+		w.Flush()
+
+		for {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				return
+			}
+			line = strings.TrimSpace(line)
+
+			switch {
+			case strings.HasPrefix(strings.ToUpper(line), "EHLO"), strings.HasPrefix(strings.ToUpper(line), "HELO"):
+				fmt.Fprintf(w, "250-fake Hello\r\n250 AUTH PLAIN\r\n")
+			case strings.HasPrefix(strings.ToUpper(line), "AUTH"):
+				fmt.Fprintf(w, "235 Authentication succeeded\r\n")
+			case strings.HasPrefix(strings.ToUpper(line), "MAIL FROM"):
+				fmt.Fprintf(w, "250 OK\r\n")
+			case strings.HasPrefix(strings.ToUpper(line), "RCPT TO"):
+				// Reject with an error that embeds the raw email.
+				fmt.Fprintf(w, "550 5.1.1 <%s>: Recipient address rejected\r\n", recipientEmail)
+			case strings.HasPrefix(strings.ToUpper(line), "QUIT"):
+				fmt.Fprintf(w, "221 Bye\r\n")
+				return
+			default:
+				fmt.Fprintf(w, "500 Unrecognized\r\n")
+			}
+			w.Flush()
+		}
+	}()
+
+	return ln, ln.Addr().String()
+}
+
+func TestSendOTP_SMTPErrorSanitizesRecipient(t *testing.T) {
+	const recipient = "victim@example.com"
+	ln, addr := fakeSMTPServer(t, recipient)
+	defer ln.Close()
+
+	host, port := splitHostPort(t, addr)
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+	s := NewSMTPSender(host, port, "user", "pass", "noreply@example.com", 10, logger)
+
+	err := s.SendOTP(context.Background(), recipient, "123456", PurposeEmailVerification)
+	if err == nil {
+		t.Fatal("expected SMTP error, got nil")
+	}
+
+	errMsg := err.Error()
+
+	// The returned error must not contain the raw recipient email.
+	if strings.Contains(errMsg, recipient) {
+		t.Errorf("returned error contains raw recipient email %q: %s", recipient, errMsg)
+	}
+
+	// The error should still indicate an SMTP-level problem.
+	if !strings.Contains(errMsg, "sending otp email") {
+		t.Errorf("error missing prefix: %s", errMsg)
+	}
+
+	// Verify the log line also does not contain the raw recipient.
+	logOutput := logBuf.String()
+	if strings.Contains(logOutput, recipient) {
+		t.Errorf("log output contains raw recipient email %q:\n%s", recipient, logOutput)
+	}
+
+	// The log should contain a masked form of the recipient for correlation.
+	if !strings.Contains(logOutput, "v***@e***.com") {
+		t.Errorf("log output missing masked recipient; got:\n%s", logOutput)
+	}
+}
+
+// splitHostPort is a test helper that splits a net.Listener address.
+func splitHostPort(t *testing.T, addr string) (string, int) {
+	t.Helper()
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("SplitHostPort(%q): %v", addr, err)
+	}
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+	return host, port
 }

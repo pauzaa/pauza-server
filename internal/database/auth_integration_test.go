@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/IsorilovA/pauza-server/internal/auth"
 	"github.com/IsorilovA/pauza-server/internal/mail"
 	"github.com/IsorilovA/pauza-server/migrations"
 )
@@ -92,7 +93,7 @@ func TestUser_InsertAndQueryByEmail(t *testing.T) {
 	)
 	err = pool.QueryRow(ctx,
 		`SELECT id, email, password_hash, name, username, email_verified
-		 FROM users WHERE email = $1`, email,
+		 FROM users WHERE lower(email) = $1`, email,
 	).Scan(&storedID, &storedEmail, &storedHash, &storedName, &storedUsername, &storedEmailVerified)
 	if err != nil {
 		t.Fatalf("querying user by email: %v", err)
@@ -143,7 +144,7 @@ func TestUser_UpdateEmailVerified(t *testing.T) {
 
 	// Update email_verified to true (mirrors production shape: no updated_at).
 	tag, err := pool.Exec(ctx,
-		`UPDATE users SET email_verified = true WHERE email = $1`, email)
+		`UPDATE users SET email_verified = true WHERE lower(email) = $1`, email)
 	if err != nil {
 		t.Fatalf("updating email_verified: %v", err)
 	}
@@ -154,7 +155,7 @@ func TestUser_UpdateEmailVerified(t *testing.T) {
 	// Verify the update persisted.
 	var verified bool
 	err = pool.QueryRow(ctx,
-		`SELECT email_verified FROM users WHERE email = $1`, email,
+		`SELECT email_verified FROM users WHERE lower(email) = $1`, email,
 	).Scan(&verified)
 	if err != nil {
 		t.Fatalf("querying email_verified: %v", err)
@@ -206,7 +207,7 @@ func TestUser_CaseInsensitiveEmailLookup(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestOTP_InsertAndQueryValid inserts an OTP and queries for a valid one
-// (not expired, not used, matching email and purpose).
+// (not expired, not used, matching user_id and purpose).
 func TestOTP_InsertAndQueryValid(t *testing.T) {
 	pool := setupTestPool(t)
 
@@ -217,37 +218,44 @@ func TestOTP_InsertAndQueryValid(t *testing.T) {
 		email = "otp-user@example.com"
 		code  = "123456"
 	)
+	userID := insertTestUser(t, ctx, pool, email, "user_otpvalid1")
+	codeHash, err := auth.HashOTP(code)
+	if err != nil {
+		t.Fatalf("hashing OTP: %v", err)
+	}
 	purpose := mail.PurposeEmailVerification
 	expiresAt := time.Now().UTC().Add(10 * time.Minute)
 
-	_, err := pool.Exec(ctx,
-		`INSERT INTO otp_codes (user_email, code, purpose, expires_at)
+	_, err = pool.Exec(ctx,
+		`INSERT INTO otp_codes (user_id, code_hash, purpose, expires_at)
 		 VALUES ($1, $2, $3, $4)`,
-		email, code, purpose, expiresAt)
+		userID, codeHash, purpose, expiresAt)
 	if err != nil {
 		t.Fatalf("inserting OTP: %v", err)
 	}
 
 	// Query for a valid OTP.
-	var storedCode string
+	var storedCodeHash string
 	var storedUsed bool
 	var storedAttempts int
 	err = pool.QueryRow(ctx,
-		`SELECT code, used, attempts FROM otp_codes
-		 WHERE user_email = $1
+		`SELECT code_hash, used, attempts FROM otp_codes
+		 WHERE user_id = $1
 		   AND purpose = $2
 		   AND used = FALSE
 		   AND expires_at > now()
 		 ORDER BY created_at DESC
 		 LIMIT 1`,
-		email, purpose,
-	).Scan(&storedCode, &storedUsed, &storedAttempts)
+		userID, purpose,
+	).Scan(&storedCodeHash, &storedUsed, &storedAttempts)
 	if err != nil {
 		t.Fatalf("querying valid OTP: %v", err)
 	}
 
-	if storedCode != code {
-		t.Errorf("expected code %q, got %q", code, storedCode)
+	if match, verr := auth.VerifyOTP(storedCodeHash, code); verr != nil {
+		t.Errorf("verifying stored OTP hash: %v", verr)
+	} else if !match {
+		t.Error("stored code_hash does not match original OTP code")
 	}
 	if storedUsed {
 		t.Error("expected used = false")
@@ -269,16 +277,21 @@ func TestOTP_MarkUsed(t *testing.T) {
 		email = "mark-used@example.com"
 		code  = "654321"
 	)
+	userID := insertTestUser(t, ctx, pool, email, "user_markused1")
+	codeHash, err := auth.HashOTP(code)
+	if err != nil {
+		t.Fatalf("hashing OTP: %v", err)
+	}
 	purpose := mail.PurposeEmailVerification
 	expiresAt := time.Now().UTC().Add(10 * time.Minute)
 
 	// Insert an OTP.
 	var otpID string
-	err := pool.QueryRow(ctx,
-		`INSERT INTO otp_codes (user_email, code, purpose, expires_at)
+	err = pool.QueryRow(ctx,
+		`INSERT INTO otp_codes (user_id, code_hash, purpose, expires_at)
 		 VALUES ($1, $2, $3, $4)
 		 RETURNING id`,
-		email, code, purpose, expiresAt,
+		userID, codeHash, purpose, expiresAt,
 	).Scan(&otpID)
 	if err != nil {
 		t.Fatalf("inserting OTP: %v", err)
@@ -298,11 +311,11 @@ func TestOTP_MarkUsed(t *testing.T) {
 	var count int
 	err = pool.QueryRow(ctx,
 		`SELECT count(*) FROM otp_codes
-		 WHERE user_email = $1
+		 WHERE user_id = $1
 		   AND purpose = $2
 		   AND used = FALSE
 		   AND expires_at > now()`,
-		email, purpose,
+		userID, purpose,
 	).Scan(&count)
 	if err != nil {
 		t.Fatalf("counting valid OTPs: %v", err)
@@ -324,15 +337,20 @@ func TestOTP_IncrementAttempts(t *testing.T) {
 		email = "attempts@example.com"
 		code  = "111222"
 	)
+	userID := insertTestUser(t, ctx, pool, email, "user_attempts1")
+	codeHash, err := auth.HashOTP(code)
+	if err != nil {
+		t.Fatalf("hashing OTP: %v", err)
+	}
 	purpose := mail.PurposePasswordReset
 	expiresAt := time.Now().UTC().Add(10 * time.Minute)
 
 	var otpID string
-	err := pool.QueryRow(ctx,
-		`INSERT INTO otp_codes (user_email, code, purpose, expires_at)
+	err = pool.QueryRow(ctx,
+		`INSERT INTO otp_codes (user_id, code_hash, purpose, expires_at)
 		 VALUES ($1, $2, $3, $4)
 		 RETURNING id`,
-		email, code, purpose, expiresAt,
+		userID, codeHash, purpose, expiresAt,
 	).Scan(&otpID)
 	if err != nil {
 		t.Fatalf("inserting OTP: %v", err)
@@ -371,14 +389,19 @@ func TestOTP_ExpiredNotReturned(t *testing.T) {
 		email = "expired@example.com"
 		code  = "999888"
 	)
+	userID := insertTestUser(t, ctx, pool, email, "user_expired1")
+	codeHash, err := auth.HashOTP(code)
+	if err != nil {
+		t.Fatalf("hashing OTP: %v", err)
+	}
 	purpose := mail.PurposeEmailVerification
 	// Already expired.
 	expiresAt := time.Now().UTC().Add(-1 * time.Minute)
 
-	_, err := pool.Exec(ctx,
-		`INSERT INTO otp_codes (user_email, code, purpose, expires_at)
+	_, err = pool.Exec(ctx,
+		`INSERT INTO otp_codes (user_id, code_hash, purpose, expires_at)
 		 VALUES ($1, $2, $3, $4)`,
-		email, code, purpose, expiresAt)
+		userID, codeHash, purpose, expiresAt)
 	if err != nil {
 		t.Fatalf("inserting expired OTP: %v", err)
 	}
@@ -387,11 +410,11 @@ func TestOTP_ExpiredNotReturned(t *testing.T) {
 	var count int
 	err = pool.QueryRow(ctx,
 		`SELECT count(*) FROM otp_codes
-		 WHERE user_email = $1
+		 WHERE user_id = $1
 		   AND purpose = $2
 		   AND used = FALSE
 		   AND expires_at > now()`,
-		email, purpose,
+		userID, purpose,
 	).Scan(&count)
 	if err != nil {
 		t.Fatalf("counting valid OTPs: %v", err)
@@ -793,13 +816,17 @@ func TestRegistrationFlow_InsertUserAndOTP_VerifyOTP(t *testing.T) {
 		t.Fatalf("inserting user: %v", err)
 	}
 
-	// Step 2: Insert an OTP for the user's email.
+	// Step 2: Insert an OTP for the user.
 	var otpID string
+	otpCodeHash, err := auth.HashOTP(otpCode)
+	if err != nil {
+		t.Fatalf("hashing OTP: %v", err)
+	}
 	err = pool.QueryRow(ctx,
-		`INSERT INTO otp_codes (user_email, code, purpose, expires_at)
+		`INSERT INTO otp_codes (user_id, code_hash, purpose, expires_at)
 		 VALUES ($1, $2, $3, $4)
 		 RETURNING id`,
-		email, otpCode, purpose, expiresAt,
+		userID, otpCodeHash, purpose, expiresAt,
 	).Scan(&otpID)
 	if err != nil {
 		t.Fatalf("inserting OTP: %v", err)
@@ -819,7 +846,7 @@ func TestRegistrationFlow_InsertUserAndOTP_VerifyOTP(t *testing.T) {
 	// Mirrors production shape (see handler auth.go VerifyOTP): the handler
 	// updates by email without touching updated_at.
 	tag, err = pool.Exec(ctx,
-		`UPDATE users SET email_verified = true WHERE email = $1`, email)
+		`UPDATE users SET email_verified = true WHERE lower(email) = $1`, email)
 	if err != nil {
 		t.Fatalf("setting email_verified: %v", err)
 	}
@@ -857,15 +884,15 @@ func TestRegistrationFlow_InsertUserAndOTP_VerifyOTP(t *testing.T) {
 		t.Errorf("stored password hash does not match original password: %v", err)
 	}
 
-	// No valid (unused, unexpired) OTPs should remain for this email/purpose.
+	// No valid (unused, unexpired) OTPs should remain for this user/purpose.
 	var validCount int
 	err = pool.QueryRow(ctx,
 		`SELECT count(*) FROM otp_codes
-		 WHERE user_email = $1
+		 WHERE user_id = $1
 		   AND purpose = $2
 		   AND used = FALSE
 		   AND expires_at > now()`,
-		email, purpose,
+		userID, purpose,
 	).Scan(&validCount)
 	if err != nil {
 		t.Fatalf("counting remaining valid OTPs: %v", err)

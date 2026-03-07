@@ -16,6 +16,7 @@ import (
 	"github.com/IsorilovA/pauza-server/internal/handler"
 	"github.com/IsorilovA/pauza-server/internal/mail"
 	authmw "github.com/IsorilovA/pauza-server/internal/middleware"
+	"github.com/IsorilovA/pauza-server/internal/ratelimit"
 )
 
 // respondRequestID copies the request ID from the context to the X-Request-Id
@@ -78,8 +79,25 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
+// authRateLimit is the maximum number of requests per minute allowed from a
+// single IP to public /api/v1/auth endpoints.
+const authRateLimit = 5
+
+// authRateWindow is the fixed-window duration for the auth rate limiter.
+const authRateWindow = time.Minute
+
+// verifyOTPRateLimit is the maximum number of requests per minute allowed
+// for /api/v1/auth/verify-otp per email address (BACKEND_SPEC §10).
+const verifyOTPRateLimit = 3
+
+// verifyOTPRateWindow is the fixed-window duration for the verify-otp
+// per-email rate limiter.
+const verifyOTPRateWindow = time.Minute
+
 // New creates and configures the HTTP server with all routes and middleware.
-func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http.Server {
+// The returned cleanup function stops background goroutines (e.g. rate-limiter
+// eviction loops) and must be called during graceful shutdown.
+func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool) (*http.Server, func()) {
 	r := chi.NewRouter()
 
 	// Base middleware stack.
@@ -105,6 +123,15 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http.Serv
 		cfg.JWTAccessTokenTTL, cfg.JWTRefreshTokenTTL, logger,
 	)
 
+	// Per-IP rate limiter for public auth endpoints. The limiter is shared
+	// across all auth routes so that an attacker cannot bypass the budget
+	// by rotating across different endpoints.
+	authLimiter := ratelimit.New(authRateLimit, authRateWindow)
+
+	// Per-email rate limiter for /auth/verify-otp (BACKEND_SPEC §10:
+	// 3 requests/minute scoped by normalized email address).
+	verifyOTPLimiter := ratelimit.New(verifyOTPRateLimit, verifyOTPRateWindow)
+
 	// --- /api/v1 routes -------------------------------------------------
 	// Public and protected routes are mounted in separate chi.Route groups
 	// so that the JWT middleware applies only to protected endpoints. This
@@ -112,8 +139,10 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http.Serv
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public auth routes (no JWT required).
 		r.Route("/auth", func(r chi.Router) {
+			r.Use(authmw.RateLimit(authLimiter, authRateLimit, authmw.IPKey))
 			r.Post("/register", authHandler.Register)
-			r.Post("/verify-otp", authHandler.VerifyOTP)
+			r.With(authmw.RateLimit(verifyOTPLimiter, verifyOTPRateLimit, authmw.EmailKey)).
+				Post("/verify-otp", authHandler.VerifyOTP)
 			r.Post("/login", authHandler.Login)
 			r.Post("/refresh", authHandler.Refresh)
 			r.Post("/forgot-password", authHandler.ForgotPassword)
@@ -132,6 +161,11 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http.Serv
 		})
 	})
 
+	cleanup := func() {
+		authLimiter.Stop()
+		verifyOTPLimiter.Stop()
+	}
+
 	return &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
 		Handler:           r,
@@ -139,5 +173,5 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool) *http.Serv
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
-	}
+	}, cleanup
 }

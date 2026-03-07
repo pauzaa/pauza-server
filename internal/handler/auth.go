@@ -3,11 +3,11 @@ package handler
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -21,6 +21,7 @@ import (
 	"github.com/IsorilovA/pauza-server/internal/apperror"
 	"github.com/IsorilovA/pauza-server/internal/auth"
 	"github.com/IsorilovA/pauza-server/internal/mail"
+	"github.com/IsorilovA/pauza-server/internal/redact"
 	"github.com/IsorilovA/pauza-server/internal/validate"
 )
 
@@ -69,52 +70,49 @@ func normalizeEmail(raw string) string {
 	return strings.ToLower(strings.TrimSpace(raw))
 }
 
-// maskEmail returns a partially redacted email suitable for safe logging.
-// "alice@example.com" becomes "a***@e***.com".
-func maskEmail(email string) string {
-	at := strings.LastIndex(email, "@")
-	if at <= 0 {
-		return "***"
-	}
-	local := email[:at]
-	domain := email[at+1:]
-
-	maskedLocal := string(local[0]) + "***"
-
-	dot := strings.LastIndex(domain, ".")
-	if dot <= 0 {
-		return maskedLocal + "@***"
-	}
-	maskedDomain := string(domain[0]) + "***" + domain[dot:]
-
-	return maskedLocal + "@" + maskedDomain
-}
-
-// generateUsername returns a random username in the form "user_" + 8 hex chars.
+// generateUsername returns a random username in the form "user_" + 24 hex chars
+// (96 bits of entropy). The previous 4-byte (32-bit) version had a non-trivial
+// collision probability at scale; 12 bytes makes birthday collisions negligible
+// for any realistic user count.
 func generateUsername() (string, error) {
-	b := make([]byte, 4)
+	b := make([]byte, 12)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("generating random username: %w", err)
 	}
 	return "user_" + hex.EncodeToString(b), nil
 }
 
-// decodeJSONBody decodes the request body into dst. It distinguishes an
-// oversized body (MaxBytesError → "Request body too large") from a
+// decodeJSONBody decodes the request body into dst. It rejects unknown
+// fields and trailing data after the first JSON object. It distinguishes
+// an oversized body (MaxBytesError → "Request body too large") from a
 // malformed/invalid payload, writing the appropriate 422 error response
 // and returning false when decoding fails.
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
-	err := json.NewDecoder(r.Body).Decode(dst)
-	if err == nil {
-		return true
-	}
-	var maxBytesErr *http.MaxBytesError
-	if errors.As(err, &maxBytesErr) {
-		apperror.ValidationError(w, "Request body too large", nil)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+
+	err := dec.Decode(dst)
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			apperror.ValidationError(w, "Request body too large", nil)
+			return false
+		}
+		apperror.ValidationError(w, "Invalid request body", nil)
 		return false
 	}
-	apperror.ValidationError(w, "Invalid request body", nil)
-	return false
+
+	// Reject trailing JSON documents after the first object.
+	if dec.More() {
+		apperror.ValidationError(w, "Invalid request body", nil)
+		return false
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		apperror.ValidationError(w, "Invalid request body", nil)
+		return false
+	}
+
+	return true
 }
 
 // isUniqueViolation checks whether a Postgres error is a unique_violation (23505)
@@ -240,57 +238,8 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 
 	email := normalizeEmail(req.Email)
 
-	// Check if a verified user already exists with this email.
-	var existingVerified bool
-	err := h.pool.QueryRow(ctx,
-		"SELECT email_verified FROM users WHERE email = $1", email,
-	).Scan(&existingVerified)
-
-	if err == nil {
-		// User row found.
-		if existingVerified {
-			apperror.Conflict(w, "Email already registered")
-			return
-		}
-		// Unverified user exists: atomically clean up stale email-verification
-		// OTP rows and the user row. Only 'email_verification' OTPs are
-		// deleted because password_reset OTPs cannot exist for an unverified
-		// user (forgot-password checks email_verified = true). otp_codes is
-		// linked by user_email (not FK), so there is no cascade from the
-		// users DELETE.
-		cleanupTx, txErr := h.pool.Begin(ctx)
-		if txErr != nil {
-			h.logger.Error("beginning cleanup transaction", "err", txErr)
-			apperror.InternalError(w)
-			return
-		}
-		defer cleanupTx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
-
-		if _, txErr = cleanupTx.Exec(ctx,
-			"DELETE FROM otp_codes WHERE user_email = $1 AND purpose = 'email_verification'",
-			email,
-		); txErr != nil {
-			h.logger.Error("deleting stale otp rows", "err", txErr)
-			apperror.InternalError(w)
-			return
-		}
-		if _, txErr = cleanupTx.Exec(ctx, "DELETE FROM users WHERE email = $1 AND email_verified = false", email); txErr != nil {
-			h.logger.Error("deleting stale unverified user", "err", txErr)
-			apperror.InternalError(w)
-			return
-		}
-		if txErr = cleanupTx.Commit(ctx); txErr != nil {
-			h.logger.Error("committing cleanup transaction", "err", txErr)
-			apperror.InternalError(w)
-			return
-		}
-	} else if !errors.Is(err, pgx.ErrNoRows) {
-		h.logger.Error("checking existing user", "err", err)
-		apperror.InternalError(w)
-		return
-	}
-
-	// Hash the password.
+	// Hash the password before starting the transaction so the (potentially
+	// slow) bcrypt work does not hold any row locks.
 	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
 		h.logger.Error("hashing password", "err", err)
@@ -298,10 +247,10 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Insert the user and OTP rows in a transaction, then send the email
-	// outside the transaction to avoid holding a DB connection open during
-	// a potentially slow SMTP call. If the email send fails, we clean up
-	// the committed rows so there are no orphans.
+	// Perform the existing-user check, stale-unverified cleanup, and new
+	// user + OTP insert inside a single transaction. FOR UPDATE locks the
+	// existing row (if any) to prevent concurrent registrations from
+	// racing between the SELECT and the INSERT.
 	regTx, err := h.pool.Begin(ctx)
 	if err != nil {
 		h.logger.Error("beginning registration transaction", "err", err)
@@ -309,6 +258,68 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer regTx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
+
+	// Check if a user already exists with this email.
+	// Use lower(email) to match the expression index idx_users_email.
+	// FOR UPDATE acquires a row-level lock: concurrent registrations for the
+	// same email will block here until this transaction commits or rolls
+	// back, serialising the check-then-delete-then-insert sequence.
+	var existingID string
+	var existingVerified bool
+	err = regTx.QueryRow(ctx,
+		"SELECT id, email_verified FROM users WHERE lower(email) = $1 FOR UPDATE",
+		email,
+	).Scan(&existingID, &existingVerified)
+
+	if err == nil {
+		// User row found.
+		if existingVerified {
+			apperror.Conflict(w, "Email already registered")
+			return
+		}
+		// Unverified user exists — clean up its email-verification OTP
+		// rows and the user row within this same transaction so the
+		// subsequent INSERT can use the email. Only 'email_verification'
+		// OTPs are deleted because password_reset OTPs cannot exist for
+		// an unverified user (forgot-password requires email_verified =
+		// true). otp_codes has an FK with ON DELETE CASCADE, but we
+		// delete OTPs explicitly first so the intent is clear and the
+		// user DELETE does not rely on cascade ordering.
+		if _, err = regTx.Exec(ctx,
+			"DELETE FROM otp_codes WHERE user_id = $1 AND purpose = 'email_verification'",
+			existingID,
+		); err != nil {
+			h.logger.Error("deleting stale otp rows", "err", err)
+			apperror.InternalError(w)
+			return
+		}
+		delTag, delErr := regTx.Exec(ctx,
+			"DELETE FROM users WHERE id = $1 AND email_verified = false",
+			existingID,
+		)
+		if delErr != nil {
+			h.logger.Error("deleting stale unverified user", "err", delErr)
+			apperror.InternalError(w)
+			return
+		}
+		// Defense-in-depth: under FOR UPDATE the row we read cannot have
+		// been modified by another transaction, so RowsAffected should
+		// always be 1. A zero here would indicate a bug in the locking
+		// logic or an unexpected schema change. Log at error level so
+		// operators can investigate, then return conflict as the safe
+		// fallback.
+		if delTag.RowsAffected() == 0 {
+			h.logger.Error("stale-user delete affected 0 rows despite FOR UPDATE lock",
+				"existing_user_id", existingID,
+				"email", redact.Email(email))
+			apperror.Conflict(w, "Email already registered")
+			return
+		}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		h.logger.Error("checking existing user", "err", err)
+		apperror.InternalError(w)
+		return
+	}
 
 	// Insert the new unverified user. The generated random username may
 	// collide with an existing one (idx_users_username), so we retry with a
@@ -350,7 +361,9 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Roll back the savepoint so the outer transaction stays usable.
-		// If the rollback itself fails the outer tx is poisoned; bail out.
+		// This is safe: savepoint rollback only undoes the nested
+		// statement, not the entire regTx. If the rollback itself fails
+		// the outer tx is poisoned and we must bail out.
 		if rbErr := sp.Rollback(ctx); rbErr != nil {
 			h.logger.Error("rolling back savepoint after user insert failure", "err", rbErr)
 			apperror.InternalError(w)
@@ -358,7 +371,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Email already taken (race with concurrent registration).
-		if isUniqueViolation(insertErr, "users_email_key") {
+		if isUniqueViolation(insertErr, "idx_users_email") {
 			apperror.Conflict(w, "Email already registered")
 			return
 		}
@@ -390,14 +403,23 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		apperror.InternalError(w)
 		return
 	}
-
-	// Insert OTP into otp_codes.
+	otpHash, err := auth.HashOTP(otp)
+	if err != nil {
+		h.logger.Error("hashing otp", "err", err)
+		apperror.InternalError(w)
+		return
+	}
+	// Capture the OTP row ID so SMTP-failure cleanup can target this exact
+	// row rather than a broad user-based DELETE, avoiding accidental removal
+	// of a newer concurrent registration's OTP for the same email.
 	expiresAt := time.Now().UTC().Add(auth.OTPExpiry)
-	_, err = regTx.Exec(ctx,
-		`INSERT INTO otp_codes (user_email, code, purpose, expires_at)
-		 VALUES ($1, $2, 'email_verification', $3)`,
-		email, otp, expiresAt,
-	)
+	var otpID string
+	err = regTx.QueryRow(ctx,
+		`INSERT INTO otp_codes (user_id, code_hash, purpose, expires_at)
+		 VALUES ($1, $2, 'email_verification', $3)
+		 RETURNING id`,
+		userID, otpHash, expiresAt,
+	).Scan(&otpID)
 	if err != nil {
 		h.logger.Error("inserting otp", "err", err)
 		apperror.InternalError(w)
@@ -412,21 +434,51 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Send OTP via email. If this fails, clean up the committed rows so
-	// there are no orphaned unverified users or dangling OTP rows.
+	// Send OTP via email. If this fails, clean up only the exact rows
+	// created by this request (matched by otpID and userID) so a newer
+	// concurrent registration for the same email is not disturbed.
+	// The registration transaction (regTx) has already been committed, so
+	// every early-return path below is safe — no uncommitted user/OTP rows
+	// can be left behind by a deferred rollback.
+	//
+	// Privacy: the "email" field is redacted via redact.Email. The "err"
+	// value is safe because SMTPSender.SendOTP sanitizes SMTP error
+	// strings (via redact.SanitizeEmail) before returning and severs the
+	// error chain with %s so the original cannot be unwrapped.
 	if err := h.mailer.SendOTP(ctx, email, otp, mail.PurposeEmailVerification); err != nil {
-		h.logger.Error("sending otp email", "email", maskEmail(email), "err", err)
-		if _, cleanupErr := h.pool.Exec(ctx,
-			"DELETE FROM otp_codes WHERE user_email = $1 AND purpose = 'email_verification' AND used = false",
-			email,
-		); cleanupErr != nil {
-			h.logger.Error("cleaning up otp after email failure", "err", cleanupErr)
-		}
-		if _, cleanupErr := h.pool.Exec(ctx,
-			"DELETE FROM users WHERE email = $1 AND email_verified = false",
-			email,
-		); cleanupErr != nil {
-			h.logger.Error("cleaning up user after email failure", "err", cleanupErr)
+		h.logger.Error("sending otp email", "email", redact.Email(email), "err", err)
+		cleanupTx, txErr := h.pool.Begin(ctx)
+		if txErr != nil {
+			h.logger.Error("beginning smtp-failure cleanup transaction", "err", txErr)
+		} else {
+			if _, txErr = cleanupTx.Exec(ctx,
+				"DELETE FROM otp_codes WHERE id = $1", otpID,
+			); txErr != nil {
+				h.logger.Error("cleaning up otp after email failure", "err", txErr)
+			}
+			if txErr == nil {
+				delTag, delErr := cleanupTx.Exec(ctx,
+					"DELETE FROM users WHERE id = $1 AND email_verified = false", userID,
+				)
+				if delErr != nil {
+					txErr = delErr
+					h.logger.Error("cleaning up user after email failure", "err", delErr)
+				} else if delTag.RowsAffected() == 0 {
+					// Benign: a concurrent re-registration already removed
+					// user_A and replaced it with user_B before our cleanup
+					// ran. The row-specific WHERE clause ensures user_B is
+					// never touched, so a no-op here is expected.
+					h.logger.Debug("smtp-failure cleanup: user already removed by concurrent registration",
+						"user_id", userID)
+				}
+			}
+			if txErr != nil {
+				if rbErr := cleanupTx.Rollback(ctx); rbErr != nil {
+					h.logger.Error("rolling back smtp-failure cleanup transaction", "err", rbErr)
+				}
+			} else if commitErr := cleanupTx.Commit(ctx); commitErr != nil {
+				h.logger.Error("committing smtp-failure cleanup transaction", "err", commitErr)
+			}
 		}
 		apperror.InternalError(w)
 		return
@@ -510,23 +562,40 @@ func (h *AuthHandler) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
 
+	// Resolve email to user ID. The OTP table is linked by user_id, not email.
+	// Use lower(email) to match the expression index idx_users_email.
+	var resolvedUserID string
+	err = tx.QueryRow(ctx,
+		"SELECT id FROM users WHERE lower(email) = $1",
+		email,
+	).Scan(&resolvedUserID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		apperror.Unauthorized(w, "Invalid or expired OTP")
+		return
+	}
+	if err != nil {
+		h.logger.Error("resolving user for verify-otp", "err", err)
+		apperror.InternalError(w)
+		return
+	}
+
 	// Query otp_codes for the most recent unused, non-expired row matching
-	// email and purpose = 'email_verification'. FOR UPDATE locks the row
+	// user_id and purpose = 'email_verification'. FOR UPDATE locks the row
 	// so concurrent requests block until this transaction completes.
-	var otpID, storedCode string
+	var otpID, storedHash string
 	var attempts int
 	err = tx.QueryRow(ctx,
-		`SELECT id, code, attempts
+		`SELECT id, code_hash, attempts
 		 FROM otp_codes
-		 WHERE user_email = $1
+		 WHERE user_id = $1
 		   AND purpose = 'email_verification'
 		   AND used = false
 		   AND expires_at > now()
 		 ORDER BY created_at DESC
 		 LIMIT 1
 		 FOR UPDATE`,
-		email,
-	).Scan(&otpID, &storedCode, &attempts)
+		resolvedUserID,
+	).Scan(&otpID, &storedHash, &attempts)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		apperror.Unauthorized(w, "Invalid or expired OTP")
@@ -545,7 +614,13 @@ func (h *AuthHandler) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Code mismatch: increment attempts and return 401.
-	if subtle.ConstantTimeCompare([]byte(storedCode), []byte(req.OTP)) != 1 {
+	otpMatch, err := auth.VerifyOTP(storedHash, req.OTP)
+	if err != nil {
+		h.logger.Error("verifying otp hash", "err", err)
+		apperror.InternalError(w)
+		return
+	}
+	if !otpMatch {
 		if _, err := tx.Exec(ctx,
 			"UPDATE otp_codes SET attempts = attempts + 1 WHERE id = $1", otpID,
 		); err != nil {
@@ -569,7 +644,7 @@ func (h *AuthHandler) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 
 	// Activate the user account.
 	if _, err := tx.Exec(ctx,
-		"UPDATE users SET email_verified = true WHERE email = $1", email,
+		"UPDATE users SET email_verified = true WHERE id = $1", resolvedUserID,
 	); err != nil {
 		h.logger.Error("verifying user email", "err", err)
 		apperror.InternalError(w)
@@ -582,8 +657,8 @@ func (h *AuthHandler) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 	err = tx.QueryRow(ctx,
 		`SELECT id, email, name, username, profile_picture_url, leaderboard_visible, created_at
 		 FROM users
-		 WHERE email = $1`,
-		email,
+		 WHERE id = $1`,
+		resolvedUserID,
 	).Scan(&user.ID, &user.Email, &user.Name, &user.Username,
 		&user.ProfilePictureURL, &user.LeaderboardVisible, &createdAt)
 	if err != nil {
@@ -672,12 +747,16 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	err := h.pool.QueryRow(ctx,
 		`SELECT id, password_hash, name, username, profile_picture_url, leaderboard_visible, created_at
 		 FROM users
-		 WHERE email = $1 AND email_verified = true`,
+		 WHERE lower(email) = $1 AND email_verified = true`,
 		email,
 	).Scan(&userID, &passwordHash, &name, &username,
 		&profilePictureURL, &leaderboardVisible, &createdAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
+		// Perform a dummy bcrypt comparison so the response latency is
+		// indistinguishable from a real password check, preventing
+		// timing-based account enumeration.
+		auth.DummyCheckPassword(req.Password)
 		apperror.Unauthorized(w, "Invalid email or password")
 		return
 	}
@@ -780,16 +859,28 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Hash the incoming token and look up in DB.
+	// Hash the incoming token and perform the entire rotation inside a
+	// single transaction with FOR UPDATE row locking to eliminate the race
+	// where two concurrent refresh requests using the same token could both
+	// pass the revoked/expired checks and mint new valid tokens.
 	tokenHash := auth.HashRefreshToken(req.RefreshToken)
+
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		h.logger.Error("beginning refresh transaction", "err", err)
+		apperror.InternalError(w)
+		return
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
 
 	var tokenID, userID string
 	var revoked bool
 	var expiresAt time.Time
-	err := h.pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`SELECT id, user_id, revoked, expires_at
 		 FROM refresh_tokens
-		 WHERE token_hash = $1`,
+		 WHERE token_hash = $1
+		 FOR UPDATE`,
 		tokenHash,
 	).Scan(&tokenID, &userID, &revoked, &expiresAt)
 
@@ -806,30 +897,29 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	// Reuse detection: if the token has been revoked, revoke ALL tokens for
 	// the user (indicates possible token theft).
 	if revoked {
-		if _, err := h.pool.Exec(ctx,
+		if _, err := tx.Exec(ctx,
 			"UPDATE refresh_tokens SET revoked = true WHERE user_id = $1",
 			userID,
 		); err != nil {
 			h.logger.Error("revoking all refresh tokens after reuse", "err", err)
+		} else if commitErr := tx.Commit(ctx); commitErr != nil {
+			// The revoke-all UPDATE succeeded but the commit failed, so
+			// the revocation was lost. Log at error level with the
+			// user_id so operators can investigate and manually revoke.
+			h.logger.Error("commit failed after reuse-detection revoke-all: tokens may still be active",
+				"user_id", userID, "err", commitErr)
 		}
 		apperror.Unauthorized(w, "Invalid refresh token")
 		return
 	}
 
-	// Expired token.
+	// Expired token — roll back explicitly to release the FOR UPDATE row
+	// lock immediately instead of waiting for the deferred rollback.
 	if time.Now().UTC().After(expiresAt) {
+		tx.Rollback(ctx) //nolint:errcheck // best-effort; deferred rollback is the safety net
 		apperror.Unauthorized(w, "Invalid refresh token")
 		return
 	}
-
-	// Revoke the current token and issue a new pair.
-	tx, err := h.pool.Begin(ctx)
-	if err != nil {
-		h.logger.Error("beginning refresh transaction", "err", err)
-		apperror.InternalError(w)
-		return
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
 
 	if _, err := tx.Exec(ctx,
 		"UPDATE refresh_tokens SET revoked = true WHERE id = $1", tokenID,
@@ -893,6 +983,15 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// forgotPasswordMinDuration is the minimum wall-clock time the
+// forgot-password handler will take after request validation completes.
+// This normalizes response timing between the unknown-user path (no DB
+// work beyond a single SELECT) and the known-user path (OTP generation,
+// DB insert, SMTP send), reducing timing-based account enumeration.
+// 500ms provides a comfortable margin over the fastest known-user path
+// (~200–300ms), making timing differences statistically undetectable.
+const forgotPasswordMinDuration = 500 * time.Millisecond
+
 // ForgotPassword handles POST /api/v1/auth/forgot-password.
 func (h *AuthHandler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -910,10 +1009,21 @@ func (h *AuthHandler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Record start time after common parsing/validation so the timing
+	// floor only covers the account-specific code paths where divergence
+	// would leak account existence.
+	start := time.Now()
+
 	email := normalizeEmail(req.Email)
 
-	// Always return 200 to prevent email enumeration.
+	// Always return 200 to prevent email enumeration. The timing pad
+	// inside respondOK ensures the response is not sent before
+	// forgotPasswordMinDuration has elapsed since start, regardless of
+	// which code path was taken.
 	respondOK := func() {
+		if elapsed := time.Since(start); elapsed < forgotPasswordMinDuration {
+			time.Sleep(forgotPasswordMinDuration - elapsed)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(messageResponse{
@@ -923,21 +1033,18 @@ func (h *AuthHandler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Look up verified user.
-	var userExists bool
+	// Look up verified user by ID.
+	var forgotUserID string
 	err := h.pool.QueryRow(ctx,
-		"SELECT EXISTS(SELECT 1 FROM users WHERE email = $1 AND email_verified = true)",
+		"SELECT id FROM users WHERE lower(email) = $1 AND email_verified = true",
 		email,
-	).Scan(&userExists)
+	).Scan(&forgotUserID)
 	if err != nil {
-		// Return 200 even on DB errors to avoid leaking account existence
-		// through response timing or status code differences.
-		h.logger.Error("checking user for forgot-password", "err", err)
-		respondOK()
-		return
-	}
-
-	if !userExists {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			// Return 200 even on DB errors to avoid leaking account existence
+			// through response timing or status code differences.
+			h.logger.Error("checking user for forgot-password", "err", err)
+		}
 		respondOK()
 		return
 	}
@@ -949,13 +1056,19 @@ func (h *AuthHandler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 		respondOK()
 		return
 	}
+	otpHash, err := auth.HashOTP(otp)
+	if err != nil {
+		h.logger.Error("hashing otp for password reset", "err", err)
+		respondOK()
+		return
+	}
 
 	// Insert OTP into otp_codes.
 	expiresAt := time.Now().UTC().Add(auth.OTPExpiry)
 	_, err = h.pool.Exec(ctx,
-		`INSERT INTO otp_codes (user_email, code, purpose, expires_at)
+		`INSERT INTO otp_codes (user_id, code_hash, purpose, expires_at)
 		 VALUES ($1, $2, 'password_reset', $3)`,
-		email, otp, expiresAt,
+		forgotUserID, otpHash, expiresAt,
 	)
 	if err != nil {
 		h.logger.Error("inserting password reset otp", "err", err)
@@ -964,8 +1077,13 @@ func (h *AuthHandler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send OTP email. On failure, log and still return 200.
+	//
+	// Privacy: the "email" field is redacted via redact.Email. The "err"
+	// value is safe because SMTPSender.SendOTP sanitizes SMTP error
+	// strings (via redact.SanitizeEmail) before returning and severs the
+	// error chain with %s so the original cannot be unwrapped.
 	if err := h.mailer.SendOTP(ctx, email, otp, mail.PurposePasswordReset); err != nil {
-		h.logger.Error("sending password reset email", "email", maskEmail(email), "err", err)
+		h.logger.Error("sending password reset email", "email", redact.Email(email), "err", err)
 	}
 
 	respondOK()
@@ -1018,23 +1136,39 @@ func (h *AuthHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
 
+	// Resolve email to user ID.
+	var resetUserID string
+	err = tx.QueryRow(ctx,
+		"SELECT id FROM users WHERE lower(email) = $1 AND email_verified = true",
+		email,
+	).Scan(&resetUserID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		apperror.Unauthorized(w, "Invalid or expired OTP")
+		return
+	}
+	if err != nil {
+		h.logger.Error("resolving user for reset-password", "err", err)
+		apperror.InternalError(w)
+		return
+	}
+
 	// Query otp_codes for the most recent unused, non-expired row matching
-	// email and purpose = 'password_reset'. FOR UPDATE locks the row
+	// user_id and purpose = 'password_reset'. FOR UPDATE locks the row
 	// so concurrent requests block until this transaction completes.
-	var otpID, storedCode string
+	var otpID, storedHash string
 	var attempts int
 	err = tx.QueryRow(ctx,
-		`SELECT id, code, attempts
+		`SELECT id, code_hash, attempts
 		 FROM otp_codes
-		 WHERE user_email = $1
+		 WHERE user_id = $1
 		   AND purpose = 'password_reset'
 		   AND used = false
 		   AND expires_at > now()
 		 ORDER BY created_at DESC
 		 LIMIT 1
 		 FOR UPDATE`,
-		email,
-	).Scan(&otpID, &storedCode, &attempts)
+		resetUserID,
+	).Scan(&otpID, &storedHash, &attempts)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		apperror.Unauthorized(w, "Invalid or expired OTP")
@@ -1053,7 +1187,13 @@ func (h *AuthHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Code mismatch: increment attempts and return 401.
-	if subtle.ConstantTimeCompare([]byte(storedCode), []byte(req.OTP)) != 1 {
+	resetOTPMatch, err := auth.VerifyOTP(storedHash, req.OTP)
+	if err != nil {
+		h.logger.Error("verifying reset otp hash", "err", err)
+		apperror.InternalError(w)
+		return
+	}
+	if !resetOTPMatch {
 		if _, err := tx.Exec(ctx,
 			"UPDATE otp_codes SET attempts = attempts + 1 WHERE id = $1", otpID,
 		); err != nil {
@@ -1077,8 +1217,8 @@ func (h *AuthHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 
 	// Update user's password.
 	tag, err := tx.Exec(ctx,
-		"UPDATE users SET password_hash = $1, updated_at = now() WHERE email = $2 AND email_verified = true",
-		hash, email,
+		"UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2 AND email_verified = true",
+		hash, resetUserID,
 	)
 	if err != nil {
 		h.logger.Error("updating user password", "err", err)
@@ -1094,9 +1234,8 @@ func (h *AuthHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 
 	// Revoke all refresh tokens for this user.
 	if _, err := tx.Exec(ctx,
-		`UPDATE refresh_tokens SET revoked = true
-		 WHERE user_id = (SELECT id FROM users WHERE email = $1 AND email_verified = true)`,
-		email,
+		"UPDATE refresh_tokens SET revoked = true WHERE user_id = $1",
+		resetUserID,
 	); err != nil {
 		h.logger.Error("revoking refresh tokens after password reset", "err", err)
 		apperror.InternalError(w)
