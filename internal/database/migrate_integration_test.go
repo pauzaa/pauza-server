@@ -13,7 +13,7 @@ import (
 func TestRunMigrations_FreshApply(t *testing.T) {
 	pool, url := testPool(t) // resets the database to a clean state
 
-	if err := RunMigrations(url, migrations.FS); err != nil {
+	if err := RunMigrations(testLogger(), url, migrations.FS); err != nil {
 		t.Fatalf("unexpected error on fresh migration: %v", err)
 	}
 
@@ -29,12 +29,12 @@ func TestRunMigrations_IdempotentRerun(t *testing.T) {
 	_, url := testPool(t) // reset
 
 	// First run: apply all migrations.
-	if err := RunMigrations(url, migrations.FS); err != nil {
+	if err := RunMigrations(testLogger(), url, migrations.FS); err != nil {
 		t.Fatalf("first migration run failed: %v", err)
 	}
 
 	// Second run: should succeed with no error (ErrNoChange is swallowed).
-	if err := RunMigrations(url, migrations.FS); err != nil {
+	if err := RunMigrations(testLogger(), url, migrations.FS); err != nil {
 		t.Fatalf("idempotent rerun failed: %v", err)
 	}
 }
@@ -48,7 +48,7 @@ func TestRunMigrations_InvalidSource(t *testing.T) {
 	// An empty in-memory FS has no migration files, so iofs.New should fail.
 	emptyFS := fstest.MapFS{}
 
-	err := RunMigrations(url, emptyFS)
+	err := RunMigrations(testLogger(), url, emptyFS)
 	if err == nil {
 		t.Fatal("expected error for empty migration source, got nil")
 	}
@@ -63,7 +63,7 @@ func TestRunMigrations_InvalidDatabaseURL(t *testing.T) {
 		t.Fatalf("creating sub FS: %v", err)
 	}
 
-	err = RunMigrations("mysql://user:pass@localhost/db", subFS)
+	err = RunMigrations(testLogger(), "mysql://user:pass@localhost/db", subFS)
 	if err == nil {
 		t.Fatal("expected error for invalid database URL, got nil")
 	}

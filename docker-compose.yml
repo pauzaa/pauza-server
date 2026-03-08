@@ -7,9 +7,11 @@ services:
       # Dev defaults so `docker compose up` works without a local .env file.
       PORT: "8080"
       LOG_LEVEL: "info"
+      # Trust Docker bridge network so forwarded headers from reverse proxies work.
+      TRUSTED_PROXIES: "172.16.0.0/12"
       DATABASE_URL: "postgres://pauza:pauza_dev_password@db:5432/pauza?sslmode=disable"
 
-      JWT_SECRET: "dev-jwt-secret-change-me"
+      JWT_SECRET: "dev-jwt-secret-change-me-in-prod!"
       JWT_ACCESS_TOKEN_TTL: "15m"
       JWT_REFRESH_TOKEN_TTL: "720h"
 
@@ -18,9 +20,8 @@ services:
       SMTP_USERNAME: "dev"
       SMTP_PASSWORD: "dev"
       SMTP_FROM: "no-reply@pauza.local"
-
-      ADMIN_SEED_USERNAME: "admin"
-      ADMIN_SEED_PASSWORD: "admin_dev_password_change_me"
+      SMTP_TLS_POLICY: "none"
+      SMTP_TIMEOUT: "5s"
 
       REVENUECAT_API_KEY: "dev"
       REVENUECAT_WEBHOOK_SECRET: "dev"
@@ -29,11 +30,15 @@ services:
 
       STUDENT_VERIFICATION_PROVIDER: "sheerid"
       STUDENT_VERIFICATION_API_KEY: "dev"
+
+      CLEANUP_INTERVAL: "1h"
+      OTP_RETENTION_PERIOD: "24h"
+      REFRESH_TOKEN_REVOKED_RETENTION: "168h"
     depends_on:
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/live"]
       interval: 30s
       timeout: 5s
       retries: 3

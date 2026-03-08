@@ -1,6 +1,8 @@
 # Binaries
 /pauza-server
 /server
+/migrate
+/seed-admin
 *.exe
 
 # Environment (contains secrets)

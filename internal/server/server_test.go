@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/IsorilovA/pauza-server/internal/auth"
 	"github.com/IsorilovA/pauza-server/internal/config"
 )
 
@@ -22,7 +23,7 @@ func testConfig() *config.Config {
 	return &config.Config{
 		Port:               8080,
 		LogLevel:           "info",
-		JWTSecret:          "test-secret-for-unit-tests-only",
+		JWTSecret:          "test-secret-for-unit-tests-32b!!",
 		JWTAccessTokenTTL:  15 * time.Minute,
 		JWTRefreshTokenTTL: 7 * 24 * time.Hour,
 		SMTPHost:           "localhost",
@@ -37,11 +38,43 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(io.Discard, nil))
 }
 
-func TestNew_HealthEndpoint(t *testing.T) {
+func TestNew_LiveEndpoint(t *testing.T) {
 	srv, cleanup := New(testConfig(), testLogger(), nil)
 	defer cleanup()
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/live", nil)
+	rec := httptest.NewRecorder()
+
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected status 200, got: %d", rec.Code)
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp["status"] != "ok" {
+		t.Errorf("expected status 'ok', got: %q", resp["status"])
+	}
+	if resp["timestamp"] == "" {
+		t.Fatal("expected timestamp to be set, got empty string")
+	}
+	if _, err := time.Parse(time.RFC3339, resp["timestamp"]); err != nil {
+		t.Fatalf("expected RFC3339 timestamp, got %q: %v", resp["timestamp"], err)
+	}
+	if !strings.HasSuffix(resp["timestamp"], "Z") {
+		t.Errorf("expected UTC timestamp ending in 'Z', got: %q", resp["timestamp"])
+	}
+}
+
+func TestNew_ReadyEndpoint(t *testing.T) {
+	srv, cleanup := New(testConfig(), testLogger(), nil)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
 	rec := httptest.NewRecorder()
 
 	srv.Handler.ServeHTTP(rec, req)
@@ -83,11 +116,25 @@ func TestNew_NotFoundRoute(t *testing.T) {
 	}
 }
 
-func TestNew_HealthMethodNotAllowed(t *testing.T) {
+func TestNew_LiveMethodNotAllowed(t *testing.T) {
 	srv, cleanup := New(testConfig(), testLogger(), nil)
 	defer cleanup()
 
-	req := httptest.NewRequest(http.MethodPost, "/health", nil)
+	req := httptest.NewRequest(http.MethodPost, "/live", nil)
+	rec := httptest.NewRecorder()
+
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected status 405, got: %d", rec.Code)
+	}
+}
+
+func TestNew_ReadyMethodNotAllowed(t *testing.T) {
+	srv, cleanup := New(testConfig(), testLogger(), nil)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/ready", nil)
 	rec := httptest.NewRecorder()
 
 	srv.Handler.ServeHTTP(rec, req)
@@ -101,7 +148,7 @@ func TestNew_RequestIDHeader(t *testing.T) {
 	srv, cleanup := New(testConfig(), testLogger(), nil)
 	defer cleanup()
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/live", nil)
 	rec := httptest.NewRecorder()
 
 	srv.Handler.ServeHTTP(rec, req)
@@ -116,7 +163,7 @@ func TestNew_RequestIDEchoesClientValue(t *testing.T) {
 	srv, cleanup := New(testConfig(), testLogger(), nil)
 	defer cleanup()
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/live", nil)
 	req.Header.Set("X-Request-Id", "test-client-id-123")
 	rec := httptest.NewRecorder()
 
@@ -312,6 +359,215 @@ func TestNew_ProtectedRouteUnauthorized(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401 for GET /api/v1/me without Authorization, got: %d", rec.Code)
+	}
+}
+
+// TestNew_MeRouteWithValidJWT verifies that GET /api/v1/me with a valid JWT
+// passes the auth middleware and reaches the handler. The nil DB pool causes a
+// panic inside the handler, which the Recoverer middleware converts to 500.
+// Asserting 500 specifically (rather than merely "not 404") proves both the
+// route wiring and the auth middleware pass-through are working.
+func TestNew_MeRouteWithValidJWT(t *testing.T) {
+	cfg := testConfig()
+	srv, cleanup := New(cfg, testLogger(), nil)
+	defer cleanup()
+
+	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
+	if err != nil {
+		t.Fatalf("issuing test JWT: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for GET /api/v1/me with nil pool (panic → Recoverer), got: %d", rec.Code)
+	}
+}
+
+// TestNew_RecovererLogsJSONOnPanic is a full-stack integration test that wires
+// the server via New(), triggers a panic through the /api/v1/me route (nil DB
+// pool), and verifies that the structured recoverer produces a JSON log entry
+// with all expected fields: panic, stack, request_id, method, and path.
+func TestNew_RecovererLogsJSONOnPanic(t *testing.T) {
+	cfg := testConfig()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	srv, cleanup := New(cfg, logger, nil)
+	defer cleanup()
+
+	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
+	if err != nil {
+		t.Fatalf("issuing test JWT: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got: %d", rec.Code)
+	}
+
+	// The log buffer may contain multiple JSON lines (request logger + recoverer).
+	// Find the "panic recovered" entry.
+	var panicEntry map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if msg, _ := entry["msg"].(string); msg == "panic recovered" {
+			panicEntry = entry
+			break
+		}
+	}
+	if panicEntry == nil {
+		t.Fatalf("expected 'panic recovered' JSON log entry, got log output:\n%s", buf.String())
+	}
+
+	// Verify level is ERROR.
+	if lvl, _ := panicEntry["level"].(string); lvl != "ERROR" {
+		t.Errorf("level = %q, want ERROR", lvl)
+	}
+
+	// Verify structured fields are present.
+	if _, ok := panicEntry["panic"]; !ok {
+		t.Error("expected 'panic' field in log entry")
+	}
+	stack, _ := panicEntry["stack"].(string)
+	if stack == "" {
+		t.Error("expected non-empty 'stack' field in log entry")
+	}
+	if !strings.Contains(stack, "goroutine") {
+		t.Errorf("stack does not look like a Go stack trace: %.200s", stack)
+	}
+	if method, _ := panicEntry["method"].(string); method != "GET" {
+		t.Errorf("method = %q, want GET", method)
+	}
+	if path, _ := panicEntry["path"].(string); path != "/api/v1/me" {
+		t.Errorf("path = %q, want /api/v1/me", path)
+	}
+
+	// Verify request_id is present and non-empty, proving that the RequestID
+	// middleware ran before the Recoverer in the middleware stack.
+	reqID, _ := panicEntry["request_id"].(string)
+	if reqID == "" {
+		t.Error("expected non-empty 'request_id' in recoverer log (proves RequestID middleware runs first)")
+	}
+}
+
+// TestNew_MiddlewareOrdering_RequestLoggerSees500 is an integration test that
+// confirms the requestLogger middleware is positioned above the Recoverer in
+// the middleware stack. When a panic occurs, the Recoverer writes a 500 status,
+// and the requestLogger — which wraps the ResponseWriter — should observe and
+// log status=500. This also verifies the request_id appears in the request
+// logger output, confirming RequestID runs before both.
+func TestNew_MiddlewareOrdering_RequestLoggerSees500(t *testing.T) {
+	cfg := testConfig()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	srv, cleanup := New(cfg, logger, nil)
+	defer cleanup()
+
+	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
+	if err != nil {
+		t.Fatalf("issuing test JWT: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got: %d", rec.Code)
+	}
+
+	// Find the "http request" log entry (emitted by requestLogger).
+	var requestLogEntry map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if msg, _ := entry["msg"].(string); msg == "http request" {
+			requestLogEntry = entry
+			break
+		}
+	}
+	if requestLogEntry == nil {
+		t.Fatalf("expected 'http request' JSON log entry, got log output:\n%s", buf.String())
+	}
+
+	// The requestLogger should have observed the 500 written by the Recoverer.
+	if status, ok := requestLogEntry["status"].(float64); !ok || int(status) != http.StatusInternalServerError {
+		t.Errorf("request logger status = %v, want 500 (proves requestLogger wraps Recoverer)", requestLogEntry["status"])
+	}
+
+	// The request logger should include request_id (proving RequestID runs first).
+	if rid, _ := requestLogEntry["request_id"].(string); rid == "" {
+		t.Error("expected non-empty request_id in request logger output")
+	}
+
+	// Verify both a "panic recovered" entry and an "http request" entry exist,
+	// confirming the Recoverer and requestLogger both ran for the same request.
+	var hasPanicEntry bool
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if msg, _ := entry["msg"].(string); msg == "panic recovered" {
+			hasPanicEntry = true
+			break
+		}
+	}
+	if !hasPanicEntry {
+		t.Error("expected 'panic recovered' log entry alongside 'http request' entry")
+	}
+}
+
+// TestNew_MiddlewareOrdering_RequestIDInResponse verifies that the
+// respondRequestID middleware echoes the X-Request-Id even when the Recoverer
+// catches a panic. This proves respondRequestID runs before Recoverer in the
+// middleware chain and that recovery does not suppress response headers.
+func TestNew_MiddlewareOrdering_RequestIDInResponse(t *testing.T) {
+	cfg := testConfig()
+	srv, cleanup := New(cfg, testLogger(), nil)
+	defer cleanup()
+
+	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
+	if err != nil {
+		t.Fatalf("issuing test JWT: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Request-Id", "ordering-test-id")
+	rec := httptest.NewRecorder()
+
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got: %d", rec.Code)
+	}
+
+	// X-Request-Id should be echoed even when the handler panicked,
+	// because respondRequestID writes the header before calling next.
+	got := rec.Header().Get("X-Request-Id")
+	if got != "ordering-test-id" {
+		t.Errorf("X-Request-Id = %q, want %q (proves respondRequestID runs before Recoverer)", got, "ordering-test-id")
 	}
 }
 

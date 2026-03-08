@@ -10,13 +10,14 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/IsorilovA/pauza-server/internal/apperror"
 	"github.com/IsorilovA/pauza-server/internal/auth"
 	"github.com/IsorilovA/pauza-server/internal/config"
 	"github.com/IsorilovA/pauza-server/internal/handler"
 	"github.com/IsorilovA/pauza-server/internal/mail"
 	authmw "github.com/IsorilovA/pauza-server/internal/middleware"
 	"github.com/IsorilovA/pauza-server/internal/ratelimit"
+	"github.com/IsorilovA/pauza-server/internal/repository"
+	"github.com/IsorilovA/pauza-server/internal/service"
 )
 
 // respondRequestID copies the request ID from the context to the X-Request-Id
@@ -101,27 +102,36 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool) (*http.Ser
 	r := chi.NewRouter()
 
 	// Base middleware stack.
-	r.Use(middleware.RequestID)  // generate/forward X-Request-Id in context
-	r.Use(respondRequestID)      // echo request ID back in response header
-	r.Use(middleware.RealIP)     // extract real client IP from proxy headers
-	r.Use(requestLogger(logger)) // log each request with structured fields
-	r.Use(middleware.Recoverer)  // recover from panics, return 500
-	r.Use(limitBody)             // defense-in-depth: cap request bodies
+	r.Use(middleware.RequestID)                            // generate/forward X-Request-Id in context
+	r.Use(respondRequestID)                                // echo request ID back in response header
+	r.Use(authmw.TrustedRealIP(cfg.ParseTrustedProxies())) // extract real client IP only from trusted proxies
+	r.Use(requestLogger(logger))                           // log each request with structured fields
+	r.Use(authmw.Recoverer(logger))                        // recover from panics with structured logging
+	r.Use(limitBody)                                       // defense-in-depth: cap request bodies
 
-	// Health check (not under /api/v1; used by container orchestration probes).
-	r.Get("/health", handler.Health(pool))
+	// Liveness and readiness probes (not under /api/v1; used by container
+	// orchestration). /live is dependency-free; /ready pings the database.
+	r.Get("/live", handler.Live(logger))
+	r.Get("/ready", handler.Ready(pool, logger))
 
 	// Construct shared dependencies for handler wiring.
-	emailSender := mail.NewSMTPSender(
-		cfg.SMTPHost, cfg.SMTPPort,
-		cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom,
-		int(auth.OTPExpiry.Minutes()),
-		logger,
-	)
-	authHandler := handler.NewAuthHandler(
-		pool, emailSender, cfg.JWTSecret,
+	emailSender := mail.NewSMTPSender(mail.SMTPConfig{
+		Host:             cfg.SMTPHost,
+		Port:             cfg.SMTPPort,
+		Username:         cfg.SMTPUsername,
+		Password:         cfg.SMTPPassword,
+		From:             cfg.SMTPFrom,
+		OTPExpiryMinutes: int(auth.OTPExpiry.Minutes()),
+		Timeout:          cfg.SMTPTimeout,
+		TLSPolicy:        cfg.SMTPTLSPolicy,
+		Logger:           logger,
+	})
+	authRepo := repository.NewPgxAuthRepository()
+	authService := service.NewAuthService(
+		pool, authRepo, emailSender, cfg.JWTSecret,
 		cfg.JWTAccessTokenTTL, cfg.JWTRefreshTokenTTL, logger,
 	)
+	authHandler := handler.NewAuthHandler(authService, logger)
 
 	// Per-IP rate limiter for public auth endpoints. The limiter is shared
 	// across all auth routes so that an attacker cannot bypass the budget
@@ -149,15 +159,14 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool) (*http.Ser
 			r.Post("/reset-password", authHandler.ResetPassword)
 		})
 
-		// Protected routes (JWT required).
+		// Protected routes — JWT required. All endpoints in this group
+		// require a valid access token; the middleware stores the
+		// authenticated user in the request context for handlers to use
+		// via middleware.UserFromContext.
 		r.Group(func(r chi.Router) {
-			r.Use(authmw.JWTAuth(cfg.JWTSecret))
+			r.Use(authmw.JWTAuth(cfg.JWTSecret, logger))
 
-			// Placeholder: GET /api/v1/me will return the authenticated
-			// user profile once the user-profile handler is implemented.
-			r.Get("/me", func(w http.ResponseWriter, _ *http.Request) {
-				apperror.NotFound(w, "user profile endpoint not yet implemented")
-			})
+			r.Get("/me", authHandler.GetMe)
 		})
 	})
 

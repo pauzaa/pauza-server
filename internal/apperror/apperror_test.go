@@ -1,7 +1,10 @@
 package apperror_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -351,5 +354,48 @@ func TestConvenienceHelpers_MessagePassthrough(t *testing.T) {
 	}
 	if resp.Error.Message != "token expired" {
 		t.Errorf("message = %q, want %q", resp.Error.Message, "token expired")
+	}
+}
+
+// ---------- SetLogger / injected logger ----------
+
+func TestWriteError_EncodeFailure_LogsViaInjectedLogger(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+
+	// Inject the test logger and restore default after the test.
+	apperror.SetLogger(logger)
+	t.Cleanup(func() { apperror.SetLogger(nil) })
+
+	rec := httptest.NewRecorder()
+
+	// math.NaN() is not representable in JSON and will cause json.Encoder.Encode
+	// to fail, exercising the error-logging path.
+	apperror.WriteError(rec, apperror.CodeInternalError, "fail", math.NaN())
+
+	// Parse the structured log line emitted by the injected logger.
+	logOutput := logBuf.String()
+	if logOutput == "" {
+		t.Fatal("expected a log entry from the injected logger, got nothing")
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(logOutput), &entry); err != nil {
+		t.Fatalf("failed to parse log output as JSON: %v\nraw: %s", err, logOutput)
+	}
+
+	// Verify the log level is ERROR.
+	if lvl, ok := entry["level"].(string); !ok || lvl != "ERROR" {
+		t.Errorf("log level = %v, want %q", entry["level"], "ERROR")
+	}
+
+	// Verify the message.
+	if msg, ok := entry["msg"].(string); !ok || msg != "failed to encode error response" {
+		t.Errorf("log msg = %v, want %q", entry["msg"], "failed to encode error response")
+	}
+
+	// Verify the "err" key is present (structured error field).
+	if _, ok := entry["err"]; !ok {
+		t.Error("expected structured 'err' key in log entry")
 	}
 }

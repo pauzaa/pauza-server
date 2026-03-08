@@ -2,16 +2,23 @@ package database
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
 )
 
+// discardLogger returns a silent logger for unit tests.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
 func TestConnect_InvalidURL(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := Connect(ctx, "not-a-valid-url://")
+	_, err := Connect(ctx, discardLogger(), "not-a-valid-url://")
 	if err == nil {
 		t.Fatal("expected error for invalid database URL, got nil")
 	}
@@ -24,7 +31,7 @@ func TestConnect_UnreachableHost(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := Connect(ctx, "postgres://user:pass@192.0.2.1:5432/testdb?connect_timeout=1")
+	_, err := Connect(ctx, discardLogger(), "postgres://user:pass@192.0.2.1:5432/testdb?connect_timeout=1")
 	if err == nil {
 		t.Fatal("expected error for unreachable host, got nil")
 	}
@@ -38,7 +45,7 @@ func TestConnect_CancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, err := Connect(ctx, "postgres://user:pass@localhost:5432/testdb")
+	_, err := Connect(ctx, discardLogger(), "postgres://user:pass@localhost:5432/testdb")
 	if err == nil {
 		t.Fatal("expected error for cancelled context, got nil")
 	}

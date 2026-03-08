@@ -8,6 +8,7 @@ RUN go mod download
 
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /pauza-server ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -o /pauza-migrate ./cmd/migrate
 
 # Runtime stage
 FROM alpine:3.21
@@ -19,6 +20,7 @@ RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 WORKDIR /app
 
 COPY --from=builder --chown=appuser:appgroup /pauza-server .
+COPY --from=builder --chown=appuser:appgroup /pauza-migrate .
 
 USER appuser
 

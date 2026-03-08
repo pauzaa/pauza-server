@@ -13,13 +13,14 @@ import (
 	"github.com/IsorilovA/pauza-server/internal/config"
 	"github.com/IsorilovA/pauza-server/internal/database"
 	"github.com/IsorilovA/pauza-server/internal/server"
-	"github.com/IsorilovA/pauza-server/migrations"
 )
 
 func main() {
 	// 1. Load configuration from environment variables
 	cfg, err := config.Load()
 	if err != nil {
+		// Use the package-level slog default here because the project
+		// logger has not been configured yet (it depends on cfg.LogLevel).
 		slog.Error("failed to load configuration", "err", err)
 		os.Exit(1)
 	}
@@ -32,31 +33,29 @@ func main() {
 	dbCtx, dbCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer dbCancel()
 
-	pool, err := database.Connect(dbCtx, cfg.DatabaseURL)
+	pool, err := database.Connect(dbCtx, logger, cfg.DatabaseURL)
 	if err != nil {
 		logger.Error("failed to connect to database", "err", err)
 		os.Exit(1)
 	}
 
-	// 4. Run migrations
-	if err := database.RunMigrations(cfg.DatabaseURL, migrations.FS); err != nil {
-		logger.Error("failed to run migrations", "err", err)
-		os.Exit(1)
-	}
-
-	// 5. Seed admin
-	seedCtx, seedCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer seedCancel()
-
-	if err := database.SeedAdmin(seedCtx, pool, cfg.AdminSeedUsername, cfg.AdminSeedPassword); err != nil {
-		logger.Error("failed to seed admin", "err", err)
-		os.Exit(1)
-	}
-
-	// 6. Create HTTP server
+	// 4. Create HTTP server
 	srv, cleanup := server.New(cfg, logger, pool)
 
-	// 7. Start server in a goroutine; report fatal errors via channel
+	// 5. Start background cleanup job for stale auth data.
+	// The process context is cancelled during shutdown so the cleanup
+	// goroutine observes cancellation promptly rather than relying
+	// solely on the stop function.
+	processCtx, processCancel := context.WithCancel(context.Background())
+	defer processCancel()
+
+	stopCleanup := database.StartCleanup(processCtx, pool, logger, database.CleanupConfig{
+		Interval:           cfg.CleanupInterval,
+		OTPRetention:       cfg.OTPRetentionPeriod,
+		RefreshTokenMaxAge: cfg.RefreshTokenRevokedRetention,
+	})
+
+	// 6. Start HTTP server in a goroutine; report fatal errors via channel
 	listenErr := make(chan error, 1)
 	go func() {
 		logger.Info("server starting", "port", cfg.Port)
@@ -65,7 +64,7 @@ func main() {
 		}
 	}()
 
-	// 8. Wait for interrupt signal (SIGINT or SIGTERM) or listen error
+	// 7. Wait for interrupt signal (SIGINT or SIGTERM) or listen error
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -79,7 +78,7 @@ func main() {
 		exitCode = 1
 	}
 
-	// 9. Graceful shutdown with 10-second timeout
+	// 8. Graceful shutdown with 10-second timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -88,6 +87,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Cancel the process context so the cleanup goroutine observes
+	// shutdown promptly, then wait for it to drain.
+	processCancel()
+	stopCleanup()
 	cleanup()
 	pool.Close()
 	logger.Info("server stopped")

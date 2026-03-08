@@ -4,7 +4,30 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 )
+
+// logger is the package-level logger used by WriteError when JSON encoding
+// fails after headers are already written. It defaults to slog.Default().
+var logger atomic.Pointer[slog.Logger]
+
+// SetLogger replaces the package-level logger used for internal error logging.
+// Passing nil resets to slog.Default().
+func SetLogger(l *slog.Logger) {
+	if l == nil {
+		logger.Store(nil)
+		return
+	}
+	logger.Store(l)
+}
+
+// getLogger returns the configured logger, falling back to slog.Default().
+func getLogger() *slog.Logger {
+	if l := logger.Load(); l != nil {
+		return l
+	}
+	return slog.Default()
+}
 
 // Error codes used across the API. Each code maps to a fixed HTTP status via
 // StatusCode. See BACKEND_SPEC.md Section 11 for the canonical list.
@@ -93,7 +116,7 @@ func WriteError(w http.ResponseWriter, code string, message string, details any)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(StatusCode(code))
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		slog.Error("failed to encode error response", "err", err)
+		getLogger().Error("failed to encode error response", "err", err)
 	}
 }
 

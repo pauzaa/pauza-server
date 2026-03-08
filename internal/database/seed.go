@@ -16,7 +16,7 @@ import (
 // INSERT … WHERE NOT EXISTS is used so only the first writer succeeds.
 // A preliminary existence check avoids the cost of bcrypt hashing on
 // every no-op startup.
-func SeedAdmin(ctx context.Context, pool *pgxpool.Pool, username string, password string) error {
+func SeedAdmin(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool, username string, password string) error {
 	if strings.TrimSpace(username) == "" {
 		return fmt.Errorf("admin seed username must not be empty")
 	}
@@ -30,7 +30,7 @@ func SeedAdmin(ctx context.Context, pool *pgxpool.Pool, username string, passwor
 		return fmt.Errorf("checking admin_credentials: %w", err)
 	}
 	if exists {
-		slog.InfoContext(ctx, "admin_credentials table is not empty, skipping seed")
+		logger.InfoContext(ctx, "admin_credentials table is not empty, skipping seed")
 		return nil
 	}
 
@@ -50,9 +50,9 @@ func SeedAdmin(ctx context.Context, pool *pgxpool.Pool, username string, passwor
 
 	if tag.RowsAffected() == 0 {
 		// Lost the race: another instance inserted between our check and INSERT.
-		slog.InfoContext(ctx, "admin_credentials table is not empty, skipping seed")
+		logger.InfoContext(ctx, "admin_credentials table is not empty, skipping seed")
 	} else {
-		slog.InfoContext(ctx, "admin account seeded successfully")
+		logger.InfoContext(ctx, "admin account seeded successfully")
 	}
 
 	return nil

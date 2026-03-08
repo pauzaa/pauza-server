@@ -34,7 +34,9 @@ func migrateDSN(databaseURL string) (string, error) {
 // RunMigrations applies all pending database migrations from the given
 // embedded filesystem. It rewrites the postgres:// or postgresql:// URL
 // scheme to pgx5:// as required by golang-migrate's pgx/v5 driver.
-func RunMigrations(databaseURL string, migrationsFS fs.FS) error {
+// The provided logger is used for all operational log messages; pass
+// slog.Default() at the call site when a dedicated logger is not available.
+func RunMigrations(logger *slog.Logger, databaseURL string, migrationsFS fs.FS) error {
 	pgx5URL, err := migrateDSN(databaseURL)
 	if err != nil {
 		return err
@@ -52,21 +54,21 @@ func RunMigrations(databaseURL string, migrationsFS fs.FS) error {
 	defer func() {
 		srcErr, dbErr := m.Close()
 		if srcErr != nil {
-			slog.Warn("failed to close migration source", "err", srcErr)
+			logger.Warn("failed to close migration source", "err", srcErr)
 		}
 		if dbErr != nil {
-			slog.Warn("failed to close migration database", "err", dbErr)
+			logger.Warn("failed to close migration database", "err", dbErr)
 		}
 	}()
 
 	if err := m.Up(); err != nil {
 		if errors.Is(err, migrate.ErrNoChange) {
-			slog.Info("no new migrations to apply")
+			logger.Info("no new migrations to apply")
 			return nil
 		}
 		return fmt.Errorf("applying migrations: %w", err)
 	}
 
-	slog.Info("migrations applied successfully")
+	logger.Info("migrations applied successfully")
 	return nil
 }

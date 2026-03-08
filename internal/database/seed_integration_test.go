@@ -18,7 +18,7 @@ import (
 func TestSeedAdmin_CreatesAdminRow(t *testing.T) {
 	pool, url := testPool(t)
 
-	if err := RunMigrations(url, migrations.FS); err != nil {
+	if err := RunMigrations(testLogger(), url, migrations.FS); err != nil {
 		t.Fatalf("applying migrations: %v", err)
 	}
 
@@ -28,7 +28,7 @@ func TestSeedAdmin_CreatesAdminRow(t *testing.T) {
 	const username = "admin"
 	const password = "s3cret-pa55word"
 
-	if err := SeedAdmin(ctx, pool, username, password); err != nil {
+	if err := SeedAdmin(ctx, testLogger(), pool, username, password); err != nil {
 		t.Fatalf("SeedAdmin returned unexpected error: %v", err)
 	}
 
@@ -60,7 +60,7 @@ func TestSeedAdmin_CreatesAdminRow(t *testing.T) {
 func TestSeedAdmin_Idempotent(t *testing.T) {
 	pool, url := testPool(t)
 
-	if err := RunMigrations(url, migrations.FS); err != nil {
+	if err := RunMigrations(testLogger(), url, migrations.FS); err != nil {
 		t.Fatalf("applying migrations: %v", err)
 	}
 
@@ -72,7 +72,7 @@ func TestSeedAdmin_Idempotent(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := SeedAdmin(ctx, pool, username, password); err != nil {
+		if err := SeedAdmin(ctx, testLogger(), pool, username, password); err != nil {
 			t.Fatalf("first SeedAdmin: %v", err)
 		}
 	}
@@ -98,7 +98,7 @@ func TestSeedAdmin_Idempotent(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := SeedAdmin(ctx, pool, "other-admin", "different-password"); err != nil {
+		if err := SeedAdmin(ctx, testLogger(), pool, "other-admin", "different-password"); err != nil {
 			t.Fatalf("second SeedAdmin: %v", err)
 		}
 	}
@@ -130,14 +130,14 @@ func TestSeedAdmin_Idempotent(t *testing.T) {
 func TestSeedAdmin_CancelledContext(t *testing.T) {
 	pool, url := testPool(t)
 
-	if err := RunMigrations(url, migrations.FS); err != nil {
+	if err := RunMigrations(testLogger(), url, migrations.FS); err != nil {
 		t.Fatalf("applying migrations: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	err := SeedAdmin(ctx, pool, "admin", "password")
+	err := SeedAdmin(ctx, testLogger(), pool, "admin", "password")
 	if err == nil {
 		t.Fatal("expected error for cancelled context, got nil")
 	}

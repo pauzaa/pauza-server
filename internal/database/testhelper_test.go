@@ -5,6 +5,8 @@ package database
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"testing"
 	"time"
@@ -12,6 +14,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// testLogger returns a silent logger suitable for integration tests. It
+// discards all output so that operational log lines from Connect and
+// RunMigrations do not pollute test output.
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
 
 // testDatabaseURL reads TEST_DATABASE_URL from the environment and skips the
 // test when unset. This keeps integration tests opt-in: they only run when a
