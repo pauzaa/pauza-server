@@ -8,28 +8,43 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Compile-time interface satisfaction checks.
 var _ Sender = (*SMTPSender)(nil)
-var _ EmailSender = (*SMTPSender)(nil)
 
 // newTestSender returns an SMTPSender suitable for unit tests that never
 // reach a real SMTP server.  It uses deterministic dummy values and a
 // silent logger.
 func newTestSender() *SMTPSender {
-	return NewSMTPSender(
-		"smtp.example.com", 587,
-		"u", "p", "f@example.com",
-		10,
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-	)
+	return NewSMTPSender(SMTPConfig{
+		Host:             "smtp.example.com",
+		Port:             587,
+		Username:         "u",
+		Password:         "p",
+		From:             "f@example.com",
+		OTPExpiryMinutes: 10,
+		Timeout:          30 * time.Second,
+		TLSPolicy:        "mandatory",
+		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
 }
 
 func TestNewSMTPSender_SetsFields(t *testing.T) {
-	s := NewSMTPSender("smtp.example.com", 587, "user@example.com", "secret", "noreply@example.com", 10, nil)
+	s := NewSMTPSender(SMTPConfig{
+		Host:             "smtp.example.com",
+		Port:             587,
+		Username:         "user@example.com",
+		Password:         "secret",
+		From:             "noreply@example.com",
+		OTPExpiryMinutes: 10,
+		Timeout:          30 * time.Second,
+		TLSPolicy:        "mandatory",
+	})
 	if s == nil {
 		t.Fatal("expected non-nil SMTPSender")
 	}
@@ -51,6 +66,12 @@ func TestNewSMTPSender_SetsFields(t *testing.T) {
 	if s.otpExpiryMinutes != 10 {
 		t.Errorf("otpExpiryMinutes = %d, want %d", s.otpExpiryMinutes, 10)
 	}
+	if s.timeout != 30*time.Second {
+		t.Errorf("timeout = %v, want %v", s.timeout, 30*time.Second)
+	}
+	if s.tlsPolicy != "mandatory" {
+		t.Errorf("tlsPolicy = %q, want %q", s.tlsPolicy, "mandatory")
+	}
 	if s.logger == nil {
 		t.Error("expected non-nil logger when nil is passed")
 	}
@@ -58,7 +79,17 @@ func TestNewSMTPSender_SetsFields(t *testing.T) {
 
 func TestNewSMTPSender_UsesProvidedLogger(t *testing.T) {
 	custom := slog.New(slog.NewTextHandler(io.Discard, nil))
-	s := NewSMTPSender("smtp.example.com", 587, "user@example.com", "secret", "noreply@example.com", 10, custom)
+	s := NewSMTPSender(SMTPConfig{
+		Host:             "smtp.example.com",
+		Port:             587,
+		Username:         "user@example.com",
+		Password:         "secret",
+		From:             "noreply@example.com",
+		OTPExpiryMinutes: 10,
+		Timeout:          30 * time.Second,
+		TLSPolicy:        "mandatory",
+		Logger:           custom,
+	})
 	if s.logger != custom {
 		t.Error("expected sender to use the provided logger")
 	}
@@ -204,7 +235,17 @@ func TestSendOTP_UnknownPurpose(t *testing.T) {
 }
 
 func TestSendOTP_HeaderInjectionInFrom(t *testing.T) {
-	s := NewSMTPSender("smtp.example.com", 587, "u", "p", "evil@example.com\nBcc: spy@evil.com", 10, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s := NewSMTPSender(SMTPConfig{
+		Host:             "smtp.example.com",
+		Port:             587,
+		Username:         "u",
+		Password:         "p",
+		From:             "evil@example.com\nBcc: spy@evil.com",
+		OTPExpiryMinutes: 10,
+		Timeout:          30 * time.Second,
+		TLSPolicy:        "mandatory",
+		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
 	err := s.SendOTP(context.Background(), "ok@example.com", "123456", PurposeEmailVerification)
 	if err == nil {
 		t.Fatal("expected error for header injection in from")
@@ -215,7 +256,17 @@ func TestSendOTP_HeaderInjectionInFrom(t *testing.T) {
 }
 
 func TestSendOTP_HeaderInjectionInHost(t *testing.T) {
-	s := NewSMTPSender("smtp.example.com\nevil-header: injected", 587, "u", "p", "f@example.com", 10, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s := NewSMTPSender(SMTPConfig{
+		Host:             "smtp.example.com\nevil-header: injected",
+		Port:             587,
+		Username:         "u",
+		Password:         "p",
+		From:             "f@example.com",
+		OTPExpiryMinutes: 10,
+		Timeout:          30 * time.Second,
+		TLSPolicy:        "mandatory",
+		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
 	err := s.SendOTP(context.Background(), "ok@example.com", "123456", PurposeEmailVerification)
 	if err == nil {
 		t.Fatal("expected error for header injection in host")
@@ -226,7 +277,17 @@ func TestSendOTP_HeaderInjectionInHost(t *testing.T) {
 }
 
 func TestSendOTP_HeaderInjectionInUsername(t *testing.T) {
-	s := NewSMTPSender("smtp.example.com", 587, "user\r\nRCPT TO:<spy@evil.com>", "p", "f@example.com", 10, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s := NewSMTPSender(SMTPConfig{
+		Host:             "smtp.example.com",
+		Port:             587,
+		Username:         "user\r\nRCPT TO:<spy@evil.com>",
+		Password:         "p",
+		From:             "f@example.com",
+		OTPExpiryMinutes: 10,
+		Timeout:          30 * time.Second,
+		TLSPolicy:        "mandatory",
+		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
 	err := s.SendOTP(context.Background(), "ok@example.com", "123456", PurposeEmailVerification)
 	if err == nil {
 		t.Fatal("expected error for header injection in username")
@@ -237,7 +298,17 @@ func TestSendOTP_HeaderInjectionInUsername(t *testing.T) {
 }
 
 func TestSendOTP_HeaderInjectionInPassword(t *testing.T) {
-	s := NewSMTPSender("smtp.example.com", 587, "u", "pass\r\nRCPT TO:<spy@evil.com>", "f@example.com", 10, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s := NewSMTPSender(SMTPConfig{
+		Host:             "smtp.example.com",
+		Port:             587,
+		Username:         "u",
+		Password:         "pass\r\nRCPT TO:<spy@evil.com>",
+		From:             "f@example.com",
+		OTPExpiryMinutes: 10,
+		Timeout:          30 * time.Second,
+		TLSPolicy:        "mandatory",
+		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
 	err := s.SendOTP(context.Background(), "ok@example.com", "123456", PurposeEmailVerification)
 	if err == nil {
 		t.Fatal("expected error for header injection in password")
@@ -302,8 +373,11 @@ func fakeSMTPServer(t *testing.T, recipientEmail string) (net.Listener, string) 
 	return ln, ln.Addr().String()
 }
 
-func TestSendOTP_SMTPErrorSanitizesRecipient(t *testing.T) {
-	const recipient = "victim@example.com"
+// smtpSanitizationFixture sets up a fake SMTP server that rejects the given
+// recipient and returns the resulting error, error message, and captured log
+// output. It is a shared helper for the SMTP privacy/sanitization tests.
+func smtpSanitizationFixture(t *testing.T, recipient string) (error, string, string) {
+	t.Helper()
 	ln, addr := fakeSMTPServer(t, recipient)
 	defer ln.Close()
 
@@ -311,32 +385,57 @@ func TestSendOTP_SMTPErrorSanitizesRecipient(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
-	s := NewSMTPSender(host, port, "user", "pass", "noreply@example.com", 10, logger)
+	s := NewSMTPSender(SMTPConfig{
+		Host:             host,
+		Port:             port,
+		Username:         "user",
+		Password:         "pass",
+		From:             "noreply@example.com",
+		OTPExpiryMinutes: 10,
+		Timeout:          30 * time.Second,
+		TLSPolicy:        "none",
+		Logger:           logger,
+	})
 
 	err := s.SendOTP(context.Background(), recipient, "123456", PurposeEmailVerification)
 	if err == nil {
 		t.Fatal("expected SMTP error, got nil")
 	}
 
-	errMsg := err.Error()
+	return err, err.Error(), logBuf.String()
+}
 
-	// The returned error must not contain the raw recipient email.
+func TestSendOTP_SMTPErrorOmitsRecipientFromError(t *testing.T) {
+	const recipient = "victim@example.com"
+	_, errMsg, _ := smtpSanitizationFixture(t, recipient)
+
 	if strings.Contains(errMsg, recipient) {
 		t.Errorf("returned error contains raw recipient email %q: %s", recipient, errMsg)
 	}
+}
 
-	// The error should still indicate an SMTP-level problem.
+func TestSendOTP_SMTPErrorRetainsPrefix(t *testing.T) {
+	const recipient = "victim@example.com"
+	_, errMsg, _ := smtpSanitizationFixture(t, recipient)
+
 	if !strings.Contains(errMsg, "sending otp email") {
 		t.Errorf("error missing prefix: %s", errMsg)
 	}
+}
 
-	// Verify the log line also does not contain the raw recipient.
-	logOutput := logBuf.String()
+func TestSendOTP_LogOmitsRawRecipient(t *testing.T) {
+	const recipient = "victim@example.com"
+	_, _, logOutput := smtpSanitizationFixture(t, recipient)
+
 	if strings.Contains(logOutput, recipient) {
 		t.Errorf("log output contains raw recipient email %q:\n%s", recipient, logOutput)
 	}
+}
 
-	// The log should contain a masked form of the recipient for correlation.
+func TestSendOTP_LogContainsMaskedRecipient(t *testing.T) {
+	const recipient = "victim@example.com"
+	_, _, logOutput := smtpSanitizationFixture(t, recipient)
+
 	if !strings.Contains(logOutput, "v***@e***.com") {
 		t.Errorf("log output missing masked recipient; got:\n%s", logOutput)
 	}
@@ -349,7 +448,9 @@ func splitHostPort(t *testing.T, addr string) (string, int) {
 	if err != nil {
 		t.Fatalf("SplitHostPort(%q): %v", addr, err)
 	}
-	var port int
-	fmt.Sscanf(portStr, "%d", &port)
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("Atoi(%q): %v", portStr, err)
+	}
 	return host, port
 }

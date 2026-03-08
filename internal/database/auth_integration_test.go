@@ -42,7 +42,7 @@ func setupTestPool(t *testing.T) *pgxpool.Pool {
 
 	pool, url := testPool(t)
 
-	if err := RunMigrations(url, migrations.FS); err != nil {
+	if err := RunMigrations(testLogger(), url, migrations.FS); err != nil {
 		t.Fatalf("applying migrations: %v", err)
 	}
 

@@ -13,7 +13,8 @@ import (
 // It extracts the token from the Authorization header (Bearer scheme), validates
 // it using the provided secret, and stores the authenticated user in the request
 // context. Requests without a valid token receive a 401 UNAUTHORIZED response.
-func JWTAuth(secret string) func(http.Handler) http.Handler {
+// The provided logger is used for structured warning output on auth failures.
+func JWTAuth(secret string, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			header := r.Header.Get("Authorization")
@@ -24,7 +25,7 @@ func JWTAuth(secret string) func(http.Handler) http.Handler {
 
 			parts := strings.SplitN(header, " ", 2)
 			if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-				slog.WarnContext(r.Context(), "jwt auth: malformed authorization header",
+				logger.WarnContext(r.Context(), "jwt auth: malformed authorization header",
 					"path", r.URL.Path)
 				apperror.Unauthorized(w, "missing or invalid authentication")
 				return
@@ -34,7 +35,7 @@ func JWTAuth(secret string) func(http.Handler) http.Handler {
 			// Defense-in-depth: "Bearer " (trailing space) passes SplitN
 			// but yields an empty token string.
 			if tokenString == "" {
-				slog.WarnContext(r.Context(), "jwt auth: empty bearer token",
+				logger.WarnContext(r.Context(), "jwt auth: empty bearer token",
 					"path", r.URL.Path)
 				apperror.Unauthorized(w, "missing or invalid authentication")
 				return
@@ -42,7 +43,7 @@ func JWTAuth(secret string) func(http.Handler) http.Handler {
 
 			claims, err := auth.ValidateAccessToken(tokenString, secret)
 			if err != nil {
-				slog.WarnContext(r.Context(), "jwt auth: token validation failed",
+				logger.WarnContext(r.Context(), "jwt auth: token validation failed",
 					"path", r.URL.Path, "err", err)
 				apperror.Unauthorized(w, "missing or invalid authentication")
 				return

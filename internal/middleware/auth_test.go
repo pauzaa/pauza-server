@@ -1,9 +1,13 @@
 package middleware_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +18,12 @@ import (
 )
 
 const testSecret = "test-secret-key-at-least-32-bytes!"
+
+// discardLogger returns a logger that silently drops all output, suitable for
+// tests that do not need to inspect log messages.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
 
 // handlerSpy records whether ServeHTTP was called. The atomic.Bool is
 // safe for concurrent use, which future-proofs the spy against parallel
@@ -50,7 +60,7 @@ func assertUnauthorized(t *testing.T, rec *httptest.ResponseRecorder) {
 
 func TestJWTAuth_MissingHeader(t *testing.T) {
 	spy := &handlerSpy{}
-	handler := middleware.JWTAuth(testSecret)(spy)
+	handler := middleware.JWTAuth(testSecret, discardLogger())(spy)
 
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	rec := httptest.NewRecorder()
@@ -77,7 +87,7 @@ func TestJWTAuth_MalformedHeader(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			spy := &handlerSpy{}
-			handler := middleware.JWTAuth(testSecret)(spy)
+			handler := middleware.JWTAuth(testSecret, discardLogger())(spy)
 
 			req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 			req.Header.Set("Authorization", tc.header)
@@ -123,7 +133,7 @@ func TestJWTAuth_BearerCaseInsensitive(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			})
 
-			handler := middleware.JWTAuth(testSecret)(inner)
+			handler := middleware.JWTAuth(testSecret, discardLogger())(inner)
 
 			req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 			req.Header.Set("Authorization", tc.prefix+" "+tokenStr)
@@ -162,7 +172,7 @@ func TestJWTAuth_ExpiredToken(t *testing.T) {
 	}
 
 	spy := &handlerSpy{}
-	handler := middleware.JWTAuth(testSecret)(spy)
+	handler := middleware.JWTAuth(testSecret, discardLogger())(spy)
 
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	req.Header.Set("Authorization", "Bearer "+tokenStr)
@@ -190,7 +200,7 @@ func TestJWTAuth_WrongSecret(t *testing.T) {
 	}
 
 	spy := &handlerSpy{}
-	handler := middleware.JWTAuth(wrongSecret)(spy)
+	handler := middleware.JWTAuth(wrongSecret, discardLogger())(spy)
 
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	req.Header.Set("Authorization", "Bearer "+tokenStr)
@@ -223,7 +233,7 @@ func TestJWTAuth_ValidToken(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := middleware.JWTAuth(testSecret)(inner)
+	handler := middleware.JWTAuth(testSecret, discardLogger())(inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	req.Header.Set("Authorization", "Bearer "+tokenStr)
@@ -245,5 +255,39 @@ func TestJWTAuth_ValidToken(t *testing.T) {
 	}
 	if gotUser.Email != email {
 		t.Errorf("Email = %q, want %q", gotUser.Email, email)
+	}
+}
+
+func TestJWTAuth_MalformedInput_LogsWarning(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	spy := &handlerSpy{}
+	handler := middleware.JWTAuth(testSecret, logger)(spy)
+
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.Header.Set("Authorization", "Token abc123")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	assertUnauthorized(t, rec)
+	if spy.called.Load() {
+		t.Error("next handler should not have been called")
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, "jwt auth: malformed authorization header") {
+		t.Errorf("expected warning message in log output, got: %s", logged)
+	}
+	if !strings.Contains(logged, `"level":"WARN"`) {
+		t.Errorf("expected WARN level in log output, got: %s", logged)
+	}
+	if !strings.Contains(logged, `"path":"/protected"`) {
+		t.Errorf("expected path field in log output, got: %s", logged)
+	}
+	// Ensure the raw Authorization header value is NOT logged (no secret leak).
+	if strings.Contains(logged, "abc123") {
+		t.Errorf("log output must not contain the raw token value, got: %s", logged)
 	}
 }

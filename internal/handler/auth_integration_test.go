@@ -33,6 +33,8 @@ import (
 	"github.com/IsorilovA/pauza-server/internal/handler"
 	"github.com/IsorilovA/pauza-server/internal/mail"
 	authmw "github.com/IsorilovA/pauza-server/internal/middleware"
+	"github.com/IsorilovA/pauza-server/internal/repository"
+	"github.com/IsorilovA/pauza-server/internal/service"
 	"github.com/IsorilovA/pauza-server/migrations"
 )
 
@@ -41,7 +43,7 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	testJWTSecret          = "integration-test-secret-key"
+	testJWTSecret          = "integration-test-secret-key-32b!"
 	testJWTAccessTokenTTL  = 15 * time.Minute
 	testJWTRefreshTokenTTL = 7 * 24 * time.Hour
 
@@ -55,17 +57,15 @@ const (
 	msgInvalidCredentials = "Invalid email or password"
 )
 
-// captureSender is an in-memory mail.EmailSender that records every OTP sent.
+// captureSender is an in-memory mail.Sender that records every OTP sent.
 type captureSender struct {
 	mu    sync.Mutex
 	calls []capturedOTP
 }
 
-// Compile-time interface check: captureSender must implement mail.EmailSender
+// Compile-time interface check: captureSender must implement mail.Sender
 // (the type used by AuthHandler's constructor and struct field).
-// EmailSender is a type alias for mail.Sender, so both names work identically;
-// we use EmailSender here for consistency with the handler package.
-var _ mail.EmailSender = (*captureSender)(nil)
+var _ mail.Sender = (*captureSender)(nil)
 
 type capturedOTP struct {
 	To      string
@@ -107,9 +107,9 @@ func testDatabaseURL(t *testing.T) string {
 
 // setupTestServerWithMailer resets the test database, applies migrations, and
 // returns an httptest.Server backed by the full chi router and the underlying
-// pgxpool.Pool for direct DB access. The caller provides the mail.EmailSender
+// pgxpool.Pool for direct DB access. The caller provides the mail.Sender
 // implementation, which allows tests to inject controllable or failing senders.
-func setupTestServerWithMailer(t *testing.T, mailer mail.EmailSender) (*httptest.Server, *pgxpool.Pool) {
+func setupTestServerWithMailer(t *testing.T, mailer mail.Sender) (*httptest.Server, *pgxpool.Pool) {
 	t.Helper()
 
 	dbURL := testDatabaseURL(t)
@@ -130,7 +130,7 @@ func setupTestServerWithMailer(t *testing.T, mailer mail.EmailSender) (*httptest
 	resetDatabase(t, pool)
 
 	// Apply migrations.
-	if err := database.RunMigrations(dbURL, migrations.FS); err != nil {
+	if err := database.RunMigrations(slog.New(slog.NewTextHandler(io.Discard, nil)), dbURL, migrations.FS); err != nil {
 		pool.Close()
 		t.Fatalf("applying migrations: %v", err)
 	}
@@ -155,12 +155,15 @@ func setupTestServerWithMailer(t *testing.T, mailer mail.EmailSender) (*httptest
 		})
 	})
 
-	r.Get("/health", handler.Health(pool))
+	r.Get("/live", handler.Live(logger))
+	r.Get("/ready", handler.Ready(pool, logger))
 
-	authHandler := handler.NewAuthHandler(
-		pool, mailer, testJWTSecret,
+	authRepo := repository.NewPgxAuthRepository()
+	authService := service.NewAuthService(
+		pool, authRepo, mailer, testJWTSecret,
 		testJWTAccessTokenTTL, testJWTRefreshTokenTTL, logger,
 	)
+	authHandler := handler.NewAuthHandler(authService, logger)
 
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public auth routes (no JWT required).
@@ -175,12 +178,9 @@ func setupTestServerWithMailer(t *testing.T, mailer mail.EmailSender) (*httptest
 
 		// Protected routes (JWT required).
 		r.Group(func(r chi.Router) {
-			r.Use(authmw.JWTAuth(testJWTSecret))
+			r.Use(authmw.JWTAuth(testJWTSecret, logger))
 
-			// Placeholder: mirrors production server.go /me stub.
-			r.Get("/me", func(w http.ResponseWriter, _ *http.Request) {
-				apperror.NotFound(w, "user profile endpoint not yet implemented")
-			})
+			r.Get("/me", authHandler.GetMe)
 		})
 	})
 
@@ -239,6 +239,24 @@ func postJSON(t *testing.T, url string, body any) *http.Response {
 	resp, err := http.Post(url, "application/json", bytes.NewReader(b))
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)
+	}
+	return resp
+}
+
+// getWithAuth sends a GET request with a Bearer token Authorization header
+// and returns the response.
+func getWithAuth(t *testing.T, url, accessToken string) *http.Response {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("creating GET request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
 	}
 	return resp
 }
@@ -398,6 +416,133 @@ func TestIntegration_RegisterVerifyLogin(t *testing.T) {
 	}
 	if loginResp.User.Email != email {
 		t.Errorf("login: expected email %q, got %q", email, loginResp.User.Email)
+	}
+}
+
+// TestIntegration_GetMe exercises the GET /api/v1/me happy path end-to-end:
+// Register -> Verify-OTP -> GET /me. It verifies the response shape matches
+// the BACKEND_SPEC Section 5.3 contract: all top-level user fields are
+// present and subscription is null for a newly verified user with no plan.
+func TestIntegration_GetMe(t *testing.T) {
+	ts, _, mailer := setupTestServer(t)
+
+	const email = "getme@example.com"
+	const password = "StrongPass123!"
+
+	// Register and verify to obtain an access token.
+	ar := registerAndVerify(t, ts.URL, mailer, email, password)
+	if ar.AccessToken == "" {
+		t.Fatal("registerAndVerify: expected non-empty access_token")
+	}
+
+	// Call GET /api/v1/me with the access token.
+	resp := getWithAuth(t, ts.URL+"/api/v1/me", ar.AccessToken)
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("GET /me: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("GET /me: Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	// Decode into a map to verify the full response shape without
+	// depending on internal struct definitions.
+	var me map[string]any
+	decodeJSON(t, resp, &me)
+
+	// Required top-level string fields per BACKEND_SPEC §5.3.
+	for _, field := range []string{"id", "email", "name", "username", "created_at"} {
+		val, ok := me[field]
+		if !ok {
+			t.Errorf("GET /me: missing field %q", field)
+			continue
+		}
+		if _, isStr := val.(string); !isStr {
+			t.Errorf("GET /me: field %q should be a string, got %T", field, val)
+		}
+	}
+
+	// email must match the registered address.
+	if got, _ := me["email"].(string); got != email {
+		t.Errorf("GET /me: email = %q, want %q", got, email)
+	}
+
+	// id must be a non-empty UUID.
+	if got, _ := me["id"].(string); got == "" {
+		t.Error("GET /me: id is empty")
+	}
+
+	// created_at must be a valid RFC3339 timestamp.
+	if createdAt, _ := me["created_at"].(string); createdAt != "" {
+		if _, err := time.Parse(time.RFC3339, createdAt); err != nil {
+			t.Errorf("GET /me: created_at %q is not valid RFC3339: %v", createdAt, err)
+		}
+	}
+
+	// leaderboard_visible must be a boolean.
+	if _, ok := me["leaderboard_visible"].(bool); !ok {
+		t.Errorf("GET /me: leaderboard_visible should be a bool, got %T", me["leaderboard_visible"])
+	}
+
+	// profile_picture_url must be present (null is fine for a new user).
+	if _, ok := me["profile_picture_url"]; !ok {
+		t.Error("GET /me: missing field profile_picture_url")
+	}
+
+	// subscription must be present and null for a newly verified user
+	// with no active subscription.
+	subVal, ok := me["subscription"]
+	if !ok {
+		t.Error("GET /me: missing field subscription")
+	} else if subVal != nil {
+		t.Errorf("GET /me: subscription should be null for new user, got %v", subVal)
+	}
+}
+
+// TestIntegration_GetMe_DeletedUser verifies that a valid JWT for a user whose
+// row has been deleted from the database returns 401 Unauthorized, not 404.
+// This exercises the pgx.ErrNoRows → 401 mapping in GetMe.
+func TestIntegration_GetMe_DeletedUser(t *testing.T) {
+	ts, pool, mailer := setupTestServer(t)
+
+	const email = "deleted-getme@example.com"
+	const password = "StrongPass123!"
+
+	// Register and verify to obtain a valid access token.
+	ar := registerAndVerify(t, ts.URL, mailer, email, password)
+	if ar.AccessToken == "" {
+		t.Fatal("registerAndVerify: expected non-empty access_token")
+	}
+
+	// Sanity check: the token works before deletion.
+	resp := getWithAuth(t, ts.URL+"/api/v1/me", ar.AccessToken)
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("GET /me before delete: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	discardBody(t, resp)
+
+	// Delete the user row directly in the database.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := pool.Exec(ctx, "DELETE FROM users WHERE id = $1", ar.User.ID)
+	if err != nil {
+		t.Fatalf("deleting user row: %v", err)
+	}
+
+	// Call GET /me with the now-stale token; expect 401.
+	resp = getWithAuth(t, ts.URL+"/api/v1/me", ar.AccessToken)
+	if resp.StatusCode != http.StatusUnauthorized {
+		body := readBody(t, resp)
+		t.Fatalf("GET /me after delete: expected 401, got %d: %s", resp.StatusCode, body)
+	}
+
+	var errResp apperror.ErrorResponse
+	decodeJSON(t, resp, &errResp)
+	if errResp.Error.Code != apperror.CodeUnauthorized {
+		t.Errorf("GET /me after delete: code = %q, want %q", errResp.Error.Code, apperror.CodeUnauthorized)
 	}
 }
 
@@ -852,6 +997,149 @@ func TestIntegration_ConcurrentRefreshSameToken(t *testing.T) {
 		t.Fatalf("refresh with winning token: expected 200, got %d: %s", resp.StatusCode, body)
 	}
 	discardBody(t, resp)
+}
+
+// TestIntegration_ConcurrentVerifyOTPSameCode fires N concurrent verify-otp
+// requests using the same valid OTP code and asserts that exactly one succeeds
+// (200) while the rest fail (401). No request may return 500, which would
+// indicate a serialisation bug in the handler's FOR UPDATE locking. The winning
+// response's access token must be usable against GET /api/v1/me.
+func TestIntegration_ConcurrentVerifyOTPSameCode(t *testing.T) {
+	ts, _, mailer := setupTestServer(t)
+
+	const email = "concurrent-verify@example.com"
+	const password = "StrongPass123!"
+	const concurrency = 5
+
+	// Register to create an unverified user + OTP.
+	resp := postJSON(t, ts.URL+"/api/v1/auth/register", map[string]string{
+		"email": email, "password": password,
+	})
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("register: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	discardBody(t, resp)
+
+	// Retrieve the OTP that was captured by the in-memory mailer.
+	otp, err := mailer.lastOTP(email, mail.PurposeEmailVerification)
+	if err != nil {
+		t.Fatalf("no OTP captured: %v", err)
+	}
+
+	// Launch N goroutines that all try to verify-otp with the same code,
+	// synchronised by a barrier so they fire at (roughly) the same instant.
+	type result struct {
+		status  int
+		body    authResponse
+		rawBody string
+	}
+	results := make([]result, concurrency)
+
+	var ready sync.WaitGroup
+	ready.Add(concurrency)
+	var start sync.WaitGroup
+	start.Add(1)
+	var done sync.WaitGroup
+	done.Add(concurrency)
+
+	for i := range concurrency {
+		go func(idx int) {
+			defer done.Done()
+
+			bodyBytes, marshalErr := json.Marshal(map[string]string{
+				"email": email, "otp": otp,
+			})
+			if marshalErr != nil {
+				t.Errorf("goroutine %d: marshal: %v", idx, marshalErr)
+				ready.Done()
+				return
+			}
+
+			ready.Done()
+			start.Wait() // all goroutines fire at once
+
+			r, postErr := http.Post(
+				ts.URL+"/api/v1/auth/verify-otp",
+				"application/json",
+				bytes.NewReader(bodyBytes),
+			)
+			if postErr != nil {
+				t.Errorf("goroutine %d: POST: %v", idx, postErr)
+				return
+			}
+			defer r.Body.Close()
+
+			results[idx].status = r.StatusCode
+			if r.StatusCode == http.StatusOK {
+				raw, readErr := io.ReadAll(r.Body)
+				if readErr != nil {
+					t.Errorf("goroutine %d: reading 200 body: %v", idx, readErr)
+					return
+				}
+				results[idx].rawBody = string(raw)
+				if decErr := json.Unmarshal(raw, &results[idx].body); decErr != nil {
+					t.Errorf("goroutine %d: malformed JSON in 200 response: %v\nbody: %s", idx, decErr, raw)
+				}
+			} else {
+				if _, discardErr := io.Copy(io.Discard, r.Body); discardErr != nil {
+					t.Errorf("goroutine %d: draining non-200 body: %v", idx, discardErr)
+				}
+			}
+		}(i)
+	}
+
+	ready.Wait() // wait for all goroutines to be ready
+	start.Done() // release them all at once
+	done.Wait()  // wait for all to finish
+
+	// Count successes and failures. Every non-winning request must be 401;
+	// a 500 would indicate a serialisation bug in the handler and must fail
+	// the test loudly.
+	successCount := 0
+	winnerIdx := -1
+	for i, r := range results {
+		switch r.status {
+		case http.StatusOK:
+			successCount++
+			winnerIdx = i
+		case http.StatusUnauthorized:
+			// expected for losers — the OTP was already consumed
+		default:
+			t.Errorf("goroutine %d: unexpected status %d (want 200 or 401)", i, r.status)
+		}
+	}
+
+	if successCount != 1 {
+		for i, r := range results {
+			t.Logf("  goroutine %d: status=%d", i, r.status)
+		}
+		t.Fatalf("expected exactly 1 success, got %d", successCount)
+	}
+
+	// The winner must have received valid tokens and user info.
+	winner := results[winnerIdx]
+	if winner.body.AccessToken == "" {
+		t.Errorf("winning response has empty access_token (raw body: %s)", winner.rawBody)
+	}
+	if winner.body.RefreshToken == "" {
+		t.Errorf("winning response has empty refresh_token (raw body: %s)", winner.rawBody)
+	}
+	if winner.body.User.Email != email {
+		t.Errorf("winning response email = %q, want %q (raw body: %s)", winner.body.User.Email, email, winner.rawBody)
+	}
+
+	// The winning access token must be usable against GET /api/v1/me.
+	meResp := getWithAuth(t, ts.URL+"/api/v1/me", winner.body.AccessToken)
+	if meResp.StatusCode != http.StatusOK {
+		body := readBody(t, meResp)
+		t.Fatalf("GET /me with winning token: expected 200, got %d: %s", meResp.StatusCode, body)
+	}
+	var me map[string]any
+	decodeJSON(t, meResp, &me)
+	if got, _ := me["email"].(string); got != email {
+		t.Errorf("GET /me: email = %q, want %q", got, email)
+	}
 }
 
 // TestIntegration_ForgotPasswordNonExistentEmail verifies that forgot-password
@@ -1355,7 +1643,7 @@ func TestIntegration_ConcurrentReRegistrationLifecycle(t *testing.T) {
 // SMTP-failure cleanup race test
 // ---------------------------------------------------------------------------
 
-// smtpRaceSender is a mail.EmailSender that allows deterministic simulation
+// smtpRaceSender is a mail.Sender that allows deterministic simulation
 // of the SMTP-failure cleanup race condition. The first SendOTP call blocks
 // until the gate channel is closed (simulating a slow/failing SMTP server),
 // then returns errSMTP. The second and subsequent calls succeed immediately
@@ -1369,7 +1657,7 @@ type smtpRaceSender struct {
 }
 
 // Compile-time interface check.
-var _ mail.EmailSender = (*smtpRaceSender)(nil)
+var _ mail.Sender = (*smtpRaceSender)(nil)
 
 func (s *smtpRaceSender) SendOTP(ctx context.Context, to, otp, purpose string) error {
 	s.mu.Lock()

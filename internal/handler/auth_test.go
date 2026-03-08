@@ -1,15 +1,18 @@
 package handler
 
 // This file contains unit tests for auth handler validation paths. The
-// handler is constructed with a nil database pool, so any test that reaches
-// a database call will panic — this is intentional. DB-backed flows
-// (credential checks, OTP verification, token persistence, anti-enumeration
-// at the DB layer, etc.) are covered by integration tests in
-// auth_integration_test.go which run against a real Postgres instance.
+// handler is constructed with a service backed by nil dependencies because
+// these tests only exercise request validation, which returns before any
+// service/DB interaction. No test in this file should reach — or assert
+// that it reaches — a service or database call. DB-backed flows (credential
+// checks, OTP verification, token persistence, anti-enumeration at the DB
+// layer, etc.) are covered by integration tests in auth_integration_test.go
+// which run against a real Postgres instance.
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,14 +22,15 @@ import (
 	"time"
 
 	"github.com/IsorilovA/pauza-server/internal/apperror"
+	"github.com/IsorilovA/pauza-server/internal/service"
 )
 
-// mockEmailSender is a no-op stub of mail.EmailSender for validation-only
+// mockEmailSender is a no-op stub of mail.Sender for validation-only
 // handler tests. None of the unit tests here reach the mailer, so the
 // implementation simply returns nil.
 //
-// No explicit compile-time interface check (var _ mail.EmailSender = ...) is
-// needed: NewAuthHandler's mailer parameter is typed mail.EmailSender, so the
+// No explicit compile-time interface check (var _ mail.Sender = ...) is
+// needed: NewAuthService's mailer parameter is typed mail.Sender, so the
 // compiler already verifies satisfaction at the call site in newTestAuthHandler.
 type mockEmailSender struct{}
 
@@ -34,18 +38,20 @@ func (m *mockEmailSender) SendOTP(_ context.Context, _, _, _ string) error {
 	return nil
 }
 
-// newTestAuthHandler builds an AuthHandler with nil pool (DB calls will panic
-// if reached) and the given mock email sender. This is suitable for tests that
-// exercise only request validation, which returns before any DB interaction.
+// newTestAuthHandler builds an AuthHandler backed by an AuthService with nil
+// pool/repo. This is suitable for tests that exercise only request validation,
+// which returns before any service/DB interaction.
 func newTestAuthHandler(mailer *mockEmailSender) *AuthHandler {
-	return NewAuthHandler(
+	svc := service.NewAuthService(
 		nil, // pool – nil is fine for validation-only tests
+		nil, // repo – nil is fine for validation-only tests
 		mailer,
 		"test-secret",
 		0,
 		0,
 		noopLogger(),
 	)
+	return NewAuthHandler(svc, noopLogger())
 }
 
 // noopLogger returns a slog.Logger that discards all output.
@@ -497,8 +503,8 @@ func TestForgotPassword_ValidationPath_NotDelayed(t *testing.T) {
 	// The validation path should return well before the timing floor.
 	// Using half the floor as the threshold gives a generous margin
 	// without making the assertion timing-sensitive.
-	if elapsed >= forgotPasswordMinDuration/2 {
-		t.Errorf("validation path took %v, expected well under %v", elapsed, forgotPasswordMinDuration)
+	if elapsed >= service.ForgotPasswordMinDuration/2 {
+		t.Errorf("validation path took %v, expected well under %v", elapsed, service.ForgotPasswordMinDuration)
 	}
 }
 
@@ -805,54 +811,42 @@ func TestResetPassword_TrailingJSON_Rejected(t *testing.T) {
 	assertBodyValidationError(t, rec)
 }
 
-// ---------- generateUsername – format and uniqueness ----------
+// ---------- Empty body – rejected across all POST auth endpoints ----------
 
-// TestGenerateUsername_Format verifies that generateUsername returns a string
-// with the "user_" prefix followed by exactly 24 lowercase hex characters
-// (12 random bytes = 96 bits of entropy).
-func TestGenerateUsername_Format(t *testing.T) {
+// TestEmptyBody_RejectedAcrossAllAuthEndpoints verifies that all 6 POST auth
+// endpoints reject an empty request body with the VALIDATION_ERROR envelope and
+// the "Invalid request body" message. This exercises the decodeJSONBody path
+// that handles io.EOF (no JSON at all) rather than field-level validation.
+func TestEmptyBody_RejectedAcrossAllAuthEndpoints(t *testing.T) {
 	t.Parallel()
 
-	u, err := generateUsername()
-	if err != nil {
-		t.Fatalf("generateUsername() error: %v", err)
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	cases := []struct {
+		name    string
+		path    string
+		handler http.HandlerFunc
+	}{
+		{"register", "/api/v1/auth/register", h.Register},
+		{"verify_otp", "/api/v1/auth/verify-otp", h.VerifyOTP},
+		{"login", "/api/v1/auth/login", h.Login},
+		{"refresh", "/api/v1/auth/refresh", h.Refresh},
+		{"forgot_password", "/api/v1/auth/forgot-password", h.ForgotPassword},
+		{"reset_password", "/api/v1/auth/reset-password", h.ResetPassword},
 	}
 
-	// Total length: "user_" (5) + 24 hex chars = 29.
-	if len(u) != 29 {
-		t.Fatalf("len = %d, want 29; got %q", len(u), u)
-	}
-	if !strings.HasPrefix(u, "user_") {
-		t.Errorf("prefix = %q, want %q", u[:5], "user_")
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	// The hex suffix must be exactly 24 lowercase hex characters.
-	hexPart := u[5:]
-	for i, c := range hexPart {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-			t.Errorf("hexPart[%d] = %q, not a lowercase hex digit", i, string(c))
-		}
-	}
-}
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(""))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
 
-// TestGenerateUsername_Uniqueness calls generateUsername 100 times and asserts
-// all results are distinct. With 96 bits of entropy the probability of any
-// collision in 100 draws is negligible (~2^-79); a failure here would indicate
-// a broken random source rather than a birthday collision.
-func TestGenerateUsername_Uniqueness(t *testing.T) {
-	t.Parallel()
+			tc.handler(rec, req)
 
-	const n = 100
-	seen := make(map[string]struct{}, n)
-	for range n {
-		u, err := generateUsername()
-		if err != nil {
-			t.Fatalf("generateUsername() error: %v", err)
-		}
-		if _, dup := seen[u]; dup {
-			t.Fatalf("duplicate username after %d calls: %q", len(seen)+1, u)
-		}
-		seen[u] = struct{}{}
+			assertBodyValidationError(t, rec)
+		})
 	}
 }
 
@@ -892,5 +886,313 @@ func TestRegister_OversizedBody_ReturnsBodyTooLarge(t *testing.T) {
 	}
 	if resp.Error.Message != "Request body too large" {
 		t.Errorf("message = %q, want %q", resp.Error.Message, "Request body too large")
+	}
+}
+
+// ---------- GetMe – unit tests ----------
+
+// TestGetMe_MissingUser_ReturnsUnauthorized verifies that GetMe returns 401
+// with the UNAUTHORIZED error code when the request context does not contain
+// an authenticated user (i.e. middleware.UserFromContext returns false).
+func TestGetMe_MissingUser_ReturnsUnauthorized(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	rec := httptest.NewRecorder()
+
+	h.GetMe(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	ct := rec.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	var resp apperror.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error.Code != apperror.CodeUnauthorized {
+		t.Errorf("code = %q, want %q", resp.Error.Code, apperror.CodeUnauthorized)
+	}
+}
+
+// ---------- Mock-service tests (exercises AuthServicer interface) ----------
+
+// mockAuthService is a minimal AuthServicer stub that returns pre-configured
+// results. It allows handler tests to exercise service-error mapping and
+// success paths without a real service or database.
+type mockAuthService struct {
+	loginFn          func(ctx context.Context, in service.LoginInput) (service.AuthOutput, error)
+	registerFn       func(ctx context.Context, in service.RegisterInput) (service.RegisterOutput, error)
+	verifyOTPFn      func(ctx context.Context, in service.VerifyOTPInput) (service.AuthOutput, error)
+	refreshFn        func(ctx context.Context, in service.RefreshInput) (service.RefreshOutput, error)
+	forgotPasswordFn func(ctx context.Context, in service.ForgotPasswordInput) (service.MessageOutput, error)
+	resetPasswordFn  func(ctx context.Context, in service.ResetPasswordInput) (service.MessageOutput, error)
+	getMeFn          func(ctx context.Context, in service.GetMeInput) (service.UserProfile, error)
+}
+
+// Compile-time check: *mockAuthService satisfies AuthServicer.
+var _ AuthServicer = (*mockAuthService)(nil)
+
+func (m *mockAuthService) Register(ctx context.Context, in service.RegisterInput) (service.RegisterOutput, error) {
+	if m.registerFn != nil {
+		return m.registerFn(ctx, in)
+	}
+	return service.RegisterOutput{}, nil
+}
+
+func (m *mockAuthService) VerifyOTP(ctx context.Context, in service.VerifyOTPInput) (service.AuthOutput, error) {
+	if m.verifyOTPFn != nil {
+		return m.verifyOTPFn(ctx, in)
+	}
+	return service.AuthOutput{}, nil
+}
+
+func (m *mockAuthService) Login(ctx context.Context, in service.LoginInput) (service.AuthOutput, error) {
+	if m.loginFn != nil {
+		return m.loginFn(ctx, in)
+	}
+	return service.AuthOutput{}, nil
+}
+
+func (m *mockAuthService) Refresh(ctx context.Context, in service.RefreshInput) (service.RefreshOutput, error) {
+	if m.refreshFn != nil {
+		return m.refreshFn(ctx, in)
+	}
+	return service.RefreshOutput{}, nil
+}
+
+func (m *mockAuthService) ForgotPassword(ctx context.Context, in service.ForgotPasswordInput) (service.MessageOutput, error) {
+	if m.forgotPasswordFn != nil {
+		return m.forgotPasswordFn(ctx, in)
+	}
+	return service.MessageOutput{}, nil
+}
+
+func (m *mockAuthService) ResetPassword(ctx context.Context, in service.ResetPasswordInput) (service.MessageOutput, error) {
+	if m.resetPasswordFn != nil {
+		return m.resetPasswordFn(ctx, in)
+	}
+	return service.MessageOutput{}, nil
+}
+
+func (m *mockAuthService) GetMe(ctx context.Context, in service.GetMeInput) (service.UserProfile, error) {
+	if m.getMeFn != nil {
+		return m.getMeFn(ctx, in)
+	}
+	return service.UserProfile{}, nil
+}
+
+// TestLogin_ServiceConflict_Returns409 verifies that when the service returns
+// ErrConflict the handler translates it to a 409 response.
+func TestLogin_ServiceConflict_Returns409(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockAuthService{
+		loginFn: func(_ context.Context, _ service.LoginInput) (service.AuthOutput, error) {
+			return service.AuthOutput{}, fmt.Errorf("%w: email already registered", service.ErrConflict)
+		},
+	}
+	h := NewAuthHandler(mock, noopLogger())
+
+	body := `{"email":"user@example.com","password":"securepass1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.Login(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
+	}
+
+	var resp apperror.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error.Code != apperror.CodeConflict {
+		t.Errorf("code = %q, want %q", resp.Error.Code, apperror.CodeConflict)
+	}
+}
+
+// TestLogin_ServiceUnauthorized_Returns401 verifies that when the service returns
+// ErrUnauthorized the handler translates it to a 401 response.
+func TestLogin_ServiceUnauthorized_Returns401(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockAuthService{
+		loginFn: func(_ context.Context, _ service.LoginInput) (service.AuthOutput, error) {
+			return service.AuthOutput{}, fmt.Errorf("%w: invalid email or password", service.ErrUnauthorized)
+		},
+	}
+	h := NewAuthHandler(mock, noopLogger())
+
+	body := `{"email":"user@example.com","password":"securepass1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.Login(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	var resp apperror.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error.Code != apperror.CodeUnauthorized {
+		t.Errorf("code = %q, want %q", resp.Error.Code, apperror.CodeUnauthorized)
+	}
+}
+
+// TestLogin_ServiceInternal_Returns500 verifies that when the service returns
+// ErrInternal the handler translates it to a 500 response.
+func TestLogin_ServiceInternal_Returns500(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockAuthService{
+		loginFn: func(_ context.Context, _ service.LoginInput) (service.AuthOutput, error) {
+			return service.AuthOutput{}, service.ErrInternal
+		},
+	}
+	h := NewAuthHandler(mock, noopLogger())
+
+	body := `{"email":"user@example.com","password":"securepass1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.Login(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+// TestRegister_ServiceSuccess_ReturnsOTPRequired verifies that when the service
+// returns a successful RegisterOutput, the handler returns 200 with otp_required.
+func TestRegister_ServiceSuccess_ReturnsOTPRequired(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockAuthService{
+		registerFn: func(_ context.Context, _ service.RegisterInput) (service.RegisterOutput, error) {
+			return service.RegisterOutput{OTPRequired: true}, nil
+		},
+	}
+	h := NewAuthHandler(mock, noopLogger())
+
+	body := `{"email":"user@example.com","password":"securepass1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.Register(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var resp struct {
+		OTPRequired bool `json:"otp_required"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.OTPRequired {
+		t.Error("expected otp_required = true")
+	}
+}
+
+// TestLogin_ServiceSuccess_ReturnsAuthResponse verifies that when the service
+// returns a successful AuthOutput, the handler returns 200 with tokens and user.
+func TestLogin_ServiceSuccess_ReturnsAuthResponse(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockAuthService{
+		loginFn: func(_ context.Context, _ service.LoginInput) (service.AuthOutput, error) {
+			return service.AuthOutput{
+				AccessToken:  "access-tok",
+				RefreshToken: "refresh-tok",
+				User: service.UserProfile{
+					ID:        "uid-123",
+					Email:     "user@example.com",
+					Name:      "Test User",
+					Username:  "user_abc",
+					CreatedAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+				},
+			}, nil
+		},
+	}
+	h := NewAuthHandler(mock, noopLogger())
+
+	body := `{"email":"user@example.com","password":"securepass1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.Login(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	ct := rec.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	var resp struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		User         struct {
+			ID    string `json:"id"`
+			Email string `json:"email"`
+		} `json:"user"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.AccessToken != "access-tok" {
+		t.Errorf("access_token = %q, want %q", resp.AccessToken, "access-tok")
+	}
+	if resp.RefreshToken != "refresh-tok" {
+		t.Errorf("refresh_token = %q, want %q", resp.RefreshToken, "refresh-tok")
+	}
+	if resp.User.ID != "uid-123" {
+		t.Errorf("user.id = %q, want %q", resp.User.ID, "uid-123")
+	}
+	if resp.User.Email != "user@example.com" {
+		t.Errorf("user.email = %q, want %q", resp.User.Email, "user@example.com")
+	}
+}
+
+// TestForgotPassword_ServiceRateLimited_Returns429 verifies that when the
+// service returns ErrRateLimited the handler translates it to a 429 response.
+func TestForgotPassword_ServiceRateLimited_Returns429(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockAuthService{
+		forgotPasswordFn: func(_ context.Context, _ service.ForgotPasswordInput) (service.MessageOutput, error) {
+			return service.MessageOutput{}, fmt.Errorf("%w: too many requests", service.ErrRateLimited)
+		},
+	}
+	h := NewAuthHandler(mock, noopLogger())
+
+	body := `{"email":"user@example.com"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/forgot-password", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ForgotPassword(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusTooManyRequests)
 	}
 }

@@ -4,13 +4,28 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/smtp"
 	"strings"
+	"time"
+
+	gomail "github.com/wneessen/go-mail"
 
 	"github.com/IsorilovA/pauza-server/internal/redact"
 )
 
-// SMTPSender sends emails via an SMTP server.
+// SMTPConfig holds all parameters needed to construct an SMTPSender.
+type SMTPConfig struct {
+	Host             string
+	Port             int
+	Username         string
+	Password         string
+	From             string
+	OTPExpiryMinutes int
+	Timeout          time.Duration
+	TLSPolicy        string
+	Logger           *slog.Logger
+}
+
+// SMTPSender sends emails via an SMTP server using go-mail.
 type SMTPSender struct {
 	host             string
 	port             int
@@ -18,24 +33,43 @@ type SMTPSender struct {
 	password         string
 	from             string
 	otpExpiryMinutes int
+	timeout          time.Duration
+	tlsPolicy        string
 	logger           *slog.Logger
 }
 
-// NewSMTPSender returns an SMTPSender configured with the given SMTP
-// connection details. otpExpiryMinutes is embedded in the OTP email body.
-// If logger is nil, slog.Default() is used.
-func NewSMTPSender(host string, port int, username, password, from string, otpExpiryMinutes int, logger *slog.Logger) *SMTPSender {
-	if logger == nil {
-		logger = slog.Default()
+// NewSMTPSender returns an SMTPSender configured from the given SMTPConfig.
+// OTPExpiryMinutes is embedded in the OTP email body. Timeout controls the
+// SMTP connection/send deadline; TLSPolicy must be one of "mandatory",
+// "opportunistic", or "none".
+// If Logger is nil, slog.Default() is used.
+func NewSMTPSender(cfg SMTPConfig) *SMTPSender {
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
 	}
 	return &SMTPSender{
-		host:             host,
-		port:             port,
-		username:         username,
-		password:         password,
-		from:             from,
-		otpExpiryMinutes: otpExpiryMinutes,
-		logger:           logger,
+		host:             cfg.Host,
+		port:             cfg.Port,
+		username:         cfg.Username,
+		password:         cfg.Password,
+		from:             cfg.From,
+		otpExpiryMinutes: cfg.OTPExpiryMinutes,
+		timeout:          cfg.Timeout,
+		tlsPolicy:        cfg.TLSPolicy,
+		logger:           cfg.Logger,
+	}
+}
+
+// goMailTLSPolicy maps a config-level TLS policy string to the corresponding
+// go-mail TLSPolicy constant. Unrecognized values default to TLSMandatory.
+func goMailTLSPolicy(policy string) gomail.TLSPolicy {
+	switch strings.ToLower(policy) {
+	case "opportunistic":
+		return gomail.TLSOpportunistic
+	case "none":
+		return gomail.NoTLS
+	default:
+		return gomail.TLSMandatory
 	}
 }
 
@@ -67,9 +101,8 @@ func containsCRLF(s string) bool {
 // validated to reject embedded CR/LF characters before being interpolated into
 // the message, SMTP address, or AUTH command.
 //
-// Note: net/smtp.SendMail does not accept a context, so ctx cannot cancel
-// an in-flight SMTP transaction. We check ctx.Err before the network call
-// so already-cancelled callers fail fast.
+// The underlying go-mail client honours the configured timeout via context
+// deadline and applies the configured TLS policy.
 func (s *SMTPSender) SendOTP(ctx context.Context, to, otp, purpose string) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("sending otp email: %w", err)
@@ -97,13 +130,31 @@ func (s *SMTPSender) SendOTP(ctx context.Context, to, otp, purpose string) error
 		otp, s.otpExpiryMinutes,
 	)
 
-	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=\"utf-8\"\r\n\r\n%s\r\n",
-		s.from, to, subject, body)
+	// Build go-mail message.
+	msg := gomail.NewMsg()
+	if err := msg.From(s.from); err != nil {
+		return fmt.Errorf("sending otp email: %s", redact.SanitizeEmail(err.Error()))
+	}
+	if err := msg.To(to); err != nil {
+		return fmt.Errorf("sending otp email: %s", redact.SanitizeEmail(err.Error()))
+	}
+	msg.Subject(subject)
+	msg.SetBodyString(gomail.TypeTextPlain, body)
 
-	addr := fmt.Sprintf("%s:%d", s.host, s.port)
-	smtpAuth := smtp.PlainAuth("", s.username, s.password, s.host)
+	// Build go-mail client with configured options.
+	client, err := gomail.NewClient(s.host,
+		gomail.WithPort(s.port),
+		gomail.WithUsername(s.username),
+		gomail.WithPassword(s.password),
+		gomail.WithSMTPAuth(gomail.SMTPAuthPlain),
+		gomail.WithTimeout(s.timeout),
+		gomail.WithTLSPolicy(goMailTLSPolicy(s.tlsPolicy)),
+	)
+	if err != nil {
+		return fmt.Errorf("sending otp email: %s", redact.SanitizeEmail(err.Error()))
+	}
 
-	if err := smtp.SendMail(addr, smtpAuth, s.from, []string{to}, []byte(msg)); err != nil {
+	if err := client.DialAndSendWithContext(ctx, msg); err != nil {
 		// Deliberately use %s (not %w) to prevent callers from using
 		// errors.Is / errors.As to match or unwrap the original SMTP
 		// error, which may embed the raw recipient address.

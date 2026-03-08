@@ -13,6 +13,3 @@ const (
 type Sender interface {
 	SendOTP(ctx context.Context, to, otp, purpose string) error
 }
-
-// EmailSender is a backward-compatible alias for Sender.
-type EmailSender = Sender
