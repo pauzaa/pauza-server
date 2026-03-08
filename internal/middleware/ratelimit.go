@@ -27,19 +27,25 @@ import (
 //
 // Additional header on 429 responses:
 //   - Retry-After:           seconds until the next request may succeed.
-func RateLimit(lim *ratelimit.Limiter, limit int, keyFunc func(*http.Request) string) func(http.Handler) http.Handler {
+func RateLimit(lim ratelimit.Limiter, limit int, keyFunc func(*http.Request) string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			key := keyFunc(r)
-			allowed, remaining, resetAt := lim.Allow(key)
+			res, err := lim.Allow(r.Context(), key)
+			if err != nil {
+				// Backend error with no fail-open wrapper; allow the
+				// request but skip rate-limit headers.
+				next.ServeHTTP(w, r)
+				return
+			}
 
 			// Always emit rate-limit informational headers.
 			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(limit))
-			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
-			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
+			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(res.Remaining))
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(res.ResetAt.Unix(), 10))
 
-			if !allowed {
-				retryAfter := int(time.Until(resetAt).Seconds()) + 1
+			if !res.Allowed {
+				retryAfter := int(time.Until(res.ResetAt).Seconds()) + 1
 				if retryAfter < 1 {
 					retryAfter = 1
 				}

@@ -34,8 +34,12 @@ services:
       CLEANUP_INTERVAL: "1h"
       OTP_RETENTION_PERIOD: "24h"
       REFRESH_TOKEN_REVOKED_RETENTION: "168h"
+
+      REDIS_URL: "redis://redis:6379/0"
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/live"]
@@ -60,5 +64,18 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   pgdata:
+  redisdata:

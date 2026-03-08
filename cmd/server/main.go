@@ -15,6 +15,8 @@ import (
 	"github.com/IsorilovA/pauza-server/internal/database"
 	"github.com/IsorilovA/pauza-server/internal/mail"
 	"github.com/IsorilovA/pauza-server/internal/server"
+
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -54,10 +56,26 @@ func main() {
 		Logger:           logger,
 	})
 
-	// 5. Create HTTP server
-	srv, cleanup := server.New(cfg, logger, pool, emailSender)
+	// 5. Create Redis client for shared rate limiting.
+	opts, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		logger.Error("failed to parse REDIS_URL", "err", err)
+		os.Exit(1)
+	}
+	redisClient := redis.NewClient(opts)
 
-	// 6. Start background cleanup job for stale auth data.
+	rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer rcancel()
+	if err := redisClient.Ping(rctx).Err(); err != nil {
+		logger.Warn("redis ping failed on startup; shared rate limiting will fail open until redis recovers", "err", err)
+	} else {
+		logger.Info("redis connected for shared rate limiting")
+	}
+
+	// 6. Create HTTP server
+	srv, cleanup := server.New(cfg, logger, pool, emailSender, redisClient)
+
+	// 7. Start background cleanup job for stale auth data.
 	// The process context is cancelled during shutdown so the cleanup
 	// goroutine observes cancellation promptly rather than relying
 	// solely on the stop function.
@@ -70,7 +88,7 @@ func main() {
 		RefreshTokenMaxAge: cfg.RefreshTokenRevokedRetention,
 	})
 
-	// 7. Start HTTP server in a goroutine; report fatal errors via channel
+	// 8. Start HTTP server in a goroutine; report fatal errors via channel
 	listenErr := make(chan error, 1)
 	go func() {
 		logger.Info("server starting", "port", cfg.Port)
@@ -79,7 +97,7 @@ func main() {
 		}
 	}()
 
-	// 8. Wait for interrupt signal (SIGINT or SIGTERM) or listen error
+	// 9. Wait for interrupt signal (SIGINT or SIGTERM) or listen error
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -93,7 +111,7 @@ func main() {
 		exitCode = 1
 	}
 
-	// 9. Graceful shutdown with 10-second timeout.
+	// 10. Graceful shutdown with 10-second timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -107,6 +125,7 @@ func main() {
 	processCancel()
 	stopCleanup()
 	cleanup()
+	redisClient.Close()
 	pool.Close()
 	logger.Info("server stopped")
 

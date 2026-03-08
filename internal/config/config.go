@@ -51,10 +51,27 @@ type Config struct {
 	StudentVerificationProvider string `envconfig:"STUDENT_VERIFICATION_PROVIDER" required:"true"`
 	StudentVerificationAPIKey   string `envconfig:"STUDENT_VERIFICATION_API_KEY" required:"true"`
 
-	// Rate limiting (optional; safe defaults match the hardcoded constants in
-	// server.go so that existing deployments keep the same behaviour)
-	AuthRateLimit       int           `envconfig:"AUTH_RATE_LIMIT" default:"5"`
-	AuthRateWindow      time.Duration `envconfig:"AUTH_RATE_WINDOW" default:"1m"`
+	// Redis-backed shared rate limiting for the server runtime.
+	RedisURL string `envconfig:"REDIS_URL" required:"true"`
+
+	// Per-endpoint auth rate limiting (safe defaults per BACKEND_SPEC §10).
+	// Each endpoint class gets its own budget so that one noisy endpoint
+	// cannot starve another.
+	RegisterRateLimit  int           `envconfig:"REGISTER_RATE_LIMIT" default:"5"`
+	RegisterRateWindow time.Duration `envconfig:"REGISTER_RATE_WINDOW" default:"1m"`
+
+	LoginRateLimit  int           `envconfig:"LOGIN_RATE_LIMIT" default:"5"`
+	LoginRateWindow time.Duration `envconfig:"LOGIN_RATE_WINDOW" default:"1m"`
+
+	RefreshRateLimit  int           `envconfig:"REFRESH_RATE_LIMIT" default:"10"`
+	RefreshRateWindow time.Duration `envconfig:"REFRESH_RATE_WINDOW" default:"1m"`
+
+	ForgotPasswordRateLimit  int           `envconfig:"FORGOT_PASSWORD_RATE_LIMIT" default:"3"`
+	ForgotPasswordRateWindow time.Duration `envconfig:"FORGOT_PASSWORD_RATE_WINDOW" default:"1m"`
+
+	ResetPasswordRateLimit  int           `envconfig:"RESET_PASSWORD_RATE_LIMIT" default:"3"`
+	ResetPasswordRateWindow time.Duration `envconfig:"RESET_PASSWORD_RATE_WINDOW" default:"1m"`
+
 	VerifyOTPRateLimit  int           `envconfig:"VERIFY_OTP_RATE_LIMIT" default:"3"`
 	VerifyOTPRateWindow time.Duration `envconfig:"VERIFY_OTP_RATE_WINDOW" default:"1m"`
 
@@ -171,11 +188,35 @@ func (c *Config) validate() error {
 	}
 
 	// Rate limit values must be positive
-	if c.AuthRateLimit <= 0 {
-		return fmt.Errorf("AUTH_RATE_LIMIT must be positive, got %d", c.AuthRateLimit)
+	if c.RegisterRateLimit <= 0 {
+		return fmt.Errorf("REGISTER_RATE_LIMIT must be positive, got %d", c.RegisterRateLimit)
 	}
-	if c.AuthRateWindow <= 0 {
-		return fmt.Errorf("AUTH_RATE_WINDOW must be positive, got %s", c.AuthRateWindow)
+	if c.RegisterRateWindow <= 0 {
+		return fmt.Errorf("REGISTER_RATE_WINDOW must be positive, got %s", c.RegisterRateWindow)
+	}
+	if c.LoginRateLimit <= 0 {
+		return fmt.Errorf("LOGIN_RATE_LIMIT must be positive, got %d", c.LoginRateLimit)
+	}
+	if c.LoginRateWindow <= 0 {
+		return fmt.Errorf("LOGIN_RATE_WINDOW must be positive, got %s", c.LoginRateWindow)
+	}
+	if c.RefreshRateLimit <= 0 {
+		return fmt.Errorf("REFRESH_RATE_LIMIT must be positive, got %d", c.RefreshRateLimit)
+	}
+	if c.RefreshRateWindow <= 0 {
+		return fmt.Errorf("REFRESH_RATE_WINDOW must be positive, got %s", c.RefreshRateWindow)
+	}
+	if c.ForgotPasswordRateLimit <= 0 {
+		return fmt.Errorf("FORGOT_PASSWORD_RATE_LIMIT must be positive, got %d", c.ForgotPasswordRateLimit)
+	}
+	if c.ForgotPasswordRateWindow <= 0 {
+		return fmt.Errorf("FORGOT_PASSWORD_RATE_WINDOW must be positive, got %s", c.ForgotPasswordRateWindow)
+	}
+	if c.ResetPasswordRateLimit <= 0 {
+		return fmt.Errorf("RESET_PASSWORD_RATE_LIMIT must be positive, got %d", c.ResetPasswordRateLimit)
+	}
+	if c.ResetPasswordRateWindow <= 0 {
+		return fmt.Errorf("RESET_PASSWORD_RATE_WINDOW must be positive, got %s", c.ResetPasswordRateWindow)
 	}
 	if c.VerifyOTPRateLimit <= 0 {
 		return fmt.Errorf("VERIFY_OTP_RATE_LIMIT must be positive, got %d", c.VerifyOTPRateLimit)

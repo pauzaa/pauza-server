@@ -32,6 +32,21 @@ func testConfig() *config.Config {
 		SMTPUsername:       "test",
 		SMTPPassword:       "test",
 		SMTPFrom:           "test@example.com",
+		// Per-endpoint rate limits — use generous values so tests are not
+		// throttled. The window must also be positive (MemoryLimiter uses
+		// it for the eviction ticker).
+		RegisterRateLimit:        10000,
+		RegisterRateWindow:       time.Minute,
+		LoginRateLimit:           10000,
+		LoginRateWindow:          time.Minute,
+		RefreshRateLimit:         10000,
+		RefreshRateWindow:        time.Minute,
+		ForgotPasswordRateLimit:  10000,
+		ForgotPasswordRateWindow: time.Minute,
+		ResetPasswordRateLimit:   10000,
+		ResetPasswordRateWindow:  time.Minute,
+		VerifyOTPRateLimit:       10000,
+		VerifyOTPRateWindow:      time.Minute,
 	}
 }
 
@@ -40,7 +55,7 @@ func testLogger() *slog.Logger {
 }
 
 func TestNew_LiveEndpoint(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil, nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/live", nil)
@@ -72,7 +87,7 @@ func TestNew_LiveEndpoint(t *testing.T) {
 }
 
 func TestNew_ReadyEndpoint(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil, nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
@@ -104,7 +119,7 @@ func TestNew_ReadyEndpoint(t *testing.T) {
 }
 
 func TestNew_NotFoundRoute(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil, nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/nonexistent", nil)
@@ -118,7 +133,7 @@ func TestNew_NotFoundRoute(t *testing.T) {
 }
 
 func TestNew_LiveMethodNotAllowed(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil, nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodPost, "/live", nil)
@@ -132,7 +147,7 @@ func TestNew_LiveMethodNotAllowed(t *testing.T) {
 }
 
 func TestNew_ReadyMethodNotAllowed(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil, nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodPost, "/ready", nil)
@@ -146,7 +161,7 @@ func TestNew_ReadyMethodNotAllowed(t *testing.T) {
 }
 
 func TestNew_RequestIDHeader(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil, nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/live", nil)
@@ -161,7 +176,7 @@ func TestNew_RequestIDHeader(t *testing.T) {
 }
 
 func TestNew_RequestIDEchoesClientValue(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil, nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/live", nil)
@@ -180,7 +195,7 @@ func TestNew_ServerAddr(t *testing.T) {
 	cfg := testConfig()
 	cfg.Port = 9090
 
-	srv, cleanup := New(cfg, testLogger(), nil, nil)
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
 	defer cleanup()
 
 	if srv.Addr != ":9090" {
@@ -331,7 +346,7 @@ func TestNew_AuthRoutesExist(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv, cleanup := New(testConfig(), testLogger(), nil, nil)
+			srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
 			defer cleanup()
 
 			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
@@ -348,7 +363,7 @@ func TestNew_AuthRoutesExist(t *testing.T) {
 }
 
 func TestNew_ProtectedRouteUnauthorized(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil, nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
 	defer cleanup()
 
 	// GET /api/v1/me is a protected route. Without an Authorization header,
@@ -370,7 +385,7 @@ func TestNew_ProtectedRouteUnauthorized(t *testing.T) {
 // route wiring and the auth middleware pass-through are working.
 func TestNew_MeRouteWithValidJWT(t *testing.T) {
 	cfg := testConfig()
-	srv, cleanup := New(cfg, testLogger(), nil, nil)
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
 	defer cleanup()
 
 	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
@@ -416,7 +431,7 @@ func TestNew_RecovererLogsJSONOnPanic(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	srv, cleanup := New(cfg, logger, nil, nil)
+	srv, cleanup := New(cfg, logger, nil, nil, nil)
 	defer cleanup()
 
 	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
@@ -511,7 +526,7 @@ func TestNew_MiddlewareOrdering_RequestLoggerSees500(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	srv, cleanup := New(cfg, logger, nil, nil)
+	srv, cleanup := New(cfg, logger, nil, nil, nil)
 	defer cleanup()
 
 	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
@@ -596,7 +611,7 @@ func TestNew_MiddlewareOrdering_RequestLoggerSees500(t *testing.T) {
 // middleware chain and that recovery does not suppress response headers.
 func TestNew_MiddlewareOrdering_RequestIDInResponse(t *testing.T) {
 	cfg := testConfig()
-	srv, cleanup := New(cfg, testLogger(), nil, nil)
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
 	defer cleanup()
 
 	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
@@ -687,5 +702,59 @@ func TestLimitBody_AllowsNormalBody(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected 200 for normal-sized body, got: %d", rec.Code)
+	}
+}
+
+// TestNew_IndependentRateLimitBudgets proves that register and login endpoints
+// use independent rate-limit budgets. Exhausting the register budget must not
+// affect the login endpoint and vice versa. The test sets a budget of 1 for
+// register and a generous budget for login, sends 2 register requests (the
+// second should be rate-limited), then verifies that login still succeeds.
+func TestNew_IndependentRateLimitBudgets(t *testing.T) {
+	cfg := testConfig()
+	// Tight budget for register; generous for login.
+	cfg.RegisterRateLimit = 1
+	cfg.RegisterRateWindow = time.Minute
+	cfg.LoginRateLimit = 10000
+	cfg.LoginRateWindow = time.Minute
+
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	defer cleanup()
+
+	registerBody := `{"email":"a@b.com","password":"Test1234!"}`
+	loginBody := `{"email":"a@b.com","password":"Test1234!"}`
+
+	// First register request — should be allowed (uses the 1-request budget).
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", strings.NewReader(registerBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "10.0.0.1:12345"
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusTooManyRequests {
+		t.Fatal("first register request should not be rate-limited")
+	}
+
+	// Second register request — should be rate-limited (budget exhausted).
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", strings.NewReader(registerBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "10.0.0.1:12346"
+	rec = httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("second register request: expected 429, got %d", rec.Code)
+	}
+
+	// Login request from the same IP — must NOT be rate-limited because
+	// login has its own independent budget.
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(loginBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "10.0.0.1:12347"
+	rec = httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusTooManyRequests {
+		t.Error("login request should not be rate-limited when only register budget is exhausted")
 	}
 }

@@ -219,11 +219,12 @@ This order is deliberate:
 - Shrink `migrate` and `seed-admin` requirements to only what they need.
 - Done: added dedicated migrate and seed-admin config loaders/tests, switched those binaries off the full runtime config, and left the server on `config.Load()`.
 
-### Phase 4: Abuse-control redesign
+### Phase 4: Abuse-control redesign (completed)
 
 - Replace the per-process in-memory limiter with a shared limiter backend.
 - Split budgets by endpoint class and key type.
 - Decide and document behavior under limiter backend failure.
+- Done: auth throttling now uses Redis as the shared backend in the server runtime, budgets are split across register/login/refresh/forgot-password/reset-password/verify-otp, and limiter backend errors explicitly fail open with warning logs.
 
 ### Phase 5: Operational polish
 

@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/IsorilovA/pauza-server/internal/config"
 	"github.com/IsorilovA/pauza-server/internal/handler"
@@ -79,28 +80,15 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// defaultAuthRateLimit is the fallback maximum number of requests per window
-// allowed from a single IP to public /api/v1/auth endpoints.
-const defaultAuthRateLimit = 5
-
-// defaultAuthRateWindow is the fallback fixed-window duration for the auth
-// rate limiter.
-const defaultAuthRateWindow = time.Minute
-
-// defaultVerifyOTPRateLimit is the fallback maximum number of requests per
-// window for /api/v1/auth/verify-otp per email address (BACKEND_SPEC §10).
-const defaultVerifyOTPRateLimit = 3
-
-// defaultVerifyOTPRateWindow is the fallback fixed-window duration for the
-// verify-otp per-email rate limiter.
-const defaultVerifyOTPRateWindow = time.Minute
-
 // New creates and configures the HTTP server with all routes and middleware.
 // The mailer parameter allows callers to inject any mail.Sender implementation
 // (e.g. a real SMTP sender in production, or an in-memory stub in tests).
+// The redisClient parameter is explicit: when non-nil, rate limiters use Redis
+// as a shared backend wrapped in a fail-open layer; when nil, in-memory
+// limiters are used (suitable for tests and single-instance deployments).
 // The returned cleanup function stops background goroutines (e.g. rate-limiter
 // eviction loops) and must be called during graceful shutdown.
-func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mail.Sender) (*http.Server, func()) {
+func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mail.Sender, redisClient *redis.Client) (*http.Server, func()) {
 	r := chi.NewRouter()
 
 	// Base middleware stack.
@@ -124,33 +112,27 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 	)
 	authHandler := handler.NewAuthHandler(authService, logger)
 
-	// Resolve rate-limit values from config, falling back to defaults when
-	// the config values are zero (e.g. in unit tests with a minimal config).
-	authRL := cfg.AuthRateLimit
-	if authRL <= 0 {
-		authRL = defaultAuthRateLimit
-	}
-	authRW := cfg.AuthRateWindow
-	if authRW <= 0 {
-		authRW = defaultAuthRateWindow
-	}
-	votpRL := cfg.VerifyOTPRateLimit
-	if votpRL <= 0 {
-		votpRL = defaultVerifyOTPRateLimit
-	}
-	votpRW := cfg.VerifyOTPRateWindow
-	if votpRW <= 0 {
-		votpRW = defaultVerifyOTPRateWindow
+	// newLimiter creates a rate limiter with the given budget. When a Redis
+	// client is available, a RedisLimiter wrapped in FailOpenLimiter is
+	// returned so that multiple server instances share a single counter
+	// store and transient Redis failures degrade gracefully. Without Redis
+	// the limiter falls back to an in-memory implementation.
+	newLimiter := func(prefix string, rate int, window time.Duration) ratelimit.Limiter {
+		if redisClient != nil {
+			inner := ratelimit.NewRedisLimiter(redisClient, rate, window, ratelimit.WithPrefix("rl:"+prefix+":"))
+			return ratelimit.NewFailOpen(inner, logger)
+		}
+		return ratelimit.New(rate, window)
 	}
 
-	// Per-IP rate limiter for public auth endpoints. The limiter is shared
-	// across all auth routes so that an attacker cannot bypass the budget
-	// by rotating across different endpoints.
-	authLimiter := ratelimit.New(authRL, authRW)
-
-	// Per-email rate limiter for /auth/verify-otp (BACKEND_SPEC §10:
-	// 3 requests/minute scoped by normalized email address).
-	verifyOTPLimiter := ratelimit.New(votpRL, votpRW)
+	// Per-endpoint rate limiters — each auth endpoint class gets its own
+	// budget so that one noisy endpoint cannot starve another.
+	registerLimiter := newLimiter("register", cfg.RegisterRateLimit, cfg.RegisterRateWindow)
+	loginLimiter := newLimiter("login", cfg.LoginRateLimit, cfg.LoginRateWindow)
+	refreshLimiter := newLimiter("refresh", cfg.RefreshRateLimit, cfg.RefreshRateWindow)
+	forgotPwLimiter := newLimiter("forgot-password", cfg.ForgotPasswordRateLimit, cfg.ForgotPasswordRateWindow)
+	resetPwLimiter := newLimiter("reset-password", cfg.ResetPasswordRateLimit, cfg.ResetPasswordRateWindow)
+	verifyOTPLimiter := newLimiter("verify-otp", cfg.VerifyOTPRateLimit, cfg.VerifyOTPRateWindow)
 
 	// --- /api/v1 routes -------------------------------------------------
 	// Public and protected routes are mounted in separate chi.Route groups
@@ -159,14 +141,18 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public auth routes (no JWT required).
 		r.Route("/auth", func(r chi.Router) {
-			r.Use(authmw.RateLimit(authLimiter, authRL, authmw.IPKey))
-			r.Post("/register", authHandler.Register)
-			r.With(authmw.RateLimit(verifyOTPLimiter, votpRL, authmw.EmailKey)).
+			r.With(authmw.RateLimit(registerLimiter, cfg.RegisterRateLimit, authmw.IPKey)).
+				Post("/register", authHandler.Register)
+			r.With(authmw.RateLimit(loginLimiter, cfg.LoginRateLimit, authmw.IPKey)).
+				Post("/login", authHandler.Login)
+			r.With(authmw.RateLimit(refreshLimiter, cfg.RefreshRateLimit, authmw.IPKey)).
+				Post("/refresh", authHandler.Refresh)
+			r.With(authmw.RateLimit(forgotPwLimiter, cfg.ForgotPasswordRateLimit, authmw.IPKey)).
+				Post("/forgot-password", authHandler.ForgotPassword)
+			r.With(authmw.RateLimit(resetPwLimiter, cfg.ResetPasswordRateLimit, authmw.IPKey)).
+				Post("/reset-password", authHandler.ResetPassword)
+			r.With(authmw.RateLimit(verifyOTPLimiter, cfg.VerifyOTPRateLimit, authmw.EmailKey)).
 				Post("/verify-otp", authHandler.VerifyOTP)
-			r.Post("/login", authHandler.Login)
-			r.Post("/refresh", authHandler.Refresh)
-			r.Post("/forgot-password", authHandler.ForgotPassword)
-			r.Post("/reset-password", authHandler.ResetPassword)
 		})
 
 		// Protected routes — JWT required. All endpoints in this group
@@ -181,7 +167,11 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 	})
 
 	cleanup := func() {
-		authLimiter.Stop()
+		registerLimiter.Stop()
+		loginLimiter.Stop()
+		refreshLimiter.Stop()
+		forgotPwLimiter.Stop()
+		resetPwLimiter.Stop()
 		verifyOTPLimiter.Stop()
 	}
 

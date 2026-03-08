@@ -80,10 +80,12 @@ Common variables used today:
 - SMTP: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`
 - Seeds: `ADMIN_SEED_USERNAME`, `ADMIN_SEED_PASSWORD`
 - Integrations: `REVENUECAT_API_KEY`, `REVENUECAT_WEBHOOK_SECRET`, `FIREBASE_SERVICE_ACCOUNT_JSON`, `STUDENT_VERIFICATION_PROVIDER`, `STUDENT_VERIFICATION_API_KEY`
+- Rate limiting: `REDIS_URL`, `REGISTER_RATE_LIMIT`, `REGISTER_RATE_WINDOW`, `LOGIN_RATE_LIMIT`, `LOGIN_RATE_WINDOW`, `REFRESH_RATE_LIMIT`, `REFRESH_RATE_WINDOW`, `FORGOT_PASSWORD_RATE_LIMIT`, `FORGOT_PASSWORD_RATE_WINDOW`, `RESET_PASSWORD_RATE_LIMIT`, `RESET_PASSWORD_RATE_WINDOW`, `VERIFY_OTP_RATE_LIMIT`, `VERIFY_OTP_RATE_WINDOW`
 
 Rules of thumb:
 - Never log secrets (JWT secret, DB URL, SMTP password, webhook secrets).
 - When adding a new env var: update `internal/config/config.go` and `.env.example`.
+- Auth rate limiting is Redis-backed and fail-open on backend errors; startup should log Redis connectivity clearly without leaking secrets.
 
 ## Project Layout
 

@@ -1,6 +1,7 @@
 package ratelimit_test
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -12,20 +13,25 @@ func TestAllow_UnderLimit(t *testing.T) {
 	lim := ratelimit.New(5, time.Minute)
 	defer lim.Stop()
 
+	ctx := context.Background()
+
 	for i := range 5 {
-		allowed, remaining, resetAt := lim.Allow("user1")
-		if !allowed {
+		res, err := lim.Allow(ctx, "user1")
+		if err != nil {
+			t.Fatalf("request %d: unexpected error: %v", i+1, err)
+		}
+		if !res.Allowed {
 			t.Fatalf("request %d: expected allowed, got denied", i+1)
 		}
 		wantRemaining := 5 - (i + 1)
-		if remaining != wantRemaining {
-			t.Errorf("request %d: remaining = %d, want %d", i+1, remaining, wantRemaining)
+		if res.Remaining != wantRemaining {
+			t.Errorf("request %d: remaining = %d, want %d", i+1, res.Remaining, wantRemaining)
 		}
-		if resetAt.IsZero() {
+		if res.ResetAt.IsZero() {
 			t.Errorf("request %d: resetAt is zero", i+1)
 		}
-		if resetAt.Location() != time.UTC {
-			t.Errorf("request %d: resetAt not in UTC: %v", i+1, resetAt.Location())
+		if res.ResetAt.Location() != time.UTC {
+			t.Errorf("request %d: resetAt not in UTC: %v", i+1, res.ResetAt.Location())
 		}
 	}
 }
@@ -34,30 +40,38 @@ func TestAllow_OverLimit(t *testing.T) {
 	lim := ratelimit.New(3, time.Minute)
 	defer lim.Stop()
 
+	ctx := context.Background()
+
 	// Exhaust the budget.
 	for range 3 {
-		lim.Allow("user1")
+		lim.Allow(ctx, "user1")
 	}
 
 	// The 4th request must be denied.
-	allowed, remaining, resetAt := lim.Allow("user1")
-	if allowed {
+	res, err := lim.Allow(ctx, "user1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Allowed {
 		t.Fatal("expected denied after exceeding limit, got allowed")
 	}
-	if remaining != 0 {
-		t.Errorf("remaining = %d, want 0", remaining)
+	if res.Remaining != 0 {
+		t.Errorf("remaining = %d, want 0", res.Remaining)
 	}
-	if resetAt.IsZero() {
+	if res.ResetAt.IsZero() {
 		t.Error("resetAt is zero on denied request")
 	}
 
 	// A 5th request should also be denied.
-	allowed, remaining, _ = lim.Allow("user1")
-	if allowed {
+	res, err = lim.Allow(ctx, "user1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Allowed {
 		t.Fatal("expected continued denial, got allowed")
 	}
-	if remaining != 0 {
-		t.Errorf("remaining = %d after continued denial, want 0", remaining)
+	if res.Remaining != 0 {
+		t.Errorf("remaining = %d after continued denial, want 0", res.Remaining)
 	}
 }
 
@@ -67,12 +81,17 @@ func TestAllow_WindowReset(t *testing.T) {
 	lim := ratelimit.New(2, window)
 	defer lim.Stop()
 
-	// Exhaust the budget.
-	lim.Allow("k")
-	lim.Allow("k")
+	ctx := context.Background()
 
-	allowed, _, _ := lim.Allow("k")
-	if allowed {
+	// Exhaust the budget.
+	lim.Allow(ctx, "k")
+	lim.Allow(ctx, "k")
+
+	res, err := lim.Allow(ctx, "k")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Allowed {
 		t.Fatal("expected denied before window reset")
 	}
 
@@ -80,12 +99,15 @@ func TestAllow_WindowReset(t *testing.T) {
 	time.Sleep(window + 10*time.Millisecond)
 
 	// Should be allowed again in the new window.
-	allowed, remaining, _ := lim.Allow("k")
-	if !allowed {
+	res, err = lim.Allow(ctx, "k")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.Allowed {
 		t.Fatal("expected allowed after window reset, got denied")
 	}
-	if remaining != 1 {
-		t.Errorf("remaining = %d after reset, want 1", remaining)
+	if res.Remaining != 1 {
+		t.Errorf("remaining = %d after reset, want 1", res.Remaining)
 	}
 }
 
@@ -93,30 +115,32 @@ func TestAllow_DifferentKeys(t *testing.T) {
 	lim := ratelimit.New(1, time.Minute)
 	defer lim.Stop()
 
-	allowed1, _, _ := lim.Allow("alice")
-	allowed2, _, _ := lim.Allow("bob")
+	ctx := context.Background()
 
-	if !allowed1 {
+	res1, _ := lim.Allow(ctx, "alice")
+	res2, _ := lim.Allow(ctx, "bob")
+
+	if !res1.Allowed {
 		t.Error("alice's first request should be allowed")
 	}
-	if !allowed2 {
+	if !res2.Allowed {
 		t.Error("bob's first request should be allowed")
 	}
 
 	// Both keys have exhausted their individual budget of 1 request.
-	denied1, _, _ := lim.Allow("alice")
-	denied2, _, _ := lim.Allow("bob")
+	denied1, _ := lim.Allow(ctx, "alice")
+	denied2, _ := lim.Allow(ctx, "bob")
 
-	if denied1 {
+	if denied1.Allowed {
 		t.Error("alice's second request should be denied")
 	}
-	if denied2 {
+	if denied2.Allowed {
 		t.Error("bob's second request should be denied")
 	}
 
 	// A third distinct key should still be allowed.
-	allowed3, _, _ := lim.Allow("charlie")
-	if !allowed3 {
+	res3, _ := lim.Allow(ctx, "charlie")
+	if !res3.Allowed {
 		t.Error("charlie's first request should be allowed")
 	}
 }
@@ -131,6 +155,8 @@ func TestAllow_ConcurrentAccess(t *testing.T) {
 	lim := ratelimit.New(rate, time.Minute)
 	defer lim.Stop()
 
+	ctx := context.Background()
+
 	var (
 		wg         sync.WaitGroup
 		mu         sync.Mutex
@@ -143,9 +169,9 @@ func TestAllow_ConcurrentAccess(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range perG {
-				allowed, _, _ := lim.Allow("shared")
+				res, _ := lim.Allow(ctx, "shared")
 				mu.Lock()
-				if allowed {
+				if res.Allowed {
 					totalAllow++
 				} else {
 					totalDeny++
@@ -175,3 +201,6 @@ func TestStop_Idempotent(t *testing.T) {
 	lim.Stop()
 	lim.Stop()
 }
+
+// Compile-time check: *MemoryLimiter implements Limiter.
+var _ ratelimit.Limiter = (*ratelimit.MemoryLimiter)(nil)

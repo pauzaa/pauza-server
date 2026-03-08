@@ -104,22 +104,30 @@ func testDatabaseURL(t *testing.T) string {
 // limits are set high so that rapid sequential test requests are not throttled.
 func testConfig() *config.Config {
 	return &config.Config{
-		Port:                8080,
-		LogLevel:            "info",
-		JWTSecret:           testJWTSecret,
-		JWTAccessTokenTTL:   testJWTAccessTokenTTL,
-		JWTRefreshTokenTTL:  testJWTRefreshTokenTTL,
-		SMTPHost:            "localhost",
-		SMTPPort:            1025,
-		SMTPUsername:        "test",
-		SMTPPassword:        "test",
-		SMTPFrom:            "test@example.com",
-		SMTPTimeout:         30 * time.Second,
-		SMTPTLSPolicy:       "none",
-		AuthRateLimit:       10000,
-		AuthRateWindow:      time.Minute,
-		VerifyOTPRateLimit:  10000,
-		VerifyOTPRateWindow: time.Minute,
+		Port:                     8080,
+		LogLevel:                 "info",
+		JWTSecret:                testJWTSecret,
+		JWTAccessTokenTTL:        testJWTAccessTokenTTL,
+		JWTRefreshTokenTTL:       testJWTRefreshTokenTTL,
+		SMTPHost:                 "localhost",
+		SMTPPort:                 1025,
+		SMTPUsername:             "test",
+		SMTPPassword:             "test",
+		SMTPFrom:                 "test@example.com",
+		SMTPTimeout:              30 * time.Second,
+		SMTPTLSPolicy:            "none",
+		RegisterRateLimit:        10000,
+		RegisterRateWindow:       time.Minute,
+		LoginRateLimit:           10000,
+		LoginRateWindow:          time.Minute,
+		RefreshRateLimit:         10000,
+		RefreshRateWindow:        time.Minute,
+		ForgotPasswordRateLimit:  10000,
+		ForgotPasswordRateWindow: time.Minute,
+		ResetPasswordRateLimit:   10000,
+		ResetPasswordRateWindow:  time.Minute,
+		VerifyOTPRateLimit:       10000,
+		VerifyOTPRateWindow:      time.Minute,
 	}
 }
 
@@ -160,7 +168,7 @@ func setupTestServerWithMailer(t *testing.T, mailer mail.Sender) (*httptest.Serv
 	// Use the production server.New to build the full HTTP stack (router,
 	// middleware, rate limiters, etc.) so integration tests exercise the
 	// same code path as production.
-	srv, cleanup := server.New(cfg, logger, pool, mailer)
+	srv, cleanup := server.New(cfg, logger, pool, mailer, nil)
 
 	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(func() {

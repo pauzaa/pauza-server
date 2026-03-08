@@ -28,6 +28,7 @@ func setRequiredEnvVars(t *testing.T) {
 		"FIREBASE_SERVICE_ACCOUNT_JSON": "{}",
 		"STUDENT_VERIFICATION_PROVIDER": "sheerid",
 		"STUDENT_VERIFICATION_API_KEY":  "sv_test_key",
+		"REDIS_URL":                     "redis://localhost:6379/0",
 	}
 
 	for k, v := range vars {
@@ -116,6 +117,7 @@ func TestLoad_MissingRequiredVar(t *testing.T) {
 	t.Setenv("FIREBASE_SERVICE_ACCOUNT_JSON", "{}")
 	t.Setenv("STUDENT_VERIFICATION_PROVIDER", "sheerid")
 	t.Setenv("STUDENT_VERIFICATION_API_KEY", "sv_test_key")
+	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
 
 	// Ensure DATABASE_URL is unset even if the developer has it in their shell.
 	// t.Setenv cannot clear a variable, so use a save/restore pattern instead.
@@ -132,6 +134,28 @@ func TestLoad_MissingRequiredVar(t *testing.T) {
 	_, err := Load()
 	if err == nil {
 		t.Fatal("expected error for missing required vars, got nil")
+	}
+}
+
+func TestLoad_MissingRedisURL(t *testing.T) {
+	setRequiredEnvVars(t)
+
+	prev, hadPrev := os.LookupEnv("REDIS_URL")
+	os.Unsetenv("REDIS_URL")
+	t.Cleanup(func() {
+		if hadPrev {
+			os.Setenv("REDIS_URL", prev)
+		} else {
+			os.Unsetenv("REDIS_URL")
+		}
+	})
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for missing REDIS_URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "REDIS_URL") {
+		t.Errorf("expected error to mention REDIS_URL, got: %v", err)
 	}
 }
 
