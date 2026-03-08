@@ -9,33 +9,35 @@
 -- 1. users (no FK deps)
 CREATE TABLE users (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  email               TEXT NOT NULL UNIQUE,
+  email               TEXT NOT NULL,
   password_hash       TEXT NOT NULL,
   name                TEXT NOT NULL DEFAULT '',
   username            TEXT NOT NULL UNIQUE,
   profile_picture_url TEXT,
   leaderboard_visible BOOLEAN NOT NULL DEFAULT TRUE,
+  email_verified      BOOLEAN NOT NULL DEFAULT FALSE,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- NOTE: idx_users_email is intentionally omitted — the column-level UNIQUE
--- constraint on email already creates a unique index. Adding an explicit
--- CREATE UNIQUE INDEX would produce a redundant duplicate.
+-- Case-insensitive unique indexes for email and username.
+CREATE UNIQUE INDEX idx_users_email    ON users (lower(email));
 CREATE UNIQUE INDEX idx_users_username ON users (lower(username));
 
--- 2. otp_codes (no FK deps — email is by value, not FK)
+-- 2. otp_codes (FK -> users)
 CREATE TABLE otp_codes (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_email TEXT NOT NULL,
-  code       TEXT NOT NULL,
+  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  code_hash  TEXT NOT NULL,
   purpose    TEXT NOT NULL CHECK (purpose IN ('email_verification', 'password_reset')),
   expires_at TIMESTAMPTZ NOT NULL,
   used       BOOLEAN NOT NULL DEFAULT FALSE,
+  attempts   INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_otp_codes_email_purpose ON otp_codes (user_email, purpose, used, expires_at);
+CREATE INDEX idx_otp_codes_user_purpose ON otp_codes (user_id, purpose, used, expires_at);
+CREATE INDEX idx_otp_codes_expires_at   ON otp_codes (expires_at);
 
 -- 3. refresh_tokens (FK -> users)
 CREATE TABLE refresh_tokens (
@@ -47,7 +49,10 @@ CREATE TABLE refresh_tokens (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_refresh_tokens_user ON refresh_tokens (user_id, revoked);
+CREATE INDEX idx_refresh_tokens_user       ON refresh_tokens (user_id, revoked);
+CREATE INDEX idx_refresh_tokens_expires_at ON refresh_tokens (expires_at);
+CREATE INDEX idx_refresh_tokens_revoked_created
+    ON refresh_tokens (created_at) WHERE revoked = true;
 
 -- 4. admin_credentials (no FK deps)
 CREATE TABLE admin_credentials (

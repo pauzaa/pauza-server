@@ -182,17 +182,18 @@ All timestamps are stored as `TIMESTAMPTZ` (PostgreSQL timestamp with time zone)
 ```sql
 CREATE TABLE users (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  email               TEXT NOT NULL UNIQUE,
+  email               TEXT NOT NULL,
   password_hash       TEXT NOT NULL,
   name                TEXT NOT NULL DEFAULT '',
   username            TEXT NOT NULL UNIQUE,
   profile_picture_url TEXT,
   leaderboard_visible BOOLEAN NOT NULL DEFAULT TRUE,
+  email_verified      BOOLEAN NOT NULL DEFAULT FALSE,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE UNIQUE INDEX idx_users_email ON users (email);
+CREATE UNIQUE INDEX idx_users_email ON users (lower(email));
 CREATE UNIQUE INDEX idx_users_username ON users (lower(username));
 ```
 
@@ -201,15 +202,17 @@ CREATE UNIQUE INDEX idx_users_username ON users (lower(username));
 ```sql
 CREATE TABLE otp_codes (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_email TEXT NOT NULL,
-  code       TEXT NOT NULL,
+  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  code_hash  TEXT NOT NULL,
   purpose    TEXT NOT NULL CHECK (purpose IN ('email_verification', 'password_reset')),
   expires_at TIMESTAMPTZ NOT NULL,
   used       BOOLEAN NOT NULL DEFAULT FALSE,
+  attempts   INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_otp_codes_email_purpose ON otp_codes (user_email, purpose, used, expires_at);
+CREATE INDEX idx_otp_codes_user_purpose ON otp_codes (user_id, purpose, used, expires_at);
+CREATE INDEX idx_otp_codes_expires_at ON otp_codes (expires_at);
 ```
 
 #### `refresh_tokens`
@@ -225,6 +228,9 @@ CREATE TABLE refresh_tokens (
 );
 
 CREATE INDEX idx_refresh_tokens_user ON refresh_tokens (user_id, revoked);
+CREATE INDEX idx_refresh_tokens_expires_at ON refresh_tokens (expires_at);
+CREATE INDEX idx_refresh_tokens_revoked_created
+    ON refresh_tokens (created_at) WHERE revoked = true;
 ```
 
 #### `admin_credentials`
@@ -781,9 +787,14 @@ Request a password reset OTP.
 }
 ```
 
-**Response:**
+**Responses:**
 
-Always returns `200` with `{ "message": "If the email is registered, a reset code has been sent." }` to prevent email enumeration.
+| Status | Body | Condition |
+|---|---|---|
+| `200` | `{ "message": "If the email is registered, a reset code has been sent." }` | Success, or email not found (anti-enumeration) |
+| `5xx` | `{ "error": { "code": "INTERNAL_ERROR", ... } }` | Infrastructure/system failure; safe to retry |
+
+The `200` response is returned both when the email exists and when it does not, to prevent account enumeration. A `5xx` is only returned on infrastructure failures (e.g. SMTP or database unavailability) and does not reveal whether the account exists.
 
 #### `POST /api/v1/auth/reset-password`
 
@@ -1504,11 +1515,18 @@ Aggregate platform statistics.
 
 **Query parameters:** `status` (active/expired/cancelled/trial), `page`, `limit`.
 
-### 5.10 Health Check
+### 5.10 Health Probes
 
-#### `GET /health`
+Two health-check endpoints exist at the root level (not under `/api/v1`). They
+share the same JSON response shape but serve different purposes in container
+orchestration and load-balancer configuration.
 
-Not prefixed with `/api/v1`. Used for container health checks and load balancer probes.
+#### `GET /live`
+
+Liveness probe. Returns immediately with status `"ok"` and the current UTC
+timestamp. No external dependencies are checked — if the process can serve HTTP,
+this endpoint succeeds. Container runtimes use this to detect a hung or crashed
+process (restart policy).
 
 **Response (`200`):**
 
@@ -1519,7 +1537,30 @@ Not prefixed with `/api/v1`. Used for container health checks and load balancer 
 }
 ```
 
-Returns `503` if the database is unreachable.
+#### `GET /ready`
+
+Readiness probe. Pings the database connection pool before responding. Returns
+`200` with status `"ok"` when the database is reachable, or `503` with status
+`"degraded"` when the pool is nil or the ping fails. Load balancers use this to
+decide whether to route traffic to the instance.
+
+**Response (`200` when ready, `503` when degraded):**
+
+```json
+{
+  "status": "ok",
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+When the database is unreachable:
+
+```json
+{
+  "status": "degraded",
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
 
 ---
 
@@ -1817,7 +1858,7 @@ services:
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/live"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -1856,8 +1897,8 @@ volumes:
 | `SMTP_USERNAME` | SMTP authentication username | Yes |
 | `SMTP_PASSWORD` | SMTP authentication password | Yes |
 | `SMTP_FROM` | Email sender address | Yes |
-| `ADMIN_SEED_USERNAME` | Initial admin username (created on first startup) | Yes |
-| `ADMIN_SEED_PASSWORD` | Initial admin password | Yes |
+| `ADMIN_SEED_USERNAME` | Initial admin username (used by `cmd/seed-admin`) | For seed command |
+| `ADMIN_SEED_PASSWORD` | Initial admin password (used by `cmd/seed-admin`) | For seed command |
 | `STUDENT_VERIFICATION_PROVIDER` | Third-party student verification provider (`sheerid` or `unidays`) | Yes |
 | `STUDENT_VERIFICATION_API_KEY` | API key for student verification provider | Yes |
 | `PORT` | Server listen port (default `8080`) | No |
@@ -1867,11 +1908,11 @@ volumes:
 
 Migrations are managed using [golang-migrate](https://github.com/golang-migrate/migrate). Migration files are stored in a `migrations/` directory within the backend repository.
 
-On startup, the application automatically runs pending migrations before accepting traffic. Migrations run within transactions and are rolled back on failure.
+Migrations are applied via the dedicated `cmd/migrate` command (`go run ./cmd/migrate`), not at server startup. This keeps the serving binary free of DDL privileges and simplifies rollout reasoning in multi-instance environments. Migrations run within transactions and are rolled back on failure.
 
 ### 12.4 Admin Seeding
 
-On first startup (when the `admin_credentials` table is empty), the backend creates an initial admin account using `ADMIN_SEED_USERNAME` and `ADMIN_SEED_PASSWORD`. The password is hashed with bcrypt before storage.
+Admin bootstrap is handled by the dedicated `cmd/seed-admin` command (`go run ./cmd/seed-admin`), not at server startup. When the `admin_credentials` table is empty, this command creates an initial admin account using `ADMIN_SEED_USERNAME` and `ADMIN_SEED_PASSWORD`. The password is hashed with bcrypt before storage.
 
 ---
 
