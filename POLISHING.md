@@ -212,11 +212,12 @@ This order is deliberate:
 - Add stubs/fakes for repository and mail dependencies where needed.
 - Done: added direct `internal/service` behavioral coverage for register/login/refresh/forgot-password/reset-password flows, plus repo/mail/pool fakes so those paths run in the default test suite without Postgres.
 
-### Phase 3: Operational decoupling
+### Phase 3: Operational decoupling (completed)
 
 - Split config loading by command purpose.
 - Keep the server on the full runtime config.
 - Shrink `migrate` and `seed-admin` requirements to only what they need.
+- Done: added dedicated migrate and seed-admin config loaders/tests, switched those binaries off the full runtime config, and left the server on `config.Load()`.
 
 ### Phase 4: Abuse-control redesign
 

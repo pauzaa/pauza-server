@@ -212,6 +212,50 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
+// MigrateConfig holds only the configuration needed by cmd/migrate.
+type MigrateConfig struct {
+	DatabaseURL string `envconfig:"DATABASE_URL" required:"true"`
+}
+
+// LoadMigrate reads the minimal configuration needed to run migrations.
+func LoadMigrate() (*MigrateConfig, error) {
+	var cfg MigrateConfig
+	if err := envconfig.Process("", &cfg); err != nil {
+		return nil, fmt.Errorf("loading migrate config: %w", err)
+	}
+	return &cfg, nil
+}
+
+// SeedAdminConfig holds only the configuration needed by cmd/seed-admin.
+type SeedAdminConfig struct {
+	DatabaseURL       string `envconfig:"DATABASE_URL" required:"true"`
+	AdminSeedUsername string `envconfig:"ADMIN_SEED_USERNAME" required:"true"`
+	AdminSeedPassword string `envconfig:"ADMIN_SEED_PASSWORD" required:"true"`
+}
+
+// validate performs semantic checks on SeedAdminConfig values.
+func (c *SeedAdminConfig) validate() error {
+	if len(c.AdminSeedPassword) < minAdminSeedPasswordLen {
+		return fmt.Errorf("ADMIN_SEED_PASSWORD must be at least %d characters", minAdminSeedPasswordLen)
+	}
+	if len(c.AdminSeedPassword) > 72 {
+		return fmt.Errorf("ADMIN_SEED_PASSWORD must not exceed 72 bytes (bcrypt limit)")
+	}
+	return nil
+}
+
+// LoadSeedAdmin reads the minimal configuration needed to seed an admin user.
+func LoadSeedAdmin() (*SeedAdminConfig, error) {
+	var cfg SeedAdminConfig
+	if err := envconfig.Process("", &cfg); err != nil {
+		return nil, fmt.Errorf("loading seed-admin config: %w", err)
+	}
+	if err := cfg.validate(); err != nil {
+		return nil, fmt.Errorf("validating seed-admin config: %w", err)
+	}
+	return &cfg, nil
+}
+
 // ParseTrustedProxies parses the comma-separated TrustedProxies string into
 // a slice of *net.IPNet entries. Plain IP addresses are converted to /32
 // (IPv4) or /128 (IPv6) single-host CIDRs. An empty TrustedProxies value

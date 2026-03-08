@@ -642,3 +642,234 @@ func TestLoad_TrustedProxies_IPv6(t *testing.T) {
 		t.Errorf("expected /128 mask for ::1, got /%d", ones)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// MigrateConfig tests
+// ---------------------------------------------------------------------------
+
+func TestLoadMigrate_Success(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
+
+	cfg, err := LoadMigrate()
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if cfg.DatabaseURL != "postgres://test:test@localhost:5432/test?sslmode=disable" {
+		t.Errorf("unexpected DatabaseURL: %s", cfg.DatabaseURL)
+	}
+}
+
+func TestLoadMigrate_MissingDatabaseURL(t *testing.T) {
+	// Ensure DATABASE_URL is unset even if the developer has it in their shell.
+	prev, hadPrev := os.LookupEnv("DATABASE_URL")
+	os.Unsetenv("DATABASE_URL")
+	t.Cleanup(func() {
+		if hadPrev {
+			os.Setenv("DATABASE_URL", prev)
+		} else {
+			os.Unsetenv("DATABASE_URL")
+		}
+	})
+
+	_, err := LoadMigrate()
+	if err == nil {
+		t.Fatal("expected error for missing DATABASE_URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Errorf("expected error to mention DATABASE_URL, got: %v", err)
+	}
+}
+
+func TestLoadMigrate_DoesNotRequireServerVars(t *testing.T) {
+	// Only set DATABASE_URL; no JWT, SMTP, etc.
+	t.Setenv("DATABASE_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
+
+	// Ensure none of the server-only required vars are set.
+	for _, key := range []string{
+		"JWT_SECRET", "JWT_ACCESS_TOKEN_TTL", "JWT_REFRESH_TOKEN_TTL",
+		"SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM",
+		"REVENUECAT_API_KEY", "REVENUECAT_WEBHOOK_SECRET",
+		"FIREBASE_SERVICE_ACCOUNT_JSON",
+		"STUDENT_VERIFICATION_PROVIDER", "STUDENT_VERIFICATION_API_KEY",
+	} {
+		prev, hadPrev := os.LookupEnv(key)
+		os.Unsetenv(key)
+		t.Cleanup(func() {
+			if hadPrev {
+				os.Setenv(key, prev)
+			} else {
+				os.Unsetenv(key)
+			}
+		})
+	}
+
+	cfg, err := LoadMigrate()
+	if err != nil {
+		t.Fatalf("expected no error when only DATABASE_URL is set, got: %v", err)
+	}
+	if cfg.DatabaseURL == "" {
+		t.Error("expected non-empty DatabaseURL")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SeedAdminConfig tests
+// ---------------------------------------------------------------------------
+
+// setSeedAdminEnvVars sets the minimal environment for LoadSeedAdmin.
+func setSeedAdminEnvVars(t *testing.T) {
+	t.Helper()
+	t.Setenv("DATABASE_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
+	t.Setenv("ADMIN_SEED_USERNAME", "admin")
+	t.Setenv("ADMIN_SEED_PASSWORD", "validpass")
+}
+
+func TestLoadSeedAdmin_Success(t *testing.T) {
+	setSeedAdminEnvVars(t)
+
+	cfg, err := LoadSeedAdmin()
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if cfg.DatabaseURL != "postgres://test:test@localhost:5432/test?sslmode=disable" {
+		t.Errorf("unexpected DatabaseURL: %s", cfg.DatabaseURL)
+	}
+	if cfg.AdminSeedUsername != "admin" {
+		t.Errorf("unexpected AdminSeedUsername: %s", cfg.AdminSeedUsername)
+	}
+	if cfg.AdminSeedPassword != "validpass" {
+		t.Errorf("unexpected AdminSeedPassword: %s", cfg.AdminSeedPassword)
+	}
+}
+
+func TestLoadSeedAdmin_MissingDatabaseURL(t *testing.T) {
+	t.Setenv("ADMIN_SEED_USERNAME", "admin")
+	t.Setenv("ADMIN_SEED_PASSWORD", "validpass")
+
+	prev, hadPrev := os.LookupEnv("DATABASE_URL")
+	os.Unsetenv("DATABASE_URL")
+	t.Cleanup(func() {
+		if hadPrev {
+			os.Setenv("DATABASE_URL", prev)
+		} else {
+			os.Unsetenv("DATABASE_URL")
+		}
+	})
+
+	_, err := LoadSeedAdmin()
+	if err == nil {
+		t.Fatal("expected error for missing DATABASE_URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Errorf("expected error to mention DATABASE_URL, got: %v", err)
+	}
+}
+
+func TestLoadSeedAdmin_MissingUsername(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
+	t.Setenv("ADMIN_SEED_PASSWORD", "validpass")
+
+	prev, hadPrev := os.LookupEnv("ADMIN_SEED_USERNAME")
+	os.Unsetenv("ADMIN_SEED_USERNAME")
+	t.Cleanup(func() {
+		if hadPrev {
+			os.Setenv("ADMIN_SEED_USERNAME", prev)
+		} else {
+			os.Unsetenv("ADMIN_SEED_USERNAME")
+		}
+	})
+
+	_, err := LoadSeedAdmin()
+	if err == nil {
+		t.Fatal("expected error for missing ADMIN_SEED_USERNAME, got nil")
+	}
+	if !strings.Contains(err.Error(), "ADMIN_SEED_USERNAME") {
+		t.Errorf("expected error to mention ADMIN_SEED_USERNAME, got: %v", err)
+	}
+}
+
+func TestLoadSeedAdmin_MissingPassword(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
+	t.Setenv("ADMIN_SEED_USERNAME", "admin")
+
+	prev, hadPrev := os.LookupEnv("ADMIN_SEED_PASSWORD")
+	os.Unsetenv("ADMIN_SEED_PASSWORD")
+	t.Cleanup(func() {
+		if hadPrev {
+			os.Setenv("ADMIN_SEED_PASSWORD", prev)
+		} else {
+			os.Unsetenv("ADMIN_SEED_PASSWORD")
+		}
+	})
+
+	_, err := LoadSeedAdmin()
+	if err == nil {
+		t.Fatal("expected error for missing ADMIN_SEED_PASSWORD, got nil")
+	}
+	if !strings.Contains(err.Error(), "ADMIN_SEED_PASSWORD") {
+		t.Errorf("expected error to mention ADMIN_SEED_PASSWORD, got: %v", err)
+	}
+}
+
+func TestLoadSeedAdmin_ShortPassword(t *testing.T) {
+	setSeedAdminEnvVars(t)
+	t.Setenv("ADMIN_SEED_PASSWORD", "short")
+
+	_, err := LoadSeedAdmin()
+	if err == nil {
+		t.Fatal("expected error for short admin password, got nil")
+	}
+	if !strings.Contains(err.Error(), "ADMIN_SEED_PASSWORD") {
+		t.Errorf("expected error to mention ADMIN_SEED_PASSWORD, got: %v", err)
+	}
+}
+
+func TestLoadSeedAdmin_TooLongPassword(t *testing.T) {
+	setSeedAdminEnvVars(t)
+	t.Setenv("ADMIN_SEED_PASSWORD", strings.Repeat("a", 73))
+
+	_, err := LoadSeedAdmin()
+	if err == nil {
+		t.Fatal("expected error for admin password exceeding 72 bytes, got nil")
+	}
+	if !strings.Contains(err.Error(), "ADMIN_SEED_PASSWORD") {
+		t.Errorf("expected error to mention ADMIN_SEED_PASSWORD, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "72 bytes") {
+		t.Errorf("expected error to mention 72 bytes, got: %v", err)
+	}
+}
+
+func TestLoadSeedAdmin_DoesNotRequireServerVars(t *testing.T) {
+	setSeedAdminEnvVars(t)
+
+	// Ensure none of the server-only required vars are set.
+	for _, key := range []string{
+		"JWT_SECRET", "JWT_ACCESS_TOKEN_TTL", "JWT_REFRESH_TOKEN_TTL",
+		"SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM",
+		"REVENUECAT_API_KEY", "REVENUECAT_WEBHOOK_SECRET",
+		"FIREBASE_SERVICE_ACCOUNT_JSON",
+		"STUDENT_VERIFICATION_PROVIDER", "STUDENT_VERIFICATION_API_KEY",
+	} {
+		prev, hadPrev := os.LookupEnv(key)
+		os.Unsetenv(key)
+		t.Cleanup(func() {
+			if hadPrev {
+				os.Setenv(key, prev)
+			} else {
+				os.Unsetenv(key)
+			}
+		})
+	}
+
+	cfg, err := LoadSeedAdmin()
+	if err != nil {
+		t.Fatalf("expected no error when only seed-admin vars are set, got: %v", err)
+	}
+	if cfg.DatabaseURL == "" {
+		t.Error("expected non-empty DatabaseURL")
+	}
+	if cfg.AdminSeedUsername == "" {
+		t.Error("expected non-empty AdminSeedUsername")
+	}
+}

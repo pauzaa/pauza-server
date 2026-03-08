@@ -14,14 +14,9 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	cfg, err := config.Load()
+	cfg, err := config.LoadSeedAdmin()
 	if err != nil {
 		logger.Error("failed to load configuration", "err", err)
-		os.Exit(1)
-	}
-
-	if cfg.AdminSeedUsername == "" || cfg.AdminSeedPassword == "" {
-		logger.Error("ADMIN_SEED_USERNAME and ADMIN_SEED_PASSWORD must be set")
 		os.Exit(1)
 	}
 

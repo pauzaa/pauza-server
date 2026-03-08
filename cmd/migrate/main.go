@@ -13,7 +13,7 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	cfg, err := config.Load()
+	cfg, err := config.LoadMigrate()
 	if err != nil {
 		logger.Error("failed to load configuration", "err", err)
 		os.Exit(1)
