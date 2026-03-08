@@ -13,7 +13,6 @@ import (
 
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/IsorilovA/pauza-server/internal/auth"
 	"github.com/IsorilovA/pauza-server/internal/mail"
@@ -138,7 +137,7 @@ type GetMeInput struct {
 // AuthService encapsulates authentication business logic, coordinating
 // between the repository, auth utilities, and mail sender.
 type AuthService struct {
-	pool               *pgxpool.Pool
+	pool               repository.Pool
 	repo               repository.AuthRepository
 	mailer             mail.Sender
 	jwtSecret          string
@@ -149,7 +148,7 @@ type AuthService struct {
 
 // NewAuthService creates an AuthService with the given dependencies.
 func NewAuthService(
-	pool *pgxpool.Pool,
+	pool repository.Pool,
 	repo repository.AuthRepository,
 	mailer mail.Sender,
 	jwtSecret string,

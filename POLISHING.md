@@ -206,10 +206,11 @@ This order is deliberate:
 - Ensure middleware behavior is covered in integration, not only unit tests.
 - Done: recovery now returns the standard JSON internal-error envelope, server/recovery tests assert the contract end to end, and auth integration tests boot through `server.New(...)` with production middleware enabled.
 
-### Phase 2: Service confidence
+### Phase 2: Service confidence (completed)
 
 - Add direct service-layer tests for core auth flows and error branches.
 - Add stubs/fakes for repository and mail dependencies where needed.
+- Done: added direct `internal/service` behavioral coverage for register/login/refresh/forgot-password/reset-password flows, plus repo/mail/pool fakes so those paths run in the default test suite without Postgres.
 
 ### Phase 3: Operational decoupling
 
