@@ -5,6 +5,10 @@
 // instance, so these tests MUST NOT run in parallel (no t.Parallel calls).
 // The go test runner executes them sequentially within this package by default;
 // keep it that way.
+//
+// The test server is built using the real production server.New(...) so that
+// integration tests exercise the full middleware stack (rate limiting, request
+// ID, structured recovery, body limits, etc.).
 
 package handler_test
 
@@ -23,18 +27,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/IsorilovA/pauza-server/internal/apperror"
 	"github.com/IsorilovA/pauza-server/internal/auth"
+	"github.com/IsorilovA/pauza-server/internal/config"
 	"github.com/IsorilovA/pauza-server/internal/database"
-	"github.com/IsorilovA/pauza-server/internal/handler"
 	"github.com/IsorilovA/pauza-server/internal/mail"
-	authmw "github.com/IsorilovA/pauza-server/internal/middleware"
-	"github.com/IsorilovA/pauza-server/internal/repository"
-	"github.com/IsorilovA/pauza-server/internal/service"
+	"github.com/IsorilovA/pauza-server/internal/server"
 	"github.com/IsorilovA/pauza-server/migrations"
 )
 
@@ -46,11 +46,6 @@ const (
 	testJWTSecret          = "integration-test-secret-key-32b!"
 	testJWTAccessTokenTTL  = 15 * time.Minute
 	testJWTRefreshTokenTTL = 7 * 24 * time.Hour
-
-	// testMaxBodySize mirrors the production request body limit in
-	// internal/server/server.go so the integration-test router has the
-	// same defense-in-depth behaviour.
-	testMaxBodySize = 1 << 20 // 1 MiB
 
 	// msgInvalidCredentials is the anti-enumeration message returned by
 	// the Login handler for wrong-password and non-existent-email cases.
@@ -105,10 +100,34 @@ func testDatabaseURL(t *testing.T) string {
 	return url
 }
 
+// testConfig returns a config.Config suitable for integration tests. Rate
+// limits are set high so that rapid sequential test requests are not throttled.
+func testConfig() *config.Config {
+	return &config.Config{
+		Port:                8080,
+		LogLevel:            "info",
+		JWTSecret:           testJWTSecret,
+		JWTAccessTokenTTL:   testJWTAccessTokenTTL,
+		JWTRefreshTokenTTL:  testJWTRefreshTokenTTL,
+		SMTPHost:            "localhost",
+		SMTPPort:            1025,
+		SMTPUsername:        "test",
+		SMTPPassword:        "test",
+		SMTPFrom:            "test@example.com",
+		SMTPTimeout:         30 * time.Second,
+		SMTPTLSPolicy:       "none",
+		AuthRateLimit:       10000,
+		AuthRateWindow:      time.Minute,
+		VerifyOTPRateLimit:  10000,
+		VerifyOTPRateWindow: time.Minute,
+	}
+}
+
 // setupTestServerWithMailer resets the test database, applies migrations, and
-// returns an httptest.Server backed by the full chi router and the underlying
-// pgxpool.Pool for direct DB access. The caller provides the mail.Sender
-// implementation, which allows tests to inject controllable or failing senders.
+// returns an httptest.Server backed by the real production server.New(...)
+// router and the underlying pgxpool.Pool for direct DB access. The caller
+// provides the mail.Sender implementation, which allows tests to inject
+// controllable or failing senders.
 func setupTestServerWithMailer(t *testing.T, mailer mail.Sender) (*httptest.Server, *pgxpool.Pool) {
 	t.Helper()
 
@@ -136,57 +155,17 @@ func setupTestServerWithMailer(t *testing.T, mailer mail.Sender) (*httptest.Serv
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := testConfig()
 
-	// Build a chi router that mirrors the production route tree in
-	// internal/server/server.go: a single /api/v1 route containing both
-	// public auth routes and a protected group gated by JWT middleware.
-	// The middleware stack is minimal (no respondRequestID or requestLogger)
-	// and the mailer is an in-memory stub.
-	r := chi.NewRouter()
-	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
-	r.Use(middleware.Recoverer)
+	// Use the production server.New to build the full HTTP stack (router,
+	// middleware, rate limiters, etc.) so integration tests exercise the
+	// same code path as production.
+	srv, cleanup := server.New(cfg, logger, pool, mailer)
 
-	// Defense-in-depth: limit request bodies (mirrors production server.go).
-	r.Use(func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			r.Body = http.MaxBytesReader(w, r.Body, testMaxBodySize)
-			next.ServeHTTP(w, r)
-		})
-	})
-
-	r.Get("/live", handler.Live(logger))
-	r.Get("/ready", handler.Ready(pool, logger))
-
-	authRepo := repository.NewPgxAuthRepository()
-	authService := service.NewAuthService(
-		pool, authRepo, mailer, testJWTSecret,
-		testJWTAccessTokenTTL, testJWTRefreshTokenTTL, logger,
-	)
-	authHandler := handler.NewAuthHandler(authService, logger)
-
-	r.Route("/api/v1", func(r chi.Router) {
-		// Public auth routes (no JWT required).
-		r.Route("/auth", func(r chi.Router) {
-			r.Post("/register", authHandler.Register)
-			r.Post("/verify-otp", authHandler.VerifyOTP)
-			r.Post("/login", authHandler.Login)
-			r.Post("/refresh", authHandler.Refresh)
-			r.Post("/forgot-password", authHandler.ForgotPassword)
-			r.Post("/reset-password", authHandler.ResetPassword)
-		})
-
-		// Protected routes (JWT required).
-		r.Group(func(r chi.Router) {
-			r.Use(authmw.JWTAuth(testJWTSecret, logger))
-
-			r.Get("/me", authHandler.GetMe)
-		})
-	})
-
-	ts := httptest.NewServer(r)
+	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(func() {
 		ts.Close()
+		cleanup()
 		pool.Close()
 	})
 
@@ -546,8 +525,9 @@ func TestIntegration_GetMe_DeletedUser(t *testing.T) {
 	}
 }
 
-// TestIntegration_RefreshTokenRotation exercises refresh token rotation:
-// Register -> Verify -> Login -> Refresh -> old token rejected.
+// TestIntegration_RefreshTokenRotation exercises refresh token rotation and
+// theft detection: Register -> Verify -> Refresh -> validate new token ->
+// replay old token -> all tokens revoked (BACKEND_SPEC §4 theft detection).
 func TestIntegration_RefreshTokenRotation(t *testing.T) {
 	ts, _, mailer := setupTestServer(t)
 
@@ -576,23 +556,25 @@ func TestIntegration_RefreshTokenRotation(t *testing.T) {
 	}
 	newRefreshToken := refreshResp.RefreshToken
 
-	// Step 2: The old token should now be rejected (it was rotated/revoked).
-	resp = postJSON(t, ts.URL+"/api/v1/auth/refresh", map[string]string{
-		"refresh_token": originalRefreshToken,
-	})
-	if resp.StatusCode != http.StatusUnauthorized {
-		body := readBody(t, resp)
-		t.Fatalf("refresh with old token: expected 401, got %d: %s", resp.StatusCode, body)
-	}
-	discardBody(t, resp)
-
-	// Step 3: The new token should still work.
+	// Step 2: Validate the new token works BEFORE replaying the old one.
+	// This must come first because replaying the old token triggers theft
+	// detection which revokes all tokens for the user.
 	resp = postJSON(t, ts.URL+"/api/v1/auth/refresh", map[string]string{
 		"refresh_token": newRefreshToken,
 	})
 	if resp.StatusCode != http.StatusOK {
 		body := readBody(t, resp)
 		t.Fatalf("refresh with new token: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	discardBody(t, resp)
+
+	// Step 3: Replay the original (revoked) token — must be rejected.
+	resp = postJSON(t, ts.URL+"/api/v1/auth/refresh", map[string]string{
+		"refresh_token": originalRefreshToken,
+	})
+	if resp.StatusCode != http.StatusUnauthorized {
+		body := readBody(t, resp)
+		t.Fatalf("replay revoked token: expected 401, got %d: %s", resp.StatusCode, body)
 	}
 	discardBody(t, resp)
 }
@@ -873,8 +855,10 @@ func TestIntegration_RefreshRevokedTokenRevokesAll(t *testing.T) {
 
 // TestIntegration_ConcurrentRefreshSameToken verifies that when multiple
 // goroutines attempt to refresh using the same token concurrently, exactly one
-// succeeds (200) and the rest fail (401). The winning new refresh token must
-// remain usable afterward.
+// succeeds (200) and the rest fail (401). Per BACKEND_SPEC §4, the losing
+// goroutines' replay of the (now-revoked) original token triggers theft
+// detection, which revokes all tokens for the user — so the winning new token
+// is NOT expected to remain usable afterward.
 func TestIntegration_ConcurrentRefreshSameToken(t *testing.T) {
 	ts, _, mailer := setupTestServer(t)
 
@@ -983,20 +967,15 @@ func TestIntegration_ConcurrentRefreshSameToken(t *testing.T) {
 	if winner.body.AccessToken == "" {
 		t.Errorf("winning response has empty access_token (raw body: %s)", winner.rawBody)
 	}
-	winningToken := winner.body.RefreshToken
-	if winningToken == "" {
-		t.Fatalf("winning response has empty refresh_token (raw body: %s)", winner.rawBody)
+	if winner.body.RefreshToken == "" {
+		t.Errorf("winning response has empty refresh_token (raw body: %s)", winner.rawBody)
 	}
 
-	// The winning new refresh token should still be usable.
-	resp := postJSON(t, ts.URL+"/api/v1/auth/refresh", map[string]string{
-		"refresh_token": winningToken,
-	})
-	if resp.StatusCode != http.StatusOK {
-		body := readBody(t, resp)
-		t.Fatalf("refresh with winning token: expected 200, got %d: %s", resp.StatusCode, body)
-	}
-	discardBody(t, resp)
+	// NOTE: we intentionally do NOT assert that the winning refresh token
+	// remains usable. The losing goroutines replayed the same (now-revoked)
+	// original token, which triggers theft detection and revokes ALL tokens
+	// for the user (BACKEND_SPEC §4). The important invariant is the
+	// exactly-one-winner property verified above.
 }
 
 // TestIntegration_ConcurrentVerifyOTPSameCode fires N concurrent verify-otp

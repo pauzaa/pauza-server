@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/IsorilovA/pauza-server/internal/apperror"
 	"github.com/IsorilovA/pauza-server/internal/auth"
 	"github.com/IsorilovA/pauza-server/internal/config"
 )
@@ -39,7 +40,7 @@ func testLogger() *slog.Logger {
 }
 
 func TestNew_LiveEndpoint(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/live", nil)
@@ -71,7 +72,7 @@ func TestNew_LiveEndpoint(t *testing.T) {
 }
 
 func TestNew_ReadyEndpoint(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
@@ -103,7 +104,7 @@ func TestNew_ReadyEndpoint(t *testing.T) {
 }
 
 func TestNew_NotFoundRoute(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/nonexistent", nil)
@@ -117,7 +118,7 @@ func TestNew_NotFoundRoute(t *testing.T) {
 }
 
 func TestNew_LiveMethodNotAllowed(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodPost, "/live", nil)
@@ -131,7 +132,7 @@ func TestNew_LiveMethodNotAllowed(t *testing.T) {
 }
 
 func TestNew_ReadyMethodNotAllowed(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodPost, "/ready", nil)
@@ -145,7 +146,7 @@ func TestNew_ReadyMethodNotAllowed(t *testing.T) {
 }
 
 func TestNew_RequestIDHeader(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/live", nil)
@@ -160,7 +161,7 @@ func TestNew_RequestIDHeader(t *testing.T) {
 }
 
 func TestNew_RequestIDEchoesClientValue(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/live", nil)
@@ -179,7 +180,7 @@ func TestNew_ServerAddr(t *testing.T) {
 	cfg := testConfig()
 	cfg.Port = 9090
 
-	srv, cleanup := New(cfg, testLogger(), nil)
+	srv, cleanup := New(cfg, testLogger(), nil, nil)
 	defer cleanup()
 
 	if srv.Addr != ":9090" {
@@ -330,7 +331,7 @@ func TestNew_AuthRoutesExist(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv, cleanup := New(testConfig(), testLogger(), nil)
+			srv, cleanup := New(testConfig(), testLogger(), nil, nil)
 			defer cleanup()
 
 			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
@@ -347,7 +348,7 @@ func TestNew_AuthRoutesExist(t *testing.T) {
 }
 
 func TestNew_ProtectedRouteUnauthorized(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil)
 	defer cleanup()
 
 	// GET /api/v1/me is a protected route. Without an Authorization header,
@@ -369,7 +370,7 @@ func TestNew_ProtectedRouteUnauthorized(t *testing.T) {
 // route wiring and the auth middleware pass-through are working.
 func TestNew_MeRouteWithValidJWT(t *testing.T) {
 	cfg := testConfig()
-	srv, cleanup := New(cfg, testLogger(), nil)
+	srv, cleanup := New(cfg, testLogger(), nil, nil)
 	defer cleanup()
 
 	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
@@ -386,6 +387,23 @@ func TestNew_MeRouteWithValidJWT(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500 for GET /api/v1/me with nil pool (panic → Recoverer), got: %d", rec.Code)
 	}
+
+	// Verify the response follows the JSON error contract end to end.
+	ct := rec.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	var errResp apperror.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode JSON error body: %v", err)
+	}
+	if errResp.Error.Code != apperror.CodeInternalError {
+		t.Errorf("error.code = %q, want %q", errResp.Error.Code, apperror.CodeInternalError)
+	}
+	if errResp.Error.Message == "" {
+		t.Error("error.message is empty, want non-empty safe message")
+	}
 }
 
 // TestNew_RecovererLogsJSONOnPanic is a full-stack integration test that wires
@@ -398,7 +416,7 @@ func TestNew_RecovererLogsJSONOnPanic(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	srv, cleanup := New(cfg, logger, nil)
+	srv, cleanup := New(cfg, logger, nil, nil)
 	defer cleanup()
 
 	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
@@ -414,6 +432,23 @@ func TestNew_RecovererLogsJSONOnPanic(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got: %d", rec.Code)
+	}
+
+	// Verify the response follows the JSON error contract end to end.
+	ct := rec.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	var errResp apperror.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode JSON error body: %v", err)
+	}
+	if errResp.Error.Code != apperror.CodeInternalError {
+		t.Errorf("error.code = %q, want %q", errResp.Error.Code, apperror.CodeInternalError)
+	}
+	if errResp.Error.Message == "" {
+		t.Error("error.message is empty, want non-empty safe message")
 	}
 
 	// The log buffer may contain multiple JSON lines (request logger + recoverer).
@@ -476,7 +511,7 @@ func TestNew_MiddlewareOrdering_RequestLoggerSees500(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	srv, cleanup := New(cfg, logger, nil)
+	srv, cleanup := New(cfg, logger, nil, nil)
 	defer cleanup()
 
 	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
@@ -492,6 +527,23 @@ func TestNew_MiddlewareOrdering_RequestLoggerSees500(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got: %d", rec.Code)
+	}
+
+	// Verify the response follows the JSON error contract end to end.
+	ct := rec.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	var errResp apperror.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode JSON error body: %v", err)
+	}
+	if errResp.Error.Code != apperror.CodeInternalError {
+		t.Errorf("error.code = %q, want %q", errResp.Error.Code, apperror.CodeInternalError)
+	}
+	if errResp.Error.Message == "" {
+		t.Error("error.message is empty, want non-empty safe message")
 	}
 
 	// Find the "http request" log entry (emitted by requestLogger).
@@ -544,7 +596,7 @@ func TestNew_MiddlewareOrdering_RequestLoggerSees500(t *testing.T) {
 // middleware chain and that recovery does not suppress response headers.
 func TestNew_MiddlewareOrdering_RequestIDInResponse(t *testing.T) {
 	cfg := testConfig()
-	srv, cleanup := New(cfg, testLogger(), nil)
+	srv, cleanup := New(cfg, testLogger(), nil, nil)
 	defer cleanup()
 
 	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
@@ -568,6 +620,23 @@ func TestNew_MiddlewareOrdering_RequestIDInResponse(t *testing.T) {
 	got := rec.Header().Get("X-Request-Id")
 	if got != "ordering-test-id" {
 		t.Errorf("X-Request-Id = %q, want %q (proves respondRequestID runs before Recoverer)", got, "ordering-test-id")
+	}
+
+	// Verify the response follows the JSON error contract end to end.
+	ct := rec.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	var errResp apperror.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode JSON error body: %v", err)
+	}
+	if errResp.Error.Code != apperror.CodeInternalError {
+		t.Errorf("error.code = %q, want %q", errResp.Error.Code, apperror.CodeInternalError)
+	}
+	if errResp.Error.Message == "" {
+		t.Error("error.message is empty, want non-empty safe message")
 	}
 }
 

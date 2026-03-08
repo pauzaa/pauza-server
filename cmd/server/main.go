@@ -10,8 +10,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/IsorilovA/pauza-server/internal/auth"
 	"github.com/IsorilovA/pauza-server/internal/config"
 	"github.com/IsorilovA/pauza-server/internal/database"
+	"github.com/IsorilovA/pauza-server/internal/mail"
 	"github.com/IsorilovA/pauza-server/internal/server"
 )
 
@@ -39,10 +41,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 4. Create HTTP server
-	srv, cleanup := server.New(cfg, logger, pool)
+	// 4. Create SMTP mailer
+	emailSender := mail.NewSMTPSender(mail.SMTPConfig{
+		Host:             cfg.SMTPHost,
+		Port:             cfg.SMTPPort,
+		Username:         cfg.SMTPUsername,
+		Password:         cfg.SMTPPassword,
+		From:             cfg.SMTPFrom,
+		OTPExpiryMinutes: int(auth.OTPExpiry.Minutes()),
+		Timeout:          cfg.SMTPTimeout,
+		TLSPolicy:        cfg.SMTPTLSPolicy,
+		Logger:           logger,
+	})
 
-	// 5. Start background cleanup job for stale auth data.
+	// 5. Create HTTP server
+	srv, cleanup := server.New(cfg, logger, pool, emailSender)
+
+	// 6. Start background cleanup job for stale auth data.
 	// The process context is cancelled during shutdown so the cleanup
 	// goroutine observes cancellation promptly rather than relying
 	// solely on the stop function.
@@ -55,7 +70,7 @@ func main() {
 		RefreshTokenMaxAge: cfg.RefreshTokenRevokedRetention,
 	})
 
-	// 6. Start HTTP server in a goroutine; report fatal errors via channel
+	// 7. Start HTTP server in a goroutine; report fatal errors via channel
 	listenErr := make(chan error, 1)
 	go func() {
 		logger.Info("server starting", "port", cfg.Port)
@@ -64,7 +79,7 @@ func main() {
 		}
 	}()
 
-	// 7. Wait for interrupt signal (SIGINT or SIGTERM) or listen error
+	// 8. Wait for interrupt signal (SIGINT or SIGTERM) or listen error
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -78,7 +93,7 @@ func main() {
 		exitCode = 1
 	}
 
-	// 8. Graceful shutdown with 10-second timeout.
+	// 9. Graceful shutdown with 10-second timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

@@ -51,6 +51,13 @@ type Config struct {
 	StudentVerificationProvider string `envconfig:"STUDENT_VERIFICATION_PROVIDER" required:"true"`
 	StudentVerificationAPIKey   string `envconfig:"STUDENT_VERIFICATION_API_KEY" required:"true"`
 
+	// Rate limiting (optional; safe defaults match the hardcoded constants in
+	// server.go so that existing deployments keep the same behaviour)
+	AuthRateLimit       int           `envconfig:"AUTH_RATE_LIMIT" default:"5"`
+	AuthRateWindow      time.Duration `envconfig:"AUTH_RATE_WINDOW" default:"1m"`
+	VerifyOTPRateLimit  int           `envconfig:"VERIFY_OTP_RATE_LIMIT" default:"3"`
+	VerifyOTPRateWindow time.Duration `envconfig:"VERIFY_OTP_RATE_WINDOW" default:"1m"`
+
 	// Cleanup job
 	CleanupInterval    time.Duration `envconfig:"CLEANUP_INTERVAL" default:"1h"`
 	OTPRetentionPeriod time.Duration `envconfig:"OTP_RETENTION_PERIOD" default:"24h"`
@@ -161,6 +168,20 @@ func (c *Config) validate() error {
 				}
 			}
 		}
+	}
+
+	// Rate limit values must be positive
+	if c.AuthRateLimit <= 0 {
+		return fmt.Errorf("AUTH_RATE_LIMIT must be positive, got %d", c.AuthRateLimit)
+	}
+	if c.AuthRateWindow <= 0 {
+		return fmt.Errorf("AUTH_RATE_WINDOW must be positive, got %s", c.AuthRateWindow)
+	}
+	if c.VerifyOTPRateLimit <= 0 {
+		return fmt.Errorf("VERIFY_OTP_RATE_LIMIT must be positive, got %d", c.VerifyOTPRateLimit)
+	}
+	if c.VerifyOTPRateWindow <= 0 {
+		return fmt.Errorf("VERIFY_OTP_RATE_WINDOW must be positive, got %s", c.VerifyOTPRateWindow)
 	}
 
 	// Cleanup durations must be positive

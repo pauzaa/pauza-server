@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/IsorilovA/pauza-server/internal/apperror"
 	"github.com/IsorilovA/pauza-server/internal/middleware"
 )
 
@@ -19,7 +20,7 @@ func panicHandler(v any) http.Handler {
 	})
 }
 
-func TestRecoverer_Returns500OnPanic(t *testing.T) {
+func TestRecoverer_Returns500JSONOnPanic(t *testing.T) {
 	handler := middleware.Recoverer(discardLogger())(panicHandler("boom"))
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -31,9 +32,20 @@ func TestRecoverer_Returns500OnPanic(t *testing.T) {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
 	}
 
-	// The response body must be empty — no error details leaked.
-	if body := rec.Body.String(); body != "" {
-		t.Errorf("body = %q, want empty", body)
+	ct := rec.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	var resp apperror.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode JSON body: %v", err)
+	}
+	if resp.Error.Code != apperror.CodeInternalError {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, apperror.CodeInternalError)
+	}
+	if resp.Error.Message == "" {
+		t.Error("error.message is empty, want non-empty safe message")
 	}
 }
 
@@ -146,6 +158,19 @@ func TestRecoverer_HandlesNonStringPanic(t *testing.T) {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
 	}
 
+	ct := rec.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	var resp apperror.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode JSON body: %v", err)
+	}
+	if resp.Error.Code != apperror.CodeInternalError {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, apperror.CodeInternalError)
+	}
+
 	logged := buf.String()
 	var entry map[string]any
 	if err := json.Unmarshal([]byte(logged), &entry); err != nil {
@@ -155,5 +180,41 @@ func TestRecoverer_HandlesNonStringPanic(t *testing.T) {
 	// slog.Any encodes an int as a JSON number.
 	if v, ok := entry["panic"].(float64); !ok || v != 42 {
 		t.Errorf("panic = %v (%T), want 42", entry["panic"], entry["panic"])
+	}
+}
+
+func TestRecoverer_SkipsBodyWhenHeadersAlreadyWritten(t *testing.T) {
+	// Handler that writes a partial response before panicking.
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("partial"))
+		panic("late panic")
+	})
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	handler := middleware.Recoverer(logger)(inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/partial", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	// The status should be the original 200 (headers were already flushed).
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d (headers already written)", rec.Code, http.StatusOK)
+	}
+
+	// Body should contain only the partial write, not a JSON error envelope.
+	body := rec.Body.String()
+	if body != "partial" {
+		t.Errorf("body = %q, want %q", body, "partial")
+	}
+
+	// The panic should still have been logged.
+	if !strings.Contains(buf.String(), "panic recovered") {
+		t.Error("expected 'panic recovered' in log output")
 	}
 }

@@ -10,7 +10,6 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/IsorilovA/pauza-server/internal/auth"
 	"github.com/IsorilovA/pauza-server/internal/config"
 	"github.com/IsorilovA/pauza-server/internal/handler"
 	"github.com/IsorilovA/pauza-server/internal/mail"
@@ -80,25 +79,28 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// authRateLimit is the maximum number of requests per minute allowed from a
-// single IP to public /api/v1/auth endpoints.
-const authRateLimit = 5
+// defaultAuthRateLimit is the fallback maximum number of requests per window
+// allowed from a single IP to public /api/v1/auth endpoints.
+const defaultAuthRateLimit = 5
 
-// authRateWindow is the fixed-window duration for the auth rate limiter.
-const authRateWindow = time.Minute
+// defaultAuthRateWindow is the fallback fixed-window duration for the auth
+// rate limiter.
+const defaultAuthRateWindow = time.Minute
 
-// verifyOTPRateLimit is the maximum number of requests per minute allowed
-// for /api/v1/auth/verify-otp per email address (BACKEND_SPEC §10).
-const verifyOTPRateLimit = 3
+// defaultVerifyOTPRateLimit is the fallback maximum number of requests per
+// window for /api/v1/auth/verify-otp per email address (BACKEND_SPEC §10).
+const defaultVerifyOTPRateLimit = 3
 
-// verifyOTPRateWindow is the fixed-window duration for the verify-otp
-// per-email rate limiter.
-const verifyOTPRateWindow = time.Minute
+// defaultVerifyOTPRateWindow is the fallback fixed-window duration for the
+// verify-otp per-email rate limiter.
+const defaultVerifyOTPRateWindow = time.Minute
 
 // New creates and configures the HTTP server with all routes and middleware.
+// The mailer parameter allows callers to inject any mail.Sender implementation
+// (e.g. a real SMTP sender in production, or an in-memory stub in tests).
 // The returned cleanup function stops background goroutines (e.g. rate-limiter
 // eviction loops) and must be called during graceful shutdown.
-func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool) (*http.Server, func()) {
+func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mail.Sender) (*http.Server, func()) {
 	r := chi.NewRouter()
 
 	// Base middleware stack.
@@ -115,32 +117,40 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool) (*http.Ser
 	r.Get("/ready", handler.Ready(pool, logger))
 
 	// Construct shared dependencies for handler wiring.
-	emailSender := mail.NewSMTPSender(mail.SMTPConfig{
-		Host:             cfg.SMTPHost,
-		Port:             cfg.SMTPPort,
-		Username:         cfg.SMTPUsername,
-		Password:         cfg.SMTPPassword,
-		From:             cfg.SMTPFrom,
-		OTPExpiryMinutes: int(auth.OTPExpiry.Minutes()),
-		Timeout:          cfg.SMTPTimeout,
-		TLSPolicy:        cfg.SMTPTLSPolicy,
-		Logger:           logger,
-	})
 	authRepo := repository.NewPgxAuthRepository()
 	authService := service.NewAuthService(
-		pool, authRepo, emailSender, cfg.JWTSecret,
+		pool, authRepo, mailer, cfg.JWTSecret,
 		cfg.JWTAccessTokenTTL, cfg.JWTRefreshTokenTTL, logger,
 	)
 	authHandler := handler.NewAuthHandler(authService, logger)
 
+	// Resolve rate-limit values from config, falling back to defaults when
+	// the config values are zero (e.g. in unit tests with a minimal config).
+	authRL := cfg.AuthRateLimit
+	if authRL <= 0 {
+		authRL = defaultAuthRateLimit
+	}
+	authRW := cfg.AuthRateWindow
+	if authRW <= 0 {
+		authRW = defaultAuthRateWindow
+	}
+	votpRL := cfg.VerifyOTPRateLimit
+	if votpRL <= 0 {
+		votpRL = defaultVerifyOTPRateLimit
+	}
+	votpRW := cfg.VerifyOTPRateWindow
+	if votpRW <= 0 {
+		votpRW = defaultVerifyOTPRateWindow
+	}
+
 	// Per-IP rate limiter for public auth endpoints. The limiter is shared
 	// across all auth routes so that an attacker cannot bypass the budget
 	// by rotating across different endpoints.
-	authLimiter := ratelimit.New(authRateLimit, authRateWindow)
+	authLimiter := ratelimit.New(authRL, authRW)
 
 	// Per-email rate limiter for /auth/verify-otp (BACKEND_SPEC §10:
 	// 3 requests/minute scoped by normalized email address).
-	verifyOTPLimiter := ratelimit.New(verifyOTPRateLimit, verifyOTPRateWindow)
+	verifyOTPLimiter := ratelimit.New(votpRL, votpRW)
 
 	// --- /api/v1 routes -------------------------------------------------
 	// Public and protected routes are mounted in separate chi.Route groups
@@ -149,9 +159,9 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool) (*http.Ser
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public auth routes (no JWT required).
 		r.Route("/auth", func(r chi.Router) {
-			r.Use(authmw.RateLimit(authLimiter, authRateLimit, authmw.IPKey))
+			r.Use(authmw.RateLimit(authLimiter, authRL, authmw.IPKey))
 			r.Post("/register", authHandler.Register)
-			r.With(authmw.RateLimit(verifyOTPLimiter, verifyOTPRateLimit, authmw.EmailKey)).
+			r.With(authmw.RateLimit(verifyOTPLimiter, votpRL, authmw.EmailKey)).
 				Post("/verify-otp", authHandler.VerifyOTP)
 			r.Post("/login", authHandler.Login)
 			r.Post("/refresh", authHandler.Refresh)
