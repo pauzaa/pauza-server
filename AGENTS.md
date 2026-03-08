@@ -74,7 +74,7 @@ Config is loaded from environment variables via `internal/config` (envconfig).
 `.env.example` is the canonical list/template.
 
 Common variables used today:
-- Server: `PORT`, `LOG_LEVEL`
+- Server: `PORT`, `LOG_LEVEL`, `TRUSTED_PROXIES`
 - Database: `DATABASE_URL`
 - Auth: `JWT_SECRET`, `JWT_ACCESS_TOKEN_TTL`, `JWT_REFRESH_TOKEN_TTL`
 - SMTP: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`
@@ -86,6 +86,26 @@ Rules of thumb:
 - Never log secrets (JWT secret, DB URL, SMTP password, webhook secrets).
 - When adding a new env var: update `internal/config/config.go` and `.env.example`.
 - Auth rate limiting is Redis-backed and fail-open on backend errors; startup should log Redis connectivity clearly without leaking secrets.
+
+### Trusted-Proxy Configuration
+
+`TRUSTED_PROXIES` controls which peers may set the real client IP via `X-Forwarded-For` / `X-Real-Ip`. Getting this right is critical for rate limiting and audit logging.
+
+- **Empty (default):** trust nobody — forwarded headers are ignored. Use this when the server is directly exposed to the internet with no reverse proxy.
+- **Too broad:** attackers can spoof their IP to bypass per-IP rate limits.
+- **Too narrow (or empty behind a proxy):** rate limits and logs will see the proxy's IP, not the real client. All clients behind that proxy share one rate-limit bucket.
+
+Common deployment patterns:
+
+| Environment | Suggested value |
+|---|---|
+| Docker Compose (default bridge) | `172.16.0.0/12` |
+| Kubernetes pod network | `10.0.0.0/8` |
+| AWS ALB + VPC | `10.0.0.0/8,172.16.0.0/12` |
+| Cloudflare (see their IP list) | Cloudflare IP ranges |
+| Direct exposure (no proxy) | *(leave empty)* |
+
+The server logs the parsed trusted-proxy networks at startup (`"trusted proxies configured"`) so operators can verify the active configuration without inspecting env vars.
 
 ## Project Layout
 

@@ -72,10 +72,21 @@ func main() {
 		logger.Info("redis connected for shared rate limiting")
 	}
 
-	// 6. Create HTTP server
+	// 6. Log effective trusted-proxy configuration.
+	if nets := cfg.ParseTrustedProxies(); len(nets) > 0 {
+		cidrs := make([]string, len(nets))
+		for i, n := range nets {
+			cidrs[i] = n.String()
+		}
+		logger.Info("trusted proxies configured", "networks", cidrs)
+	} else {
+		logger.Info("no trusted proxies configured; X-Forwarded-For headers will be ignored")
+	}
+
+	// 7. Create HTTP server
 	srv, cleanup := server.New(cfg, logger, pool, emailSender, redisClient)
 
-	// 7. Start background cleanup job for stale auth data.
+	// 8. Start background cleanup job for stale auth data.
 	// The process context is cancelled during shutdown so the cleanup
 	// goroutine observes cancellation promptly rather than relying
 	// solely on the stop function.
@@ -88,7 +99,7 @@ func main() {
 		RefreshTokenMaxAge: cfg.RefreshTokenRevokedRetention,
 	})
 
-	// 8. Start HTTP server in a goroutine; report fatal errors via channel
+	// 9. Start HTTP server in a goroutine; report fatal errors via channel
 	listenErr := make(chan error, 1)
 	go func() {
 		logger.Info("server starting", "port", cfg.Port)
@@ -97,7 +108,7 @@ func main() {
 		}
 	}()
 
-	// 9. Wait for interrupt signal (SIGINT or SIGTERM) or listen error
+	// 10. Wait for interrupt signal (SIGINT or SIGTERM) or listen error
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -111,7 +122,7 @@ func main() {
 		exitCode = 1
 	}
 
-	// 10. Graceful shutdown with 10-second timeout.
+	// 11. Graceful shutdown with 10-second timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

@@ -226,11 +226,12 @@ This order is deliberate:
 - Decide and document behavior under limiter backend failure.
 - Done: auth throttling now uses Redis as the shared backend in the server runtime, budgets are split across register/login/refresh/forgot-password/reset-password/verify-otp, and limiter backend errors explicitly fail open with warning logs.
 
-### Phase 5: Operational polish
+### Phase 5: Operational polish (completed)
 
 - Move rate-limit values into config.
 - Improve trusted-proxy documentation and optional startup logging.
 - Ensure CI runs integration tests with Postgres.
+- Done: rate-limit values were already externalized during Phase 4, trusted-proxy guidance and startup visibility were added, and CI already runs integration tests against Postgres.
 
 ## Release Guidance
 
