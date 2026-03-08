@@ -104,3 +104,11 @@ func EmailKey(r *http.Request) string {
 	}
 	return "email:" + email
 }
+
+func UserIDKey(r *http.Request) string {
+	user, ok := UserFromContext(r.Context())
+	if !ok || strings.TrimSpace(user.UserID) == "" {
+		return IPKey(r)
+	}
+	return "user:" + user.UserID
+}

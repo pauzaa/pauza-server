@@ -75,6 +75,9 @@ type Config struct {
 	VerifyOTPRateLimit  int           `envconfig:"VERIFY_OTP_RATE_LIMIT" default:"3"`
 	VerifyOTPRateWindow time.Duration `envconfig:"VERIFY_OTP_RATE_WINDOW" default:"1m"`
 
+	SyncRateLimit  int           `envconfig:"SYNC_RATE_LIMIT" default:"30"`
+	SyncRateWindow time.Duration `envconfig:"SYNC_RATE_WINDOW" default:"1m"`
+
 	// Cleanup job
 	CleanupInterval    time.Duration `envconfig:"CLEANUP_INTERVAL" default:"1h"`
 	OTPRetentionPeriod time.Duration `envconfig:"OTP_RETENTION_PERIOD" default:"24h"`
@@ -223,6 +226,12 @@ func (c *Config) validate() error {
 	}
 	if c.VerifyOTPRateWindow <= 0 {
 		return fmt.Errorf("VERIFY_OTP_RATE_WINDOW must be positive, got %s", c.VerifyOTPRateWindow)
+	}
+	if c.SyncRateLimit <= 0 {
+		return fmt.Errorf("SYNC_RATE_LIMIT must be positive, got %d", c.SyncRateLimit)
+	}
+	if c.SyncRateWindow <= 0 {
+		return fmt.Errorf("SYNC_RATE_WINDOW must be positive, got %s", c.SyncRateWindow)
 	}
 
 	// Cleanup durations must be positive

@@ -128,6 +128,8 @@ func testConfig() *config.Config {
 		ResetPasswordRateWindow:  time.Minute,
 		VerifyOTPRateLimit:       10000,
 		VerifyOTPRateWindow:      time.Minute,
+		SyncRateLimit:            10000,
+		SyncRateWindow:           time.Minute,
 	}
 }
 

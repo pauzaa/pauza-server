@@ -111,6 +111,9 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 		cfg.JWTAccessTokenTTL, cfg.JWTRefreshTokenTTL, logger,
 	)
 	authHandler := handler.NewAuthHandler(authService, logger)
+	syncRepo := repository.NewPgxSyncRepository()
+	syncService := service.NewSyncService(pool, syncRepo, logger)
+	syncHandler := handler.NewSyncHandler(syncService)
 
 	// newLimiter creates a rate limiter with the given budget. When a Redis
 	// client is available, a RedisLimiter wrapped in FailOpenLimiter is
@@ -133,6 +136,7 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 	forgotPwLimiter := newLimiter("forgot-password", cfg.ForgotPasswordRateLimit, cfg.ForgotPasswordRateWindow)
 	resetPwLimiter := newLimiter("reset-password", cfg.ResetPasswordRateLimit, cfg.ResetPasswordRateWindow)
 	verifyOTPLimiter := newLimiter("verify-otp", cfg.VerifyOTPRateLimit, cfg.VerifyOTPRateWindow)
+	syncLimiter := newLimiter("sync", cfg.SyncRateLimit, cfg.SyncRateWindow)
 
 	// --- /api/v1 routes -------------------------------------------------
 	// Public and protected routes are mounted in separate chi.Route groups
@@ -166,6 +170,7 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 			r.Patch("/me", authHandler.UpdateMe)
 			r.Delete("/me", authHandler.DeleteMe)
 			r.Get("/me/username-available", authHandler.UsernameAvailable)
+			r.With(authmw.RateLimit(syncLimiter, cfg.SyncRateLimit, authmw.UserIDKey)).Post("/sync", syncHandler.Sync)
 		})
 	})
 
@@ -176,6 +181,7 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 		forgotPwLimiter.Stop()
 		resetPwLimiter.Stop()
 		verifyOTPLimiter.Stop()
+		syncLimiter.Stop()
 	}
 
 	return &http.Server{

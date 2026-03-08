@@ -376,3 +376,49 @@ func TestRateLimit_PerEmailThrottling(t *testing.T) {
 		t.Fatalf("first request for other email: expected 200, got %d", rec2.Code)
 	}
 }
+
+func TestUserIDKey_UsesAuthenticatedUserID(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", nil)
+	req.RemoteAddr = "10.0.0.1:9999"
+	ctx := middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"})
+	req = req.WithContext(ctx)
+
+	got := middleware.UserIDKey(req)
+	if got != "user:user-123" {
+		t.Errorf("UserIDKey = %q, want %q", got, "user:user-123")
+	}
+}
+
+func TestUserIDKey_FallsBackToIP(t *testing.T) {
+	tests := []struct {
+		name string
+		ctx  func(*http.Request) *http.Request
+	}{
+		{
+			name: "no auth user",
+			ctx: func(req *http.Request) *http.Request {
+				return req
+			},
+		},
+		{
+			name: "empty user id",
+			ctx: func(req *http.Request) *http.Request {
+				ctx := middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "   "})
+				return req.WithContext(ctx)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", nil)
+			req.RemoteAddr = "10.0.0.1:9999"
+			req = tt.ctx(req)
+
+			got := middleware.UserIDKey(req)
+			if got != "10.0.0.1" {
+				t.Errorf("UserIDKey = %q, want %q", got, "10.0.0.1")
+			}
+		})
+	}
+}

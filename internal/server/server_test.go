@@ -47,6 +47,8 @@ func testConfig() *config.Config {
 		ResetPasswordRateWindow:  time.Minute,
 		VerifyOTPRateLimit:       10000,
 		VerifyOTPRateWindow:      time.Minute,
+		SyncRateLimit:            10000,
+		SyncRateWindow:           time.Minute,
 	}
 }
 
@@ -408,6 +410,90 @@ func TestNew_ProtectedMeRoutesExist(t *testing.T) {
 				t.Errorf("expected %s %s without JWT to return 401, got %d", tt.method, tt.path, rec.Code)
 			}
 		})
+	}
+}
+
+func TestNew_SyncRouteProtected(t *testing.T) {
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(`{"tables":{}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("expected /api/v1/sync to be wired, got 404")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for /api/v1/sync without JWT, got %d", rec.Code)
+	}
+}
+
+func TestNew_SyncRouteWithValidJWTPassesAuth(t *testing.T) {
+	cfg := testConfig()
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	defer cleanup()
+
+	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
+	if err != nil {
+		t.Fatalf("issuing test JWT: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(`{"tables":{"modes":{"last_synced_at":0,"upserts":[],"deletions":[]},"mode_blocked_apps":{"last_synced_at":0,"upserts":[],"deletions":[]},"schedules":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_sessions":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"last_synced_at":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"last_synced_at":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"last_synced_at":0,"upserts":[],"deletions":[]}}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 from nil pool after auth pass-through, got %d", rec.Code)
+	}
+}
+
+func TestNew_SyncRateLimitPerUser(t *testing.T) {
+	cfg := testConfig()
+	cfg.SyncRateLimit = 1
+	cfg.SyncRateWindow = time.Minute
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	defer cleanup()
+
+	token1, err := auth.IssueAccessToken("user-a", "a@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
+	if err != nil {
+		t.Fatalf("issuing token1: %v", err)
+	}
+	token2, err := auth.IssueAccessToken("user-b", "b@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
+	if err != nil {
+		t.Fatalf("issuing token2: %v", err)
+	}
+	body := `{"tables":{"modes":{"last_synced_at":0,"upserts":[],"deletions":[]},"mode_blocked_apps":{"last_synced_at":0,"upserts":[],"deletions":[]},"schedules":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_sessions":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"last_synced_at":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"last_synced_at":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"last_synced_at":0,"upserts":[],"deletions":[]}}}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token1)
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(body))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Authorization", "Bearer "+token1)
+	rec2 := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected second sync for same user to be 429, got %d", rec2.Code)
+	}
+
+	req3 := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(body))
+	req3.Header.Set("Content-Type", "application/json")
+	req3.Header.Set("Authorization", "Bearer "+token2)
+	rec3 := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec3, req3)
+
+	if rec3.Code == http.StatusTooManyRequests {
+		t.Fatalf("expected different user to have separate sync budget")
 	}
 }
 

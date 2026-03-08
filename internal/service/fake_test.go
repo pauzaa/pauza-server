@@ -87,6 +87,10 @@ func (fakePool) QueryRow(context.Context, string, ...any) pgx.Row {
 	panic("fakePool.QueryRow: unexpected call — repo fake should intercept all queries")
 }
 
+func (fakePool) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	panic("fakePool.Query: unexpected call — repo fake should intercept all queries")
+}
+
 // ---------------------------------------------------------------------------
 // Fake auth repository (satisfies repository.AuthRepository)
 // ---------------------------------------------------------------------------

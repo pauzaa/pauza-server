@@ -80,6 +80,12 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.LogLevel != "info" {
 		t.Errorf("expected default LogLevel 'info', got: %s", cfg.LogLevel)
 	}
+	if cfg.SyncRateLimit != 30 {
+		t.Errorf("expected default SyncRateLimit 30, got: %d", cfg.SyncRateLimit)
+	}
+	if cfg.SyncRateWindow != time.Minute {
+		t.Errorf("expected default SyncRateWindow 1m, got: %s", cfg.SyncRateWindow)
+	}
 }
 
 func TestLoad_CustomPortAndLogLevel(t *testing.T) {
@@ -527,6 +533,10 @@ func TestLoad_CleanupInvalid(t *testing.T) {
 		{"negative_otp_retention", "OTP_RETENTION_PERIOD", "-1h", "OTP_RETENTION_PERIOD"},
 		{"zero_rt_retention", "REFRESH_TOKEN_REVOKED_RETENTION", "0s", "REFRESH_TOKEN_REVOKED_RETENTION"},
 		{"negative_rt_retention", "REFRESH_TOKEN_REVOKED_RETENTION", "-1h", "REFRESH_TOKEN_REVOKED_RETENTION"},
+		{"zero_sync_rate_limit", "SYNC_RATE_LIMIT", "0", "SYNC_RATE_LIMIT"},
+		{"negative_sync_rate_limit", "SYNC_RATE_LIMIT", "-1", "SYNC_RATE_LIMIT"},
+		{"zero_sync_rate_window", "SYNC_RATE_WINDOW", "0s", "SYNC_RATE_WINDOW"},
+		{"negative_sync_rate_window", "SYNC_RATE_WINDOW", "-1m", "SYNC_RATE_WINDOW"},
 	}
 
 	for _, tt := range tests {
