@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -112,6 +113,22 @@ type AuthRepository interface {
 	// DeleteUnverifiedUser deletes an unverified user by ID and returns
 	// the number of rows affected.
 	DeleteUnverifiedUser(ctx context.Context, db DBTX, userID string) (int64, error)
+
+	// UpdateUser applies partial updates to a verified user's profile.
+	// Only non-nil fields are modified. Returns the full updated UserRow.
+	// The caller is responsible for handling unique-violation errors
+	// (username collisions).
+	UpdateUser(ctx context.Context, db DBTX, userID string, name *string, username *string, leaderboardVisible *bool) (UserRow, error)
+
+	// IsUsernameTaken returns true if a username is already taken by any
+	// user (case-insensitive). The optional excludeUserID, when non-empty,
+	// excludes that user from the check (useful for "is my current
+	// username still available" scenarios).
+	IsUsernameTaken(ctx context.Context, db DBTX, username string, excludeUserID string) (bool, error)
+
+	// DeleteUser permanently deletes a verified user by ID. Dependent
+	// rows are removed by ON DELETE CASCADE constraints.
+	DeleteUser(ctx context.Context, db DBTX, userID string) error
 
 	// --- otp_codes ---
 
@@ -311,6 +328,77 @@ func (r *PgxAuthRepository) DeleteUnverifiedUser(ctx context.Context, db DBTX, u
 		return 0, fmt.Errorf("deleting unverified user: %w", err)
 	}
 	return tag.RowsAffected(), nil
+}
+
+func (r *PgxAuthRepository) UpdateUser(ctx context.Context, db DBTX, userID string, name *string, username *string, leaderboardVisible *bool) (UserRow, error) {
+	// Build a dynamic SET clause from the non-nil fields.
+	var setClauses []string
+	var args []any
+	argIdx := 1
+
+	if name != nil {
+		setClauses = append(setClauses, fmt.Sprintf("name = $%d", argIdx))
+		args = append(args, *name)
+		argIdx++
+	}
+	if username != nil {
+		setClauses = append(setClauses, fmt.Sprintf("username = $%d", argIdx))
+		args = append(args, *username)
+		argIdx++
+	}
+	if leaderboardVisible != nil {
+		setClauses = append(setClauses, fmt.Sprintf("leaderboard_visible = $%d", argIdx))
+		args = append(args, *leaderboardVisible)
+		argIdx++
+	}
+
+	// If no fields to update, just return the current user.
+	if len(setClauses) == 0 {
+		return r.GetVerifiedUserByID(ctx, db, userID)
+	}
+
+	setClauses = append(setClauses, "updated_at = now()")
+	args = append(args, userID)
+
+	query := fmt.Sprintf(
+		"UPDATE users SET %s WHERE id = $%d AND email_verified = true RETURNING %s",
+		strings.Join(setClauses, ", "),
+		argIdx,
+		userColumns,
+	)
+
+	row := db.QueryRow(ctx, query, args...)
+	u, err := scanUserRow(row)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return UserRow{}, fmt.Errorf("updating user: %w", err)
+	}
+	return u, err
+}
+
+func (r *PgxAuthRepository) IsUsernameTaken(ctx context.Context, db DBTX, username string, excludeUserID string) (bool, error) {
+	var exists bool
+	err := db.QueryRow(ctx,
+		"SELECT EXISTS(SELECT 1 FROM users WHERE lower(username) = lower($1) AND ($2 = '' OR id != $2))",
+		username, excludeUserID,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("checking username availability: %w", err)
+	}
+	return exists, nil
+}
+
+func (r *PgxAuthRepository) DeleteUser(ctx context.Context, db DBTX, userID string) error {
+	tag, err := db.Exec(ctx,
+		"DELETE FROM users WHERE id = $1 AND email_verified = true",
+		userID,
+	)
+	if err != nil {
+		return fmt.Errorf("deleting user: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // --- otp_codes ------------------------------------------------------------

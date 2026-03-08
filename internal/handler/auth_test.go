@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/IsorilovA/pauza-server/internal/apperror"
+	"github.com/IsorilovA/pauza-server/internal/middleware"
 	"github.com/IsorilovA/pauza-server/internal/service"
 )
 
@@ -63,9 +64,15 @@ func noopLogger() *slog.Logger {
 // matches the BACKEND_SPEC error envelope. It checks status, Content-Type,
 // the single top-level "error" key, the VALIDATION_ERROR code, the expected
 // message, and that details.fields contains exactly the expectedFields (no
-// extra, no missing).
-func assertValidationEnvelope(t *testing.T, rec *httptest.ResponseRecorder, expectedFields []string) {
+// extra, no missing). The expected message defaults to "Invalid request body"
+// when wantMessage is empty.
+func assertValidationEnvelope(t *testing.T, rec *httptest.ResponseRecorder, expectedFields []string, wantMessage ...string) {
 	t.Helper()
+
+	msg := "Invalid request body"
+	if len(wantMessage) > 0 && wantMessage[0] != "" {
+		msg = wantMessage[0]
+	}
 
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
@@ -100,8 +107,8 @@ func assertValidationEnvelope(t *testing.T, rec *httptest.ResponseRecorder, expe
 	if inner.Code != apperror.CodeValidationError {
 		t.Errorf("code = %q, want %q", inner.Code, apperror.CodeValidationError)
 	}
-	if inner.Message != "Invalid request body" {
-		t.Errorf("message = %q, want %q", inner.Message, "Invalid request body")
+	if inner.Message != msg {
+		t.Errorf("message = %q, want %q", inner.Message, msg)
 	}
 	for _, f := range expectedFields {
 		if _, ok := inner.Details.Fields[f]; !ok {
@@ -927,13 +934,16 @@ func TestGetMe_MissingUser_ReturnsUnauthorized(t *testing.T) {
 // results. It allows handler tests to exercise service-error mapping and
 // success paths without a real service or database.
 type mockAuthService struct {
-	loginFn          func(ctx context.Context, in service.LoginInput) (service.AuthOutput, error)
-	registerFn       func(ctx context.Context, in service.RegisterInput) (service.RegisterOutput, error)
-	verifyOTPFn      func(ctx context.Context, in service.VerifyOTPInput) (service.AuthOutput, error)
-	refreshFn        func(ctx context.Context, in service.RefreshInput) (service.RefreshOutput, error)
-	forgotPasswordFn func(ctx context.Context, in service.ForgotPasswordInput) (service.MessageOutput, error)
-	resetPasswordFn  func(ctx context.Context, in service.ResetPasswordInput) (service.MessageOutput, error)
-	getMeFn          func(ctx context.Context, in service.GetMeInput) (service.UserProfile, error)
+	loginFn                  func(ctx context.Context, in service.LoginInput) (service.AuthOutput, error)
+	registerFn               func(ctx context.Context, in service.RegisterInput) (service.RegisterOutput, error)
+	verifyOTPFn              func(ctx context.Context, in service.VerifyOTPInput) (service.AuthOutput, error)
+	refreshFn                func(ctx context.Context, in service.RefreshInput) (service.RefreshOutput, error)
+	forgotPasswordFn         func(ctx context.Context, in service.ForgotPasswordInput) (service.MessageOutput, error)
+	resetPasswordFn          func(ctx context.Context, in service.ResetPasswordInput) (service.MessageOutput, error)
+	getMeFn                  func(ctx context.Context, in service.GetMeInput) (service.UserProfile, error)
+	updateMeFn               func(ctx context.Context, in service.UpdateMeInput) (service.UserProfile, error)
+	checkUsernameAvailableFn func(ctx context.Context, in service.UsernameAvailableInput) (service.UsernameAvailableOutput, error)
+	deleteMeFn               func(ctx context.Context, in service.DeleteMeInput) (service.MessageOutput, error)
 }
 
 // Compile-time check: *mockAuthService satisfies AuthServicer.
@@ -986,6 +996,27 @@ func (m *mockAuthService) GetMe(ctx context.Context, in service.GetMeInput) (ser
 		return m.getMeFn(ctx, in)
 	}
 	return service.UserProfile{}, nil
+}
+
+func (m *mockAuthService) UpdateMe(ctx context.Context, in service.UpdateMeInput) (service.UserProfile, error) {
+	if m.updateMeFn != nil {
+		return m.updateMeFn(ctx, in)
+	}
+	return service.UserProfile{}, nil
+}
+
+func (m *mockAuthService) CheckUsernameAvailable(ctx context.Context, in service.UsernameAvailableInput) (service.UsernameAvailableOutput, error) {
+	if m.checkUsernameAvailableFn != nil {
+		return m.checkUsernameAvailableFn(ctx, in)
+	}
+	return service.UsernameAvailableOutput{}, nil
+}
+
+func (m *mockAuthService) DeleteMe(ctx context.Context, in service.DeleteMeInput) (service.MessageOutput, error) {
+	if m.deleteMeFn != nil {
+		return m.deleteMeFn(ctx, in)
+	}
+	return service.MessageOutput{}, nil
 }
 
 // TestLogin_ServiceConflict_Returns409 verifies that when the service returns
@@ -1170,6 +1201,535 @@ func TestLogin_ServiceSuccess_ReturnsAuthResponse(t *testing.T) {
 	}
 	if resp.User.Email != "user@example.com" {
 		t.Errorf("user.email = %q, want %q", resp.User.Email, "user@example.com")
+	}
+}
+
+// ---------- UpdateMe – validation & mock-service tests ----------
+
+// TestUpdateMe_MissingUser_ReturnsUnauthorized verifies that UpdateMe returns
+// 401 when the request context does not contain an authenticated user.
+func TestUpdateMe_MissingUser_ReturnsUnauthorized(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/me", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.UpdateMe(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	var resp apperror.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error.Code != apperror.CodeUnauthorized {
+		t.Errorf("code = %q, want %q", resp.Error.Code, apperror.CodeUnauthorized)
+	}
+}
+
+// TestUpdateMe_Validation groups input-validation cases that should return 422.
+func TestUpdateMe_Validation(t *testing.T) {
+	t.Parallel()
+
+	longName := strings.Repeat("a", 101)
+	cases := []struct {
+		name           string
+		body           string
+		expectedFields []string
+	}{
+		{"name_too_long", fmt.Sprintf(`{"name":"%s"}`, longName), []string{"name"}},
+		{"username_too_short", `{"username":"ab"}`, []string{"username"}},
+		{"username_invalid_chars", `{"username":"user@name"}`, []string{"username"}},
+		{"username_too_long", fmt.Sprintf(`{"username":"%s"}`, strings.Repeat("a", 31)), []string{"username"}},
+		{"both_invalid", fmt.Sprintf(`{"name":"%s","username":"ab"}`, longName), []string{"name", "username"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			mock := &mockAuthService{}
+			h := NewAuthHandler(mock, noopLogger())
+
+			req := httptest.NewRequest(http.MethodPatch, "/api/v1/me", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			ctx := middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"})
+			req = req.WithContext(ctx)
+			rec := httptest.NewRecorder()
+
+			h.UpdateMe(rec, req)
+
+			assertValidationEnvelope(t, rec, tc.expectedFields)
+		})
+	}
+}
+
+// TestUpdateMe_UnknownField_Rejected verifies that UpdateMe rejects unknown fields.
+func TestUpdateMe_UnknownField_Rejected(t *testing.T) {
+	t.Parallel()
+	mock := &mockAuthService{}
+	h := NewAuthHandler(mock, noopLogger())
+
+	body := `{"name":"Alice","unknown_field":"value"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/me", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx := middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"})
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	h.UpdateMe(rec, req)
+
+	assertBodyValidationError(t, rec)
+}
+
+// TestUpdateMe_EmptyBody_NoOp_ReturnsProfile verifies that an empty PATCH body
+// is accepted as a no-op and returns the current profile with the full response
+// shape.
+func TestUpdateMe_EmptyBody_NoOp_ReturnsProfile(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockAuthService{
+		updateMeFn: func(_ context.Context, in service.UpdateMeInput) (service.UserProfile, error) {
+			if in.Name != nil || in.Username != nil || in.LeaderboardVisible != nil {
+				t.Error("expected nil fields for empty PATCH body")
+			}
+			ppURL := "https://cdn.example.com/alice.jpg"
+			return service.UserProfile{
+				ID:                 "user-123",
+				Email:              "alice@example.com",
+				Name:               "Alice",
+				Username:           "alice_123",
+				ProfilePictureURL:  &ppURL,
+				LeaderboardVisible: true,
+				CreatedAt:          time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+			}, nil
+		},
+	}
+	h := NewAuthHandler(mock, noopLogger())
+
+	body := `{}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/me", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx := middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"})
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	h.UpdateMe(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	ct := rec.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	var resp userResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.ID != "user-123" {
+		t.Errorf("user.id = %q, want %q", resp.ID, "user-123")
+	}
+	if resp.Email != "alice@example.com" {
+		t.Errorf("user.email = %q, want %q", resp.Email, "alice@example.com")
+	}
+	if resp.Name != "Alice" {
+		t.Errorf("user.name = %q, want %q", resp.Name, "Alice")
+	}
+	if resp.Username != "alice_123" {
+		t.Errorf("user.username = %q, want %q", resp.Username, "alice_123")
+	}
+	if resp.ProfilePictureURL == nil || *resp.ProfilePictureURL != "https://cdn.example.com/alice.jpg" {
+		t.Errorf("user.profile_picture_url = %v, want %q", resp.ProfilePictureURL, "https://cdn.example.com/alice.jpg")
+	}
+	if !resp.LeaderboardVisible {
+		t.Error("user.leaderboard_visible = false, want true")
+	}
+	if resp.CreatedAt != "2025-01-01T00:00:00Z" {
+		t.Errorf("user.created_at = %q, want %q", resp.CreatedAt, "2025-01-01T00:00:00Z")
+	}
+	if resp.Subscription != nil {
+		t.Errorf("user.subscription = %v, want nil", resp.Subscription)
+	}
+}
+
+// TestUpdateMe_ServiceConflict_Returns409 verifies that a username conflict
+// from the service results in a 409 response.
+func TestUpdateMe_ServiceConflict_Returns409(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockAuthService{
+		updateMeFn: func(_ context.Context, _ service.UpdateMeInput) (service.UserProfile, error) {
+			return service.UserProfile{}, fmt.Errorf("%w: username already taken", service.ErrConflict)
+		},
+	}
+	h := NewAuthHandler(mock, noopLogger())
+
+	body := `{"username":"taken_name"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/me", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx := middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"})
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	h.UpdateMe(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
+	}
+
+	var resp apperror.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error.Code != apperror.CodeConflict {
+		t.Errorf("code = %q, want %q", resp.Error.Code, apperror.CodeConflict)
+	}
+}
+
+// TestUpdateMe_ServiceUnauthorized_Returns401 verifies that when the service
+// returns ErrUnauthorized (e.g. user not found) the handler returns 401.
+func TestUpdateMe_ServiceUnauthorized_Returns401(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockAuthService{
+		updateMeFn: func(_ context.Context, _ service.UpdateMeInput) (service.UserProfile, error) {
+			return service.UserProfile{}, fmt.Errorf("%w: missing or invalid authentication", service.ErrUnauthorized)
+		},
+	}
+	h := NewAuthHandler(mock, noopLogger())
+
+	body := `{"name":"Alice"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/me", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx := middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"})
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	h.UpdateMe(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+// ---------- UsernameAvailable – validation & mock-service tests ----------
+
+// TestUsernameAvailable_MissingUser_ReturnsUnauthorized verifies that
+// UsernameAvailable returns 401 when no user context is present.
+func TestUsernameAvailable_MissingUser_ReturnsUnauthorized(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me/username-available?username=alice", nil)
+	rec := httptest.NewRecorder()
+
+	h.UsernameAvailable(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+// TestUsernameAvailable_Validation groups validation cases for the username
+// query param.
+func TestUsernameAvailable_Validation(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{"missing_username", ""},
+		{"too_short", "?username=ab"},
+		{"invalid_chars", "?username=user@name"},
+		{"too_long", "?username=" + strings.Repeat("a", 31)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			mock := &mockAuthService{}
+			h := NewAuthHandler(mock, noopLogger())
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/me/username-available"+tc.query, nil)
+			ctx := middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"})
+			req = req.WithContext(ctx)
+			rec := httptest.NewRecorder()
+
+			h.UsernameAvailable(rec, req)
+
+			assertValidationEnvelope(t, rec, []string{"username"}, "Invalid query parameter")
+		})
+	}
+}
+
+// TestUsernameAvailable_ServiceSuccess_ReturnsAvailable verifies the happy
+// path returns {"available": true}.
+func TestUsernameAvailable_ServiceSuccess_ReturnsAvailable(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockAuthService{
+		checkUsernameAvailableFn: func(_ context.Context, in service.UsernameAvailableInput) (service.UsernameAvailableOutput, error) {
+			if in.Username != "alice_new" {
+				t.Errorf("username = %q, want %q", in.Username, "alice_new")
+			}
+			return service.UsernameAvailableOutput{Available: true}, nil
+		},
+	}
+	h := NewAuthHandler(mock, noopLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me/username-available?username=alice_new", nil)
+	ctx := middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"})
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	h.UsernameAvailable(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var resp struct {
+		Available bool `json:"available"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Available {
+		t.Error("expected available = true")
+	}
+}
+
+// TestUsernameAvailable_ServiceSuccess_ReturnsTaken verifies the path where
+// username is taken returns {"available": false}.
+func TestUsernameAvailable_ServiceSuccess_ReturnsTaken(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockAuthService{
+		checkUsernameAvailableFn: func(_ context.Context, _ service.UsernameAvailableInput) (service.UsernameAvailableOutput, error) {
+			return service.UsernameAvailableOutput{Available: false}, nil
+		},
+	}
+	h := NewAuthHandler(mock, noopLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me/username-available?username=taken_name", nil)
+	ctx := middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"})
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	h.UsernameAvailable(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var resp struct {
+		Available bool `json:"available"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Available {
+		t.Error("expected available = false")
+	}
+}
+
+// TestUsernameAvailable_ServiceInternal_Returns500 verifies that when the
+// service returns ErrInternal the handler translates it to a 500 response
+// with the standard INTERNAL_ERROR envelope.
+func TestUsernameAvailable_ServiceInternal_Returns500(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockAuthService{
+		checkUsernameAvailableFn: func(_ context.Context, _ service.UsernameAvailableInput) (service.UsernameAvailableOutput, error) {
+			return service.UsernameAvailableOutput{}, service.ErrInternal
+		},
+	}
+	h := NewAuthHandler(mock, noopLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me/username-available?username=alice_new", nil)
+	ctx := middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"})
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	h.UsernameAvailable(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+
+	ct := rec.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	var resp apperror.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error.Code != apperror.CodeInternalError {
+		t.Errorf("code = %q, want %q", resp.Error.Code, apperror.CodeInternalError)
+	}
+}
+
+// ---------- DeleteMe – validation & mock-service tests ----------
+
+// TestDeleteMe_MissingUser_ReturnsUnauthorized verifies that DeleteMe returns
+// 401 when the request context does not contain an authenticated user.
+func TestDeleteMe_MissingUser_ReturnsUnauthorized(t *testing.T) {
+	t.Parallel()
+	h := newTestAuthHandler(&mockEmailSender{})
+
+	body := `{"password":"mypassword"}`
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/me", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.DeleteMe(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	var resp apperror.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error.Code != apperror.CodeUnauthorized {
+		t.Errorf("code = %q, want %q", resp.Error.Code, apperror.CodeUnauthorized)
+	}
+}
+
+// TestDeleteMe_Validation groups validation cases for the password field.
+func TestDeleteMe_Validation(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"missing_password", `{}`},
+		{"empty_password", `{"password":""}`},
+		{"whitespace_password", `{"password":"   "}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			mock := &mockAuthService{}
+			h := NewAuthHandler(mock, noopLogger())
+
+			req := httptest.NewRequest(http.MethodDelete, "/api/v1/me", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			ctx := middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"})
+			req = req.WithContext(ctx)
+			rec := httptest.NewRecorder()
+
+			h.DeleteMe(rec, req)
+
+			assertValidationEnvelope(t, rec, []string{"password"})
+		})
+	}
+}
+
+// TestDeleteMe_UnknownField_Rejected verifies that DeleteMe rejects unknown fields.
+func TestDeleteMe_UnknownField_Rejected(t *testing.T) {
+	t.Parallel()
+	mock := &mockAuthService{}
+	h := NewAuthHandler(mock, noopLogger())
+
+	body := `{"password":"mypassword","extra":"field"}`
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/me", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx := middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"})
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	h.DeleteMe(rec, req)
+
+	assertBodyValidationError(t, rec)
+}
+
+// TestDeleteMe_ServiceUnauthorized_Returns401 verifies that when the service
+// returns ErrUnauthorized (wrong password) the handler returns 401.
+func TestDeleteMe_ServiceUnauthorized_Returns401(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockAuthService{
+		deleteMeFn: func(_ context.Context, _ service.DeleteMeInput) (service.MessageOutput, error) {
+			return service.MessageOutput{}, fmt.Errorf("%w: incorrect password", service.ErrUnauthorized)
+		},
+	}
+	h := NewAuthHandler(mock, noopLogger())
+
+	body := `{"password":"wrong-password"}`
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/me", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx := middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"})
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	h.DeleteMe(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	var resp apperror.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error.Code != apperror.CodeUnauthorized {
+		t.Errorf("code = %q, want %q", resp.Error.Code, apperror.CodeUnauthorized)
+	}
+}
+
+// TestDeleteMe_ServiceSuccess_ReturnsAccountDeleted verifies the happy path
+// returns {"message": "Account deleted"}.
+func TestDeleteMe_ServiceSuccess_ReturnsAccountDeleted(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockAuthService{
+		deleteMeFn: func(_ context.Context, in service.DeleteMeInput) (service.MessageOutput, error) {
+			if in.UserID != "user-123" {
+				t.Errorf("user_id = %q, want %q", in.UserID, "user-123")
+			}
+			return service.MessageOutput{Message: "Account deleted"}, nil
+		},
+	}
+	h := NewAuthHandler(mock, noopLogger())
+
+	body := `{"password":"correct-password"}`
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/me", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx := middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"})
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	h.DeleteMe(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	ct := rec.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	var resp messageResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Message != "Account deleted" {
+		t.Errorf("message = %q, want %q", resp.Message, "Account deleted")
 	}
 }
 

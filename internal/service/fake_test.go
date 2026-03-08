@@ -107,6 +107,9 @@ type fakeAuthRepo struct {
 	setEmailVerifiedFn        func(ctx context.Context, db repository.DBTX, userID string) error
 	updatePasswordFn          func(ctx context.Context, db repository.DBTX, userID, passwordHash string) (int64, error)
 	deleteUnverifiedUserFn    func(ctx context.Context, db repository.DBTX, userID string) (int64, error)
+	updateUserFn              func(ctx context.Context, db repository.DBTX, userID string, name *string, username *string, leaderboardVisible *bool) (repository.UserRow, error)
+	isUsernameTakenFn         func(ctx context.Context, db repository.DBTX, username string, excludeUserID string) (bool, error)
+	deleteUserFn              func(ctx context.Context, db repository.DBTX, userID string) error
 
 	// --- otp_codes ---
 	insertOTPFn                  func(ctx context.Context, db repository.DBTX, userID, codeHash, purpose string, expiresAt time.Time) (string, error)
@@ -275,6 +278,27 @@ func (f *fakeAuthRepo) GetActiveSubscription(ctx context.Context, db repository.
 		panic("fakeAuthRepo.GetActiveSubscription: not configured")
 	}
 	return f.getActiveSubscriptionFn(ctx, db, userID)
+}
+
+func (f *fakeAuthRepo) UpdateUser(ctx context.Context, db repository.DBTX, userID string, name *string, username *string, leaderboardVisible *bool) (repository.UserRow, error) {
+	if f.updateUserFn == nil {
+		panic("fakeAuthRepo.UpdateUser: not configured")
+	}
+	return f.updateUserFn(ctx, db, userID, name, username, leaderboardVisible)
+}
+
+func (f *fakeAuthRepo) IsUsernameTaken(ctx context.Context, db repository.DBTX, username string, excludeUserID string) (bool, error) {
+	if f.isUsernameTakenFn == nil {
+		panic("fakeAuthRepo.IsUsernameTaken: not configured")
+	}
+	return f.isUsernameTakenFn(ctx, db, username, excludeUserID)
+}
+
+func (f *fakeAuthRepo) DeleteUser(ctx context.Context, db repository.DBTX, userID string) error {
+	if f.deleteUserFn == nil {
+		panic("fakeAuthRepo.DeleteUser: not configured")
+	}
+	return f.deleteUserFn(ctx, db, userID)
 }
 
 // ---------------------------------------------------------------------------

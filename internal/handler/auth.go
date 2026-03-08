@@ -27,6 +27,9 @@ type AuthServicer interface {
 	ForgotPassword(ctx context.Context, in service.ForgotPasswordInput) (service.MessageOutput, error)
 	ResetPassword(ctx context.Context, in service.ResetPasswordInput) (service.MessageOutput, error)
 	GetMe(ctx context.Context, in service.GetMeInput) (service.UserProfile, error)
+	UpdateMe(ctx context.Context, in service.UpdateMeInput) (service.UserProfile, error)
+	CheckUsernameAvailable(ctx context.Context, in service.UsernameAvailableInput) (service.UsernameAvailableOutput, error)
+	DeleteMe(ctx context.Context, in service.DeleteMeInput) (service.MessageOutput, error)
 }
 
 // Compile-time check: *service.AuthService satisfies AuthServicer.
@@ -134,6 +137,24 @@ type resetPasswordRequest struct {
 	Email       string `json:"email"`
 	OTP         string `json:"otp"`
 	NewPassword string `json:"new_password"`
+}
+
+// updateMeRequest is the expected JSON body for PATCH /api/v1/me. All fields
+// are optional (pointer-based PATCH semantics).
+type updateMeRequest struct {
+	Name               *string `json:"name"`
+	Username           *string `json:"username"`
+	LeaderboardVisible *bool   `json:"leaderboard_visible"`
+}
+
+// usernameAvailableResponse is the JSON response for GET /api/v1/me/username-available.
+type usernameAvailableResponse struct {
+	Available bool `json:"available"`
+}
+
+// deleteMeRequest is the expected JSON body for DELETE /api/v1/me.
+type deleteMeRequest struct {
+	Password string `json:"password"`
 }
 
 // ---------------------------------------------------------------------------
@@ -520,5 +541,128 @@ func (h *AuthHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		h.logger.Error("encoding get-me response", "err", err)
+	}
+}
+
+// UpdateMe handles PATCH /api/v1/me.
+func (h *AuthHandler) UpdateMe(w http.ResponseWriter, r *http.Request) {
+	authUser, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		apperror.Unauthorized(w, "missing or invalid authentication")
+		return
+	}
+
+	var req updateMeRequest
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
+
+	// Validate provided fields and collect errors.
+	fields := make(apperror.FieldErrors)
+	if req.Name != nil {
+		if msg := validate.Name(*req.Name); msg != "" {
+			fields["name"] = msg
+		}
+	}
+	if req.Username != nil {
+		if msg := validate.Username(*req.Username); msg != "" {
+			fields["username"] = msg
+		}
+	}
+	if len(fields) > 0 {
+		apperror.ValidationFieldErrors(w, "Invalid request body", fields)
+		return
+	}
+
+	profile, err := h.svc.UpdateMe(r.Context(), service.UpdateMeInput{
+		UserID:             authUser.UserID,
+		Name:               req.Name,
+		Username:           req.Username,
+		LeaderboardVisible: req.LeaderboardVisible,
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	resp := userProfileToResponse(profile)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		h.logger.Error("encoding update-me response", "err", err)
+	}
+}
+
+// UsernameAvailable handles GET /api/v1/me/username-available.
+func (h *AuthHandler) UsernameAvailable(w http.ResponseWriter, r *http.Request) {
+	authUser, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		apperror.Unauthorized(w, "missing or invalid authentication")
+		return
+	}
+
+	username := r.URL.Query().Get("username")
+	if msg := validate.Username(username); msg != "" {
+		apperror.ValidationFieldErrors(w, "Invalid query parameter", apperror.FieldErrors{
+			"username": msg,
+		})
+		return
+	}
+
+	out, err := h.svc.CheckUsernameAvailable(r.Context(), service.UsernameAvailableInput{
+		UserID:   authUser.UserID,
+		Username: username,
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(usernameAvailableResponse{
+		Available: out.Available,
+	}); err != nil {
+		h.logger.Error("encoding username-available response", "err", err)
+	}
+}
+
+// DeleteMe handles DELETE /api/v1/me.
+func (h *AuthHandler) DeleteMe(w http.ResponseWriter, r *http.Request) {
+	authUser, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		apperror.Unauthorized(w, "missing or invalid authentication")
+		return
+	}
+
+	var req deleteMeRequest
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
+
+	// Validate non-empty password.
+	if strings.TrimSpace(req.Password) == "" {
+		apperror.ValidationFieldErrors(w, "Invalid request body", apperror.FieldErrors{
+			"password": "password is required",
+		})
+		return
+	}
+
+	out, err := h.svc.DeleteMe(r.Context(), service.DeleteMeInput{
+		UserID:   authUser.UserID,
+		Password: req.Password,
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(messageResponse{
+		Message: out.Message,
+	}); err != nil {
+		h.logger.Error("encoding delete-me response", "err", err)
 	}
 }

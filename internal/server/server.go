@@ -163,6 +163,9 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 			r.Use(authmw.JWTAuth(cfg.JWTSecret, logger))
 
 			r.Get("/me", authHandler.GetMe)
+			r.Patch("/me", authHandler.UpdateMe)
+			r.Delete("/me", authHandler.DeleteMe)
+			r.Get("/me/username-available", authHandler.UsernameAvailable)
 		})
 	})
 

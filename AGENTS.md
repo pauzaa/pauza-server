@@ -155,6 +155,7 @@ The server logs the parsed trusted-proxy networks at startup (`"trusted proxies 
 - Context: `ctx context.Context` first for I/O; handlers pass `r.Context()` to DB.
 - Logging: use `log/slog` JSON; prefer structured fields and a consistent error key (`"err"`); log at boundaries, not deep helpers.
 - Errors: wrap with `fmt.Errorf("...: %w", err)`; messages lowercase/no trailing punctuation; use sentinel errors only when callers need `errors.Is`.
+- Repository errors: return sentinel `ErrNotFound` directly; wrap non-sentinel repository errors with `fmt.Errorf("...: %w", err)` so `errors.Is` checks stay consistent.
 - HTTP: set `Content-Type: application/json` for JSON; if encoding fails after headers, just log.
 - DB: use `pgxpool.Pool`; explicit column lists (no `SELECT *`); map `pgx.ErrNoRows` to `404` where appropriate; migrations via `golang-migrate` are run by `cmd/migrate`, not at server startup.
 - API semantics: follow `BACKEND_SPEC.md` for stable error codes, no sensitive leaks, and no account enumeration.

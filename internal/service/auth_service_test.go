@@ -988,3 +988,418 @@ func TestResetPassword_RevokeAllTokensFailure_ReturnsInternal(t *testing.T) {
 		t.Fatalf("ResetPassword() error = %v, want ErrInternal", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// UpdateMe tests
+// ---------------------------------------------------------------------------
+
+// TestUpdateMe_Success_ReturnsUpdatedProfile verifies the happy path: the
+// profile is updated and the returned profile reflects the changes.
+func TestUpdateMe_Success_ReturnsUpdatedProfile(t *testing.T) {
+	t.Parallel()
+
+	newName := "Bob"
+	newUsername := "bob_new"
+	updated := verifiedUser()
+	updated.Name = newName
+	updated.Username = newUsername
+
+	repo := &fakeAuthRepo{
+		updateUserFn: func(_ context.Context, _ repository.DBTX, userID string, name *string, username *string, _ *bool) (repository.UserRow, error) {
+			if userID != "user-001" {
+				t.Errorf("userID = %q, want %q", userID, "user-001")
+			}
+			if name == nil || *name != newName {
+				t.Errorf("name = %v, want %q", name, newName)
+			}
+			if username == nil || *username != newUsername {
+				t.Errorf("username = %v, want %q", username, newUsername)
+			}
+			return updated, nil
+		},
+		getActiveSubscriptionFn: func(context.Context, repository.DBTX, string) (repository.SubscriptionRow, error) {
+			return repository.SubscriptionRow{}, repository.ErrNotFound
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+
+	out, err := svc.UpdateMe(context.Background(), UpdateMeInput{
+		UserID:   "user-001",
+		Name:     &newName,
+		Username: &newUsername,
+	})
+
+	if err != nil {
+		t.Fatalf("UpdateMe() unexpected error: %v", err)
+	}
+	if out.Name != newName {
+		t.Errorf("Name = %q, want %q", out.Name, newName)
+	}
+	if out.Username != newUsername {
+		t.Errorf("Username = %q, want %q", out.Username, newUsername)
+	}
+}
+
+// TestUpdateMe_NoOp_ReturnsCurrentProfile verifies that when no fields are
+// provided, the service returns the current profile unchanged.
+func TestUpdateMe_NoOp_ReturnsCurrentProfile(t *testing.T) {
+	t.Parallel()
+
+	user := verifiedUser()
+	repo := &fakeAuthRepo{
+		updateUserFn: func(_ context.Context, _ repository.DBTX, _ string, name *string, username *string, lv *bool) (repository.UserRow, error) {
+			if name != nil || username != nil || lv != nil {
+				t.Error("expected all fields nil for no-op PATCH")
+			}
+			return user, nil
+		},
+		getActiveSubscriptionFn: func(context.Context, repository.DBTX, string) (repository.SubscriptionRow, error) {
+			return repository.SubscriptionRow{}, repository.ErrNotFound
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+
+	out, err := svc.UpdateMe(context.Background(), UpdateMeInput{
+		UserID: "user-001",
+	})
+
+	if err != nil {
+		t.Fatalf("UpdateMe() unexpected error: %v", err)
+	}
+	if out.ID != user.ID {
+		t.Errorf("ID = %q, want %q", out.ID, user.ID)
+	}
+}
+
+// TestUpdateMe_UsernameConflict_ReturnsConflict verifies that a unique violation
+// on the username constraint returns ErrConflict.
+func TestUpdateMe_UsernameConflict_ReturnsConflict(t *testing.T) {
+	t.Parallel()
+
+	repo := &fakeAuthRepo{
+		updateUserFn: func(context.Context, repository.DBTX, string, *string, *string, *bool) (repository.UserRow, error) {
+			return repository.UserRow{}, pgUniqueViolation("users_username_key")
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+
+	taken := "taken_name"
+	_, err := svc.UpdateMe(context.Background(), UpdateMeInput{
+		UserID:   "user-001",
+		Username: &taken,
+	})
+
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("UpdateMe() error = %v, want ErrConflict", err)
+	}
+}
+
+// TestUpdateMe_UsernameConflictOnIndex_ReturnsConflict verifies that a unique
+// violation on the case-insensitive index also returns ErrConflict.
+func TestUpdateMe_UsernameConflictOnIndex_ReturnsConflict(t *testing.T) {
+	t.Parallel()
+
+	repo := &fakeAuthRepo{
+		updateUserFn: func(context.Context, repository.DBTX, string, *string, *string, *bool) (repository.UserRow, error) {
+			return repository.UserRow{}, pgUniqueViolation("idx_users_username")
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+
+	taken := "Taken_Name"
+	_, err := svc.UpdateMe(context.Background(), UpdateMeInput{
+		UserID:   "user-001",
+		Username: &taken,
+	})
+
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("UpdateMe() error = %v, want ErrConflict", err)
+	}
+}
+
+// TestUpdateMe_UserNotFound_ReturnsUnauthorized verifies that when the user
+// is not found during update, ErrUnauthorized is returned.
+func TestUpdateMe_UserNotFound_ReturnsUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	repo := &fakeAuthRepo{
+		updateUserFn: func(context.Context, repository.DBTX, string, *string, *string, *bool) (repository.UserRow, error) {
+			return repository.UserRow{}, repository.ErrNotFound
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+
+	name := "Alice"
+	_, err := svc.UpdateMe(context.Background(), UpdateMeInput{
+		UserID: "nonexistent",
+		Name:   &name,
+	})
+
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("UpdateMe() error = %v, want ErrUnauthorized", err)
+	}
+}
+
+// TestUpdateMe_DBError_ReturnsInternal verifies that a generic DB failure
+// returns ErrInternal.
+func TestUpdateMe_DBError_ReturnsInternal(t *testing.T) {
+	t.Parallel()
+
+	repo := &fakeAuthRepo{
+		updateUserFn: func(context.Context, repository.DBTX, string, *string, *string, *bool) (repository.UserRow, error) {
+			return repository.UserRow{}, errBoom
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+
+	name := "Alice"
+	_, err := svc.UpdateMe(context.Background(), UpdateMeInput{
+		UserID: "user-001",
+		Name:   &name,
+	})
+
+	if !errors.Is(err, ErrInternal) {
+		t.Fatalf("UpdateMe() error = %v, want ErrInternal", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CheckUsernameAvailable tests
+// ---------------------------------------------------------------------------
+
+// TestCheckUsernameAvailable_Available verifies that an available username
+// returns Available = true.
+func TestCheckUsernameAvailable_Available(t *testing.T) {
+	t.Parallel()
+
+	repo := &fakeAuthRepo{
+		isUsernameTakenFn: func(_ context.Context, _ repository.DBTX, username string, excludeUserID string) (bool, error) {
+			if username != "new_name" {
+				t.Errorf("username = %q, want %q", username, "new_name")
+			}
+			if excludeUserID != "user-001" {
+				t.Errorf("excludeUserID = %q, want %q", excludeUserID, "user-001")
+			}
+			return false, nil // not taken
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+
+	out, err := svc.CheckUsernameAvailable(context.Background(), UsernameAvailableInput{
+		UserID:   "user-001",
+		Username: "new_name",
+	})
+
+	if err != nil {
+		t.Fatalf("CheckUsernameAvailable() unexpected error: %v", err)
+	}
+	if !out.Available {
+		t.Error("expected Available = true")
+	}
+}
+
+// TestCheckUsernameAvailable_Taken verifies that a taken username returns
+// Available = false.
+func TestCheckUsernameAvailable_Taken(t *testing.T) {
+	t.Parallel()
+
+	repo := &fakeAuthRepo{
+		isUsernameTakenFn: func(context.Context, repository.DBTX, string, string) (bool, error) {
+			return true, nil // taken
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+
+	out, err := svc.CheckUsernameAvailable(context.Background(), UsernameAvailableInput{
+		UserID:   "user-001",
+		Username: "taken_name",
+	})
+
+	if err != nil {
+		t.Fatalf("CheckUsernameAvailable() unexpected error: %v", err)
+	}
+	if out.Available {
+		t.Error("expected Available = false")
+	}
+}
+
+// TestCheckUsernameAvailable_DBError_ReturnsInternal verifies that a DB
+// failure returns ErrInternal.
+func TestCheckUsernameAvailable_DBError_ReturnsInternal(t *testing.T) {
+	t.Parallel()
+
+	repo := &fakeAuthRepo{
+		isUsernameTakenFn: func(context.Context, repository.DBTX, string, string) (bool, error) {
+			return false, errBoom
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+
+	_, err := svc.CheckUsernameAvailable(context.Background(), UsernameAvailableInput{
+		UserID:   "user-001",
+		Username: "some_name",
+	})
+
+	if !errors.Is(err, ErrInternal) {
+		t.Fatalf("CheckUsernameAvailable() error = %v, want ErrInternal", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeleteMe tests
+// ---------------------------------------------------------------------------
+
+// TestDeleteMe_Success verifies the happy path: correct password, user
+// deleted, success message returned.
+func TestDeleteMe_Success(t *testing.T) {
+	t.Parallel()
+
+	user := verifiedUser()
+	repo := &fakeAuthRepo{
+		getVerifiedUserByIDFn: func(_ context.Context, _ repository.DBTX, userID string) (repository.UserRow, error) {
+			if userID != user.ID {
+				t.Errorf("userID = %q, want %q", userID, user.ID)
+			}
+			return user, nil
+		},
+		deleteUserFn: func(_ context.Context, _ repository.DBTX, userID string) error {
+			if userID != user.ID {
+				t.Errorf("deleteUser userID = %q, want %q", userID, user.ID)
+			}
+			return nil
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+
+	out, err := svc.DeleteMe(context.Background(), DeleteMeInput{
+		UserID:   user.ID,
+		Password: "correct-password",
+	})
+
+	if err != nil {
+		t.Fatalf("DeleteMe() unexpected error: %v", err)
+	}
+	if out.Message != "Account deleted" {
+		t.Errorf("Message = %q, want %q", out.Message, "Account deleted")
+	}
+}
+
+// TestDeleteMe_WrongPassword_ReturnsUnauthorized verifies that providing
+// the wrong password returns ErrUnauthorized.
+func TestDeleteMe_WrongPassword_ReturnsUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	user := verifiedUser()
+	repo := &fakeAuthRepo{
+		getVerifiedUserByIDFn: func(context.Context, repository.DBTX, string) (repository.UserRow, error) {
+			return user, nil
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+
+	_, err := svc.DeleteMe(context.Background(), DeleteMeInput{
+		UserID:   user.ID,
+		Password: "wrong-password",
+	})
+
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("DeleteMe() error = %v, want ErrUnauthorized", err)
+	}
+}
+
+// TestDeleteMe_UserNotFound_ReturnsUnauthorized verifies that when the user
+// doesn't exist, ErrUnauthorized is returned.
+func TestDeleteMe_UserNotFound_ReturnsUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	repo := &fakeAuthRepo{
+		getVerifiedUserByIDFn: func(context.Context, repository.DBTX, string) (repository.UserRow, error) {
+			return repository.UserRow{}, repository.ErrNotFound
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+
+	_, err := svc.DeleteMe(context.Background(), DeleteMeInput{
+		UserID:   "nonexistent",
+		Password: "anything",
+	})
+
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("DeleteMe() error = %v, want ErrUnauthorized", err)
+	}
+}
+
+// TestDeleteMe_DBErrorOnLookup_ReturnsInternal verifies that a DB failure
+// during user lookup returns ErrInternal.
+func TestDeleteMe_DBErrorOnLookup_ReturnsInternal(t *testing.T) {
+	t.Parallel()
+
+	repo := &fakeAuthRepo{
+		getVerifiedUserByIDFn: func(context.Context, repository.DBTX, string) (repository.UserRow, error) {
+			return repository.UserRow{}, errBoom
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+
+	_, err := svc.DeleteMe(context.Background(), DeleteMeInput{
+		UserID:   "user-001",
+		Password: "anything",
+	})
+
+	if !errors.Is(err, ErrInternal) {
+		t.Fatalf("DeleteMe() error = %v, want ErrInternal", err)
+	}
+}
+
+// TestDeleteMe_DBErrorOnDelete_ReturnsInternal verifies that a DB failure
+// during user deletion returns ErrInternal.
+func TestDeleteMe_DBErrorOnDelete_ReturnsInternal(t *testing.T) {
+	t.Parallel()
+
+	user := verifiedUser()
+	repo := &fakeAuthRepo{
+		getVerifiedUserByIDFn: func(context.Context, repository.DBTX, string) (repository.UserRow, error) {
+			return user, nil
+		},
+		deleteUserFn: func(context.Context, repository.DBTX, string) error {
+			return errBoom
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+
+	_, err := svc.DeleteMe(context.Background(), DeleteMeInput{
+		UserID:   user.ID,
+		Password: "correct-password",
+	})
+
+	if !errors.Is(err, ErrInternal) {
+		t.Fatalf("DeleteMe() error = %v, want ErrInternal", err)
+	}
+}
+
+// TestDeleteMe_DeleteReturnsNotFound_ReturnsUnauthorized verifies that when
+// DeleteUser returns ErrNotFound (race: user deleted between lookup and
+// delete), ErrUnauthorized is returned.
+func TestDeleteMe_DeleteReturnsNotFound_ReturnsUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	user := verifiedUser()
+	repo := &fakeAuthRepo{
+		getVerifiedUserByIDFn: func(context.Context, repository.DBTX, string) (repository.UserRow, error) {
+			return user, nil
+		},
+		deleteUserFn: func(context.Context, repository.DBTX, string) error {
+			return repository.ErrNotFound
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+
+	_, err := svc.DeleteMe(context.Background(), DeleteMeInput{
+		UserID:   user.ID,
+		Password: "correct-password",
+	})
+
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("DeleteMe() error = %v, want ErrUnauthorized", err)
+	}
+}

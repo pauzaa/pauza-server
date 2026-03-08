@@ -130,6 +130,33 @@ type GetMeInput struct {
 	UserID string
 }
 
+// UpdateMeInput holds the validated fields for a profile update request.
+// Pointer fields are nil when the caller did not provide that field (PATCH
+// semantics).
+type UpdateMeInput struct {
+	UserID             string
+	Name               *string
+	Username           *string
+	LeaderboardVisible *bool
+}
+
+// UsernameAvailableInput holds the query for a username availability check.
+type UsernameAvailableInput struct {
+	UserID   string
+	Username string
+}
+
+// UsernameAvailableOutput holds the result of a username availability check.
+type UsernameAvailableOutput struct {
+	Available bool
+}
+
+// DeleteMeInput holds the validated fields for an account deletion request.
+type DeleteMeInput struct {
+	UserID   string
+	Password string
+}
+
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
@@ -791,6 +818,79 @@ func (s *AuthService) GetMe(ctx context.Context, in GetMeInput) (UserProfile, er
 		CreatedAt:          user.CreatedAt,
 		Subscription:       s.lookupSubscription(ctx, user.ID),
 	}, nil
+}
+
+// UpdateMe handles the profile update use case: apply the provided fields
+// to the authenticated user's profile and return the updated profile with
+// subscription info.
+func (s *AuthService) UpdateMe(ctx context.Context, in UpdateMeInput) (UserProfile, error) {
+	updated, err := s.repo.UpdateUser(ctx, s.pool, in.UserID, in.Name, in.Username, in.LeaderboardVisible)
+	if errors.Is(err, repository.ErrNotFound) {
+		return UserProfile{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+	}
+	if err != nil {
+		if isUniqueViolation(err, "users_username_key") || isUniqueViolation(err, "idx_users_username") {
+			return UserProfile{}, fmt.Errorf("%w: username already taken", ErrConflict)
+		}
+		s.logger.Error("updating user profile", "err", err)
+		return UserProfile{}, ErrInternal
+	}
+
+	return UserProfile{
+		ID:                 updated.ID,
+		Email:              updated.Email,
+		Name:               updated.Name,
+		Username:           updated.Username,
+		ProfilePictureURL:  updated.ProfilePictureURL,
+		LeaderboardVisible: updated.LeaderboardVisible,
+		CreatedAt:          updated.CreatedAt,
+		Subscription:       s.lookupSubscription(ctx, updated.ID),
+	}, nil
+}
+
+// CheckUsernameAvailable handles the username availability check use case.
+func (s *AuthService) CheckUsernameAvailable(ctx context.Context, in UsernameAvailableInput) (UsernameAvailableOutput, error) {
+	taken, err := s.repo.IsUsernameTaken(ctx, s.pool, in.Username, in.UserID)
+	if err != nil {
+		s.logger.Error("checking username availability", "err", err)
+		return UsernameAvailableOutput{}, ErrInternal
+	}
+	return UsernameAvailableOutput{Available: !taken}, nil
+}
+
+// DeleteMe handles the account deletion use case: verify the password,
+// then permanently delete the user and all associated data.
+func (s *AuthService) DeleteMe(ctx context.Context, in DeleteMeInput) (MessageOutput, error) {
+	// Look up the verified user to get the password hash.
+	user, err := s.repo.GetVerifiedUserByID(ctx, s.pool, in.UserID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return MessageOutput{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+	}
+	if err != nil {
+		s.logger.Error("querying user for account deletion", "err", err)
+		return MessageOutput{}, ErrInternal
+	}
+
+	// Verify password.
+	match, err := auth.CheckPassword(user.PasswordHash, in.Password)
+	if err != nil {
+		s.logger.Error("checking password for account deletion", "err", err)
+		return MessageOutput{}, ErrInternal
+	}
+	if !match {
+		return MessageOutput{}, fmt.Errorf("%w: incorrect password", ErrUnauthorized)
+	}
+
+	// Delete the user. ON DELETE CASCADE handles dependent rows.
+	if err := s.repo.DeleteUser(ctx, s.pool, in.UserID); err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return MessageOutput{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+		}
+		s.logger.Error("deleting user account", "err", err)
+		return MessageOutput{}, ErrInternal
+	}
+
+	return MessageOutput{Message: "Account deleted"}, nil
 }
 
 // ---------------------------------------------------------------------------

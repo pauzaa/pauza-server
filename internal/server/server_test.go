@@ -362,6 +362,55 @@ func TestNew_AuthRoutesExist(t *testing.T) {
 	}
 }
 
+// TestNew_ProtectedMeRoutesExist verifies that the protected /me endpoints
+// are wired (non-404). Without a valid JWT the auth middleware returns 401,
+// which proves the route exists and the middleware runs. A 404 would mean
+// the route was never registered.
+func TestNew_ProtectedMeRoutesExist(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{"get_me", http.MethodGet, "/api/v1/me", ""},
+		{"patch_me", http.MethodPatch, "/api/v1/me", `{"name":"Alice"}`},
+		{"delete_me", http.MethodDelete, "/api/v1/me", `{"password":"secret"}`},
+		{"username_available", http.MethodGet, "/api/v1/me/username-available?username=alice", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
+			defer cleanup()
+
+			var bodyReader *strings.Reader
+			if tt.body != "" {
+				bodyReader = strings.NewReader(tt.body)
+			}
+			var req *http.Request
+			if bodyReader != nil {
+				req = httptest.NewRequest(tt.method, tt.path, bodyReader)
+				req.Header.Set("Content-Type", "application/json")
+			} else {
+				req = httptest.NewRequest(tt.method, tt.path, nil)
+			}
+			rec := httptest.NewRecorder()
+
+			srv.Handler.ServeHTTP(rec, req)
+
+			// Without a JWT, the auth middleware should return 401.
+			// A 404 means the route was never registered.
+			if rec.Code == http.StatusNotFound {
+				t.Errorf("expected %s %s to be wired (non-404), got 404", tt.method, tt.path)
+			}
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("expected %s %s without JWT to return 401, got %d", tt.method, tt.path, rec.Code)
+			}
+		})
+	}
+}
+
 func TestNew_ProtectedRouteUnauthorized(t *testing.T) {
 	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
 	defer cleanup()
