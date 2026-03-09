@@ -137,6 +137,26 @@ type fakeAuthRepo struct {
 // Compile-time check: fakeAuthRepo satisfies repository.AuthRepository.
 var _ repository.AuthRepository = (*fakeAuthRepo)(nil)
 
+// ---------------------------------------------------------------------------
+// Fake subscription repository (satisfies repository.SubscriptionRepository)
+// ---------------------------------------------------------------------------
+
+// fakeSubscriptionRepo is a configurable in-memory implementation of
+// repository.SubscriptionRepository for service-layer unit tests.
+type fakeSubscriptionRepo struct {
+	listActivePlansFn func(ctx context.Context, db repository.DBTX) ([]repository.PlanRow, error)
+}
+
+// Compile-time check: fakeSubscriptionRepo satisfies repository.SubscriptionRepository.
+var _ repository.SubscriptionRepository = (*fakeSubscriptionRepo)(nil)
+
+func (f *fakeSubscriptionRepo) ListActivePlans(ctx context.Context, db repository.DBTX) ([]repository.PlanRow, error) {
+	if f.listActivePlansFn == nil {
+		panic("fakeSubscriptionRepo.ListActivePlans: not configured")
+	}
+	return f.listActivePlansFn(ctx, db)
+}
+
 func (f *fakeAuthRepo) GetUserByEmail(ctx context.Context, db repository.DBTX, email string) (repository.UserRow, error) {
 	if f.getUserByEmailFn == nil {
 		panic("fakeAuthRepo.GetUserByEmail: not configured")
