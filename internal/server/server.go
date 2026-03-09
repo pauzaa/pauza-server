@@ -111,6 +111,9 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 		cfg.JWTAccessTokenTTL, cfg.JWTRefreshTokenTTL, logger,
 	)
 	authHandler := handler.NewAuthHandler(authService, logger)
+	subscriptionRepo := repository.NewPgxSubscriptionRepository()
+	subscriptionService := service.NewSubscriptionService(pool, subscriptionRepo, logger)
+	subscriptionHandler := handler.NewSubscriptionHandler(subscriptionService, logger)
 	syncRepo := repository.NewPgxSyncRepository()
 	syncService := service.NewSyncService(pool, syncRepo, logger)
 	syncHandler := handler.NewSyncHandler(syncService)
@@ -143,6 +146,10 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 	// so that the JWT middleware applies only to protected endpoints. This
 	// avoids relying on chi route registration order for correctness.
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Route("/subscriptions", func(r chi.Router) {
+			r.Get("/plans", subscriptionHandler.ListPlans)
+		})
+
 		// Public auth routes (no JWT required).
 		r.Route("/auth", func(r chi.Router) {
 			r.With(authmw.RateLimit(registerLimiter, cfg.RegisterRateLimit, authmw.IPKey)).

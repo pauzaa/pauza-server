@@ -364,6 +364,35 @@ func TestNew_AuthRoutesExist(t *testing.T) {
 	}
 }
 
+// TestNew_SubscriptionPlansRouteIsPublicUnderAPIV1 verifies that the plans
+// endpoint stays mounted at GET /api/v1/subscriptions/plans without JWT
+// protection, and is not exposed outside the versioned API group.
+func TestNew_SubscriptionPlansRouteIsPublicUnderAPIV1(t *testing.T) {
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
+	defer cleanup()
+
+	publicReq := httptest.NewRequest(http.MethodGet, "/api/v1/subscriptions/plans", nil)
+	publicRec := httptest.NewRecorder()
+
+	srv.Handler.ServeHTTP(publicRec, publicReq)
+
+	if publicRec.Code == http.StatusNotFound {
+		t.Fatal("expected GET /api/v1/subscriptions/plans to be wired, got 404")
+	}
+	if publicRec.Code == http.StatusUnauthorized {
+		t.Fatal("expected GET /api/v1/subscriptions/plans to stay public, got 401")
+	}
+
+	unversionedReq := httptest.NewRequest(http.MethodGet, "/subscriptions/plans", nil)
+	unversionedRec := httptest.NewRecorder()
+
+	srv.Handler.ServeHTTP(unversionedRec, unversionedReq)
+
+	if unversionedRec.Code != http.StatusNotFound {
+		t.Fatalf("expected GET /subscriptions/plans to stay outside the versioned API, got %d", unversionedRec.Code)
+	}
+}
+
 // TestNew_ProtectedMeRoutesExist verifies that the protected /me endpoints
 // are wired (non-404). Without a valid JWT the auth middleware returns 401,
 // which proves the route exists and the middleware runs. A 404 would mean

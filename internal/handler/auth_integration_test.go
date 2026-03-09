@@ -250,6 +250,29 @@ func getWithAuth(t *testing.T, url, accessToken string) *http.Response {
 	return resp
 }
 
+// patchJSONWithAuth sends a PATCH request with a JSON body and Bearer token.
+func patchJSONWithAuth(t *testing.T, url, accessToken string, body any) *http.Response {
+	t.Helper()
+
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshalling PATCH body: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, url, bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("creating PATCH request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH %s: %v", url, err)
+	}
+	return resp
+}
+
 // decodeJSON reads and decodes the response body into the target.
 func decodeJSON(t *testing.T, resp *http.Response, target any) {
 	t.Helper()
@@ -271,13 +294,48 @@ func readBody(t *testing.T, resp *http.Response) []byte {
 }
 
 // authResponse mirrors the handler's auth response shape for decoding.
+type authUserResponse struct {
+	ID                 string                  `json:"id"`
+	Email              string                  `json:"email"`
+	Name               string                  `json:"name"`
+	Username           string                  `json:"username"`
+	ProfilePictureURL  *string                 `json:"profile_picture_url"`
+	LeaderboardVisible bool                    `json:"leaderboard_visible"`
+	CreatedAt          string                  `json:"created_at"`
+	Subscription       *meSubscriptionResponse `json:"subscription"`
+}
+
 type authResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	User         struct {
-		ID    string `json:"id"`
-		Email string `json:"email"`
-	} `json:"user"`
+	AccessToken  string           `json:"access_token"`
+	RefreshToken string           `json:"refresh_token"`
+	User         authUserResponse `json:"user"`
+}
+
+// registerResponse mirrors the handler's register response shape for decoding.
+type registerResponse struct {
+	OTPRequired bool `json:"otp_required"`
+}
+
+// meSubscriptionResponse mirrors the handler's /me subscription shape.
+type meSubscriptionResponse struct {
+	PlanID           string         `json:"plan_id"`
+	PlanName         string         `json:"plan_name"`
+	Status           string         `json:"status"`
+	IsStudent        bool           `json:"is_student"`
+	CurrentPeriodEnd *string        `json:"current_period_end"`
+	Features         map[string]any `json:"features"`
+}
+
+// meResponse mirrors the handler's /me response shape for decoding.
+type meResponse struct {
+	ID                 string                  `json:"id"`
+	Email              string                  `json:"email"`
+	Name               string                  `json:"name"`
+	Username           string                  `json:"username"`
+	ProfilePictureURL  *string                 `json:"profile_picture_url"`
+	LeaderboardVisible bool                    `json:"leaderboard_visible"`
+	CreatedAt          string                  `json:"created_at"`
+	Subscription       *meSubscriptionResponse `json:"subscription"`
 }
 
 // refreshResponse mirrors the handler's refresh response shape for decoding.
@@ -352,9 +410,7 @@ func TestIntegration_RegisterVerifyLogin(t *testing.T) {
 		body := readBody(t, resp)
 		t.Fatalf("register: expected 200, got %d: %s", resp.StatusCode, body)
 	}
-	var regResp struct {
-		OTPRequired bool `json:"otp_required"`
-	}
+	var regResp registerResponse
 	decodeJSON(t, resp, &regResp)
 	if !regResp.OTPRequired {
 		t.Fatal("register: expected otp_required = true")
@@ -487,6 +543,279 @@ func TestIntegration_GetMe(t *testing.T) {
 		t.Error("GET /me: missing field subscription")
 	} else if subVal != nil {
 		t.Errorf("GET /me: subscription should be null for new user, got %v", subVal)
+	}
+}
+
+// TestIntegration_SubscriptionPlans exercises the public plans endpoint through
+// the real server stack and verifies the happy-path response contract.
+func TestIntegration_SubscriptionPlans(t *testing.T) {
+	ts, pool, _ := setupTestServer(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	startsAt := time.Now().UTC().Add(-1 * time.Hour)
+	endsAt := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Second)
+
+	_, err := pool.Exec(ctx, `
+		INSERT INTO subscription_plans (id, name, duration_type, price_cents, currency, features_json, is_active, student_discount_percent, created_at, updated_at)
+		VALUES
+			($1, 'Premium Monthly', 'monthly', 499, 'USD', '{"friendships":true,"advanced_stats":true}', true, 20, now(), now()),
+			($2, 'Premium Yearly', 'yearly', 4999, 'USD', '{"friendships":true,"offline":true}', true, 35, now(), now()),
+			($3, 'Legacy Plan', 'lifetime', 9999, 'USD', '{"legacy":true}', false, 0, now(), now())
+	`,
+		"11111111-1111-1111-1111-111111111111",
+		"22222222-2222-2222-2222-222222222222",
+		"33333333-3333-3333-3333-333333333333",
+	)
+	if err != nil {
+		t.Fatalf("inserting subscription plans: %v", err)
+	}
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO subscription_plan_discounts (id, plan_id, discount_percent, starts_at, ends_at, description, created_at)
+		VALUES ($1, $2, 15, $3, $4, 'Spring Sale', now())
+	`, "44444444-4444-4444-4444-444444444444", "11111111-1111-1111-1111-111111111111", startsAt, endsAt)
+	if err != nil {
+		t.Fatalf("inserting active plan discount: %v", err)
+	}
+
+	resp, err := http.Get(ts.URL + "/api/v1/subscriptions/plans")
+	if err != nil {
+		t.Fatalf("GET /subscriptions/plans: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("GET /subscriptions/plans: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("GET /subscriptions/plans: Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	type activeDiscountResponse struct {
+		DiscountPercent int    `json:"discount_percent"`
+		EndsAt          string `json:"ends_at"`
+		Description     string `json:"description"`
+	}
+	type planResponse struct {
+		ID                     string                  `json:"id"`
+		Name                   string                  `json:"name"`
+		DurationType           string                  `json:"duration_type"`
+		PriceCents             int                     `json:"price_cents"`
+		Currency               string                  `json:"currency"`
+		StudentDiscountPercent int                     `json:"student_discount_percent"`
+		Features               map[string]any          `json:"features"`
+		ActiveDiscount         *activeDiscountResponse `json:"active_discount"`
+	}
+	var out struct {
+		Plans []planResponse `json:"plans"`
+	}
+	decodeJSON(t, resp, &out)
+
+	if len(out.Plans) != 2 {
+		t.Fatalf("GET /subscriptions/plans: plans len = %d, want 2", len(out.Plans))
+	}
+
+	plansByID := make(map[string]planResponse, len(out.Plans))
+	for _, plan := range out.Plans {
+		plansByID[plan.ID] = plan
+	}
+
+	monthly, ok := plansByID["11111111-1111-1111-1111-111111111111"]
+	if !ok {
+		t.Fatal("monthly plan missing from response")
+	}
+	if monthly.ID != "11111111-1111-1111-1111-111111111111" {
+		t.Errorf("monthly.id = %q, want %q", monthly.ID, "11111111-1111-1111-1111-111111111111")
+	}
+	if monthly.Name != "Premium Monthly" {
+		t.Errorf("monthly.name = %q, want %q", monthly.Name, "Premium Monthly")
+	}
+	if monthly.DurationType != "monthly" {
+		t.Errorf("monthly.duration_type = %q, want %q", monthly.DurationType, "monthly")
+	}
+	if monthly.PriceCents != 499 {
+		t.Errorf("monthly.price_cents = %d, want %d", monthly.PriceCents, 499)
+	}
+	if monthly.StudentDiscountPercent != 20 {
+		t.Errorf("monthly.student_discount_percent = %d, want %d", monthly.StudentDiscountPercent, 20)
+	}
+	if monthly.Features["friendships"] != true {
+		t.Errorf("monthly.features.friendships = %#v, want true", monthly.Features["friendships"])
+	}
+	if monthly.Features["advanced_stats"] != true {
+		t.Errorf("monthly.features.advanced_stats = %#v, want true", monthly.Features["advanced_stats"])
+	}
+	if monthly.ActiveDiscount == nil {
+		t.Fatal("monthly.active_discount = nil, want value")
+	}
+	if monthly.ActiveDiscount.DiscountPercent != 15 {
+		t.Errorf("monthly.active_discount.discount_percent = %d, want %d", monthly.ActiveDiscount.DiscountPercent, 15)
+	}
+	if monthly.ActiveDiscount.Description != "Spring Sale" {
+		t.Errorf("monthly.active_discount.description = %q, want %q", monthly.ActiveDiscount.Description, "Spring Sale")
+	}
+	if monthly.ActiveDiscount.EndsAt != endsAt.Format(time.RFC3339) {
+		t.Errorf("monthly.active_discount.ends_at = %q, want %q", monthly.ActiveDiscount.EndsAt, endsAt.Format(time.RFC3339))
+	}
+
+	yearly, ok := plansByID["22222222-2222-2222-2222-222222222222"]
+	if !ok {
+		t.Fatal("yearly plan missing from response")
+	}
+	if yearly.ID != "22222222-2222-2222-2222-222222222222" {
+		t.Errorf("yearly.id = %q, want %q", yearly.ID, "22222222-2222-2222-2222-222222222222")
+	}
+	if yearly.ActiveDiscount != nil {
+		t.Errorf("yearly.active_discount = %#v, want nil", yearly.ActiveDiscount)
+	}
+	if yearly.Features["offline"] != true {
+		t.Errorf("yearly.features.offline = %#v, want true", yearly.Features["offline"])
+	}
+}
+
+// TestIntegration_GetMe_WithActiveSubscription verifies that GET /api/v1/me
+// includes the active subscription contract when the user has a subscription.
+func TestIntegration_GetMe_WithActiveSubscription(t *testing.T) {
+	ts, pool, mailer := setupTestServer(t)
+
+	const email = "getme-sub@example.com"
+	const password = "StrongPass123!"
+
+	ar := registerAndVerify(t, ts.URL, mailer, email, password)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	periodEnd := time.Now().UTC().Add(30 * 24 * time.Hour).Truncate(time.Second)
+
+	_, err := pool.Exec(ctx, `
+		INSERT INTO subscription_plans (id, name, duration_type, price_cents, currency, features_json, is_active, student_discount_percent, created_at, updated_at)
+		VALUES ($1, 'Premium Monthly', 'monthly', 499, 'USD', '{"friendships":true,"advanced_stats":true}', true, 20, now(), now())
+	`, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	if err != nil {
+		t.Fatalf("inserting subscription plan: %v", err)
+	}
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO user_subscriptions (id, user_id, plan_id, status, current_period_start, current_period_end, is_student, created_at, updated_at)
+		VALUES ($1, $2, $3, 'active', now(), $4, true, now(), now())
+	`, "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", ar.User.ID, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", periodEnd)
+	if err != nil {
+		t.Fatalf("inserting user subscription: %v", err)
+	}
+
+	resp := getWithAuth(t, ts.URL+"/api/v1/me", ar.AccessToken)
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("GET /me with subscription: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("GET /me with subscription: Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	var me meResponse
+	decodeJSON(t, resp, &me)
+
+	if me.Email != email {
+		t.Errorf("GET /me with subscription: email = %q, want %q", me.Email, email)
+	}
+	if me.Subscription == nil {
+		t.Fatal("GET /me with subscription: subscription = nil, want value")
+	}
+	if me.Subscription.PlanID != "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" {
+		t.Errorf("subscription.plan_id = %q, want %q", me.Subscription.PlanID, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	}
+	if me.Subscription.PlanName != "Premium Monthly" {
+		t.Errorf("subscription.plan_name = %q, want %q", me.Subscription.PlanName, "Premium Monthly")
+	}
+	if me.Subscription.Status != "active" {
+		t.Errorf("subscription.status = %q, want %q", me.Subscription.Status, "active")
+	}
+	if !me.Subscription.IsStudent {
+		t.Error("subscription.is_student = false, want true")
+	}
+	if me.Subscription.CurrentPeriodEnd == nil {
+		t.Fatal("subscription.current_period_end = nil, want value")
+	}
+	if *me.Subscription.CurrentPeriodEnd != periodEnd.Format(time.RFC3339) {
+		t.Errorf("subscription.current_period_end = %q, want %q", *me.Subscription.CurrentPeriodEnd, periodEnd.Format(time.RFC3339))
+	}
+	if me.Subscription.Features["friendships"] != true {
+		t.Errorf("subscription.features.friendships = %#v, want true", me.Subscription.Features["friendships"])
+	}
+	if me.Subscription.Features["advanced_stats"] != true {
+		t.Errorf("subscription.features.advanced_stats = %#v, want true", me.Subscription.Features["advanced_stats"])
+	}
+}
+
+// TestIntegration_UpdateMe exercises the PATCH /api/v1/me happy path through
+// the real server stack and verifies the updated profile contract.
+func TestIntegration_UpdateMe(t *testing.T) {
+	ts, _, mailer := setupTestServer(t)
+
+	const email = "updateme@example.com"
+	const password = "StrongPass123!"
+
+	ar := registerAndVerify(t, ts.URL, mailer, email, password)
+
+	resp := patchJSONWithAuth(t, ts.URL+"/api/v1/me", ar.AccessToken, map[string]any{
+		"name":                "Alice Updated",
+		"username":            "alice_updated",
+		"leaderboard_visible": false,
+	})
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("PATCH /me: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("PATCH /me: Content-Type = %q, want %q", ct, "application/json")
+	}
+
+	var updated meResponse
+	decodeJSON(t, resp, &updated)
+
+	if updated.ID != ar.User.ID {
+		t.Errorf("PATCH /me: id = %q, want %q", updated.ID, ar.User.ID)
+	}
+	if updated.Email != email {
+		t.Errorf("PATCH /me: email = %q, want %q", updated.Email, email)
+	}
+	if updated.Name != "Alice Updated" {
+		t.Errorf("PATCH /me: name = %q, want %q", updated.Name, "Alice Updated")
+	}
+	if updated.Username != "alice_updated" {
+		t.Errorf("PATCH /me: username = %q, want %q", updated.Username, "alice_updated")
+	}
+	if updated.LeaderboardVisible {
+		t.Error("PATCH /me: leaderboard_visible = true, want false")
+	}
+	if updated.Subscription != nil {
+		t.Errorf("PATCH /me: subscription = %v, want nil", updated.Subscription)
+	}
+	if _, err := time.Parse(time.RFC3339, updated.CreatedAt); err != nil {
+		t.Errorf("PATCH /me: created_at %q is not valid RFC3339: %v", updated.CreatedAt, err)
+	}
+
+	meResp := getWithAuth(t, ts.URL+"/api/v1/me", ar.AccessToken)
+	if meResp.StatusCode != http.StatusOK {
+		body := readBody(t, meResp)
+		t.Fatalf("GET /me after PATCH: expected 200, got %d: %s", meResp.StatusCode, body)
+	}
+
+	var me meResponse
+	decodeJSON(t, meResp, &me)
+	if me.Name != "Alice Updated" {
+		t.Errorf("GET /me after PATCH: name = %q, want %q", me.Name, "Alice Updated")
+	}
+	if me.Username != "alice_updated" {
+		t.Errorf("GET /me after PATCH: username = %q, want %q", me.Username, "alice_updated")
+	}
+	if me.LeaderboardVisible {
+		t.Errorf("GET /me after PATCH: leaderboard_visible = %v, want false", me.LeaderboardVisible)
 	}
 }
 
@@ -1124,10 +1453,10 @@ func TestIntegration_ConcurrentVerifyOTPSameCode(t *testing.T) {
 		body := readBody(t, meResp)
 		t.Fatalf("GET /me with winning token: expected 200, got %d: %s", meResp.StatusCode, body)
 	}
-	var me map[string]any
+	var me meResponse
 	decodeJSON(t, meResp, &me)
-	if got, _ := me["email"].(string); got != email {
-		t.Errorf("GET /me: email = %q, want %q", got, email)
+	if me.Email != email {
+		t.Errorf("GET /me: email = %q, want %q", me.Email, email)
 	}
 }
 

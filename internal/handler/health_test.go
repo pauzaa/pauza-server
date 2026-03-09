@@ -88,7 +88,7 @@ func TestReady_ExactResponseShape(t *testing.T) {
 
 	h.ServeHTTP(rec, req)
 
-	var raw map[string]interface{}
+	var raw map[string]any
 	if err := json.NewDecoder(rec.Body).Decode(&raw); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestLive_ResponseShape(t *testing.T) {
 
 	h.ServeHTTP(rec, req)
 
-	var raw map[string]interface{}
+	var raw map[string]any
 	if err := json.NewDecoder(rec.Body).Decode(&raw); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}

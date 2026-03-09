@@ -1130,9 +1130,7 @@ func TestRegister_ServiceSuccess_ReturnsOTPRequired(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 
-	var resp struct {
-		OTPRequired bool `json:"otp_required"`
-	}
+	var resp testRegisterResponse
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -1179,14 +1177,7 @@ func TestLogin_ServiceSuccess_ReturnsAuthResponse(t *testing.T) {
 		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
 	}
 
-	var resp struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		User         struct {
-			ID    string `json:"id"`
-			Email string `json:"email"`
-		} `json:"user"`
-	}
+	var resp testAuthResponse
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -1329,7 +1320,7 @@ func TestUpdateMe_EmptyBody_NoOp_ReturnsProfile(t *testing.T) {
 		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
 	}
 
-	var resp userResponse
+	var resp testUpdateMeUserResponse
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -1421,6 +1412,60 @@ func TestUpdateMe_ServiceUnauthorized_Returns401(t *testing.T) {
 
 // ---------- UsernameAvailable – validation & mock-service tests ----------
 
+// testRegisterResponse mirrors the stable register success response shape for
+// unit tests without depending on production response DTOs.
+type testRegisterResponse struct {
+	OTPRequired bool `json:"otp_required"`
+}
+
+// testAuthUserResponse mirrors the stable auth user payload needed by unit
+// tests.
+type testAuthUserResponse struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+}
+
+// testAuthResponse mirrors the stable login success response shape for unit
+// tests.
+type testAuthResponse struct {
+	AccessToken  string               `json:"access_token"`
+	RefreshToken string               `json:"refresh_token"`
+	User         testAuthUserResponse `json:"user"`
+}
+
+// testUpdateMeUserResponse mirrors the stable profile/update-me success
+// response shape for unit tests without reusing the production handler DTO.
+type testUpdateMeUserResponse struct {
+	ID                 string                    `json:"id"`
+	Email              string                    `json:"email"`
+	Name               string                    `json:"name"`
+	Username           string                    `json:"username"`
+	ProfilePictureURL  *string                   `json:"profile_picture_url"`
+	LeaderboardVisible bool                      `json:"leaderboard_visible"`
+	CreatedAt          string                    `json:"created_at"`
+	Subscription       *testAuthSubscriptionData `json:"subscription"`
+}
+
+// testAuthSubscriptionData mirrors the subscription payload shape nested in
+// profile responses for unit tests.
+type testAuthSubscriptionData struct {
+	Type      string `json:"type"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+// testUsernameAvailableResponse is a test-local DTO for decoding the stable
+// username-available success response contract without reusing the production
+// handler response type.
+type testUsernameAvailableResponse struct {
+	Available bool `json:"available"`
+}
+
+// testMessageResponse mirrors the stable message-only success response shape
+// for unit tests without reusing the production handler DTO.
+type testMessageResponse struct {
+	Message string `json:"message"`
+}
+
 // TestUsernameAvailable_MissingUser_ReturnsUnauthorized verifies that
 // UsernameAvailable returns 401 when no user context is present.
 func TestUsernameAvailable_MissingUser_ReturnsUnauthorized(t *testing.T) {
@@ -1496,9 +1541,7 @@ func TestUsernameAvailable_ServiceSuccess_ReturnsAvailable(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 
-	var resp struct {
-		Available bool `json:"available"`
-	}
+	var resp testUsernameAvailableResponse
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -1530,9 +1573,7 @@ func TestUsernameAvailable_ServiceSuccess_ReturnsTaken(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 
-	var resp struct {
-		Available bool `json:"available"`
-	}
+	var resp testUsernameAvailableResponse
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -1724,7 +1765,7 @@ func TestDeleteMe_ServiceSuccess_ReturnsAccountDeleted(t *testing.T) {
 		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
 	}
 
-	var resp messageResponse
+	var resp testMessageResponse
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
