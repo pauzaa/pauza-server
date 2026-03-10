@@ -16,6 +16,7 @@ FROM alpine:3.21
 RUN apk --no-cache add ca-certificates wget
 
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN mkdir -p /var/lib/pauza/photos && chown -R appuser:appgroup /var/lib/pauza
 
 WORKDIR /app
 

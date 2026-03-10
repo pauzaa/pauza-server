@@ -1,43 +1,7 @@
 services:
   api:
-    build: .
-    ports:
-      - "8080:8080"
-    environment:
-      # Dev defaults so `docker compose up` works without a local .env file.
-      PORT: "8080"
-      LOG_LEVEL: "info"
-      # Trust Docker bridge network so forwarded headers from reverse proxies work.
-      TRUSTED_PROXIES: "172.16.0.0/12"
-      DATABASE_URL: "postgres://pauza:pauza_dev_password@db:5432/pauza?sslmode=disable"
-
-      JWT_SECRET: "dev-jwt-secret-change-me-in-prod!"
-      JWT_ACCESS_TOKEN_TTL: "15m"
-      JWT_REFRESH_TOKEN_TTL: "720h"
-
-      SMTP_HOST: "localhost"
-      SMTP_PORT: "1025"
-      SMTP_USERNAME: "dev"
-      SMTP_PASSWORD: "dev"
-      SMTP_FROM: "no-reply@pauza.local"
-      SMTP_TLS_POLICY: "none"
-      SMTP_TIMEOUT: "5s"
-
-      REVENUECAT_API_KEY: "dev"
-      REVENUECAT_WEBHOOK_SECRET: "dev"
-
-      FIREBASE_SERVICE_ACCOUNT_JSON: "{}"
-
-      CLEANUP_INTERVAL: "1h"
-      OTP_RETENTION_PERIOD: "24h"
-      REFRESH_TOKEN_REVOKED_RETENTION: "168h"
-
-      REDIS_URL: "redis://redis:6379/0"
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    volumes:
+      - photodata:/var/lib/pauza/photos
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/live"]
       interval: 30s
@@ -45,34 +9,20 @@ services:
       retries: 3
     restart: unless-stopped
 
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: pauza
-      POSTGRES_PASSWORD: pauza_dev_password
-      POSTGRES_DB: pauza
-    ports:
-      - "5432:5432"
+  nginx:
+    image: nginx:1.27-alpine
     volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U pauza"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redisdata:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      - photodata:/var/lib/pauza/photos:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
-  pgdata:
-  redisdata:
+  photodata:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

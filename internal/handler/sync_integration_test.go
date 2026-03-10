@@ -54,7 +54,7 @@ func postSync(t *testing.T, baseURL, token string, body any) *http.Response {
 }
 
 func TestIntegration_Sync_FirstSync_AllTables(t *testing.T) {
-	ts, pool, mailer := setupTestServer(t)
+	ts, pool, mailer, _ := setupTestServer(t)
 	auth := startAndVerifyAuth(t, ts.URL, mailer, "sync-first@example.com")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -120,7 +120,7 @@ func TestIntegration_Sync_FirstSync_AllTables(t *testing.T) {
 }
 
 func TestIntegration_Sync_OnlyRequestedTablesAreProcessed(t *testing.T) {
-	ts, pool, mailer := setupTestServer(t)
+	ts, pool, mailer, _ := setupTestServer(t)
 	auth := startAndVerifyAuth(t, ts.URL, mailer, "sync-partial@example.com")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -159,7 +159,7 @@ func TestIntegration_Sync_OnlyRequestedTablesAreProcessed(t *testing.T) {
 }
 
 func TestIntegration_Sync_EmptyRequestedTableSerializesArrays(t *testing.T) {
-	ts, _, mailer := setupTestServer(t)
+	ts, _, mailer, _ := setupTestServer(t)
 	auth := startAndVerifyAuth(t, ts.URL, mailer, "sync-empty@example.com")
 
 	body := map[string]any{
@@ -183,7 +183,7 @@ func TestIntegration_Sync_EmptyRequestedTableSerializesArrays(t *testing.T) {
 }
 
 func TestIntegration_Sync_LastWriteWinsAndEchoSuppression(t *testing.T) {
-	ts, pool, mailer := setupTestServer(t)
+	ts, pool, mailer, _ := setupTestServer(t)
 	auth := startAndVerifyAuth(t, ts.URL, mailer, "sync-lww@example.com")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -245,7 +245,7 @@ func TestIntegration_Sync_LastWriteWinsAndEchoSuppression(t *testing.T) {
 }
 
 func TestIntegration_Sync_RestrictionLifecycleCursorUsesCreatedAt(t *testing.T) {
-	ts, pool, mailer := setupTestServer(t)
+	ts, pool, mailer, _ := setupTestServer(t)
 	auth := startAndVerifyAuth(t, ts.URL, mailer, "sync-events@example.com")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -294,7 +294,7 @@ func TestIntegration_Sync_RestrictionLifecycleCursorUsesCreatedAt(t *testing.T) 
 }
 
 func TestIntegration_Sync_CascadeTombstonesReturnedOnFullRestore(t *testing.T) {
-	ts, pool, mailer := setupTestServer(t)
+	ts, pool, mailer, _ := setupTestServer(t)
 	auth := startAndVerifyAuth(t, ts.URL, mailer, "sync-cascade@example.com")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -369,7 +369,7 @@ func TestIntegration_Sync_CascadeTombstonesReturnedOnFullRestore(t *testing.T) {
 }
 
 func TestIntegration_Sync_DeletedUserRejected(t *testing.T) {
-	ts, pool, mailer := setupTestServer(t)
+	ts, pool, mailer, _ := setupTestServer(t)
 	auth := startAndVerifyAuth(t, ts.URL, mailer, "sync-deleted-user@example.com")
 
 	resp := postSync(t, ts.URL, auth.AccessToken, syncPayload())

@@ -3,8 +3,13 @@
 package handler_test
 
 import (
+	"bytes"
 	"context"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,7 +18,7 @@ import (
 )
 
 func TestIntegration_AuthStartReturnsOTPRequiredAndSendsLoginOTP(t *testing.T) {
-	ts, _, sender := setupTestServer(t)
+	ts, _, sender, _ := setupTestServer(t)
 
 	email := "user@example.com"
 	startAuthChallenge(t, ts.URL, email)
@@ -24,7 +29,7 @@ func TestIntegration_AuthStartReturnsOTPRequiredAndSendsLoginOTP(t *testing.T) {
 }
 
 func TestIntegration_AuthVerifyCreatesUserAndReturnsProfile(t *testing.T) {
-	ts, pool, sender := setupTestServer(t)
+	ts, pool, sender, _ := setupTestServer(t)
 
 	email := "user@example.com"
 	auth := startAndVerifyAuth(t, ts.URL, sender, email)
@@ -44,7 +49,7 @@ func TestIntegration_AuthVerifyCreatesUserAndReturnsProfile(t *testing.T) {
 }
 
 func TestIntegration_AuthVerifyExistingUserSignsIntoSameAccount(t *testing.T) {
-	ts, pool, sender := setupTestServer(t)
+	ts, pool, sender, _ := setupTestServer(t)
 
 	email := "repeat@example.com"
 	first := startAndVerifyAuth(t, ts.URL, sender, email)
@@ -70,7 +75,7 @@ func TestIntegration_AuthVerifyExistingUserSignsIntoSameAccount(t *testing.T) {
 }
 
 func TestIntegration_AuthVerifyInvalidOTPReturnsUnauthorized(t *testing.T) {
-	ts, _, sender := setupTestServer(t)
+	ts, _, sender, _ := setupTestServer(t)
 
 	email := "invalid@example.com"
 	startAuthChallenge(t, ts.URL, email)
@@ -97,7 +102,7 @@ func TestIntegration_AuthVerifyInvalidOTPReturnsUnauthorized(t *testing.T) {
 }
 
 func TestIntegration_AuthRefreshRotatesTokensAndDetectsReuse(t *testing.T) {
-	ts, _, sender := setupTestServer(t)
+	ts, _, sender, _ := setupTestServer(t)
 
 	auth := startAndVerifyAuth(t, ts.URL, sender, "refresh@example.com")
 
@@ -140,4 +145,125 @@ func TestIntegration_AuthRefreshRotatesTokensAndDetectsReuse(t *testing.T) {
 	if errResp.Error.Code != apperror.CodeUnauthorized {
 		t.Fatalf("error.code = %q, want %q", errResp.Error.Code, apperror.CodeUnauthorized)
 	}
+}
+
+func TestIntegration_UploadPhotoStoresFileAndReturnsConfiguredPublicURL(t *testing.T) {
+	ts, _, sender, photoDir := setupTestServer(t)
+
+	auth := startAndVerifyAuth(t, ts.URL, sender, "photo@example.com")
+
+	resp := uploadPhoto(t, ts.URL, auth.AccessToken, "avatar.jpg", "image/jpeg", []byte{
+		0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08, 0x07, 0x07,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("upload status = %d: %s", resp.StatusCode, string(readBody(t, resp)))
+	}
+
+	var body struct {
+		ProfilePictureURL string `json:"profile_picture_url"`
+	}
+	decodeJSON(t, resp, &body)
+
+	const wantPrefix = "https://api.test/photos/"
+	if len(body.ProfilePictureURL) <= len(wantPrefix) || body.ProfilePictureURL[:len(wantPrefix)] != wantPrefix {
+		t.Fatalf("profile_picture_url = %q, want prefix %q", body.ProfilePictureURL, wantPrefix)
+	}
+
+	filename := filepath.Base(body.ProfilePictureURL)
+	if filename == "." || filename == "/" || filename == "" {
+		t.Fatalf("invalid filename from profile_picture_url: %q", body.ProfilePictureURL)
+	}
+	if _, err := os.Stat(filepath.Join(photoDir, filename)); err != nil {
+		t.Fatalf("expected uploaded file on disk: %v", err)
+	}
+}
+
+func TestIntegration_UploadPhotoAcceptsPNG(t *testing.T) {
+	ts, _, sender, _ := setupTestServer(t)
+
+	auth := startAndVerifyAuth(t, ts.URL, sender, "photo-png@example.com")
+
+	resp := uploadPhoto(t, ts.URL, auth.AccessToken, "avatar.png", "image/png", []byte{
+		0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0x00, 0x00, 0x00, 0x0d, 'I', 'H', 'D', 'R',
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("upload status = %d: %s", resp.StatusCode, string(readBody(t, resp)))
+	}
+	discardBody(t, resp)
+}
+
+func TestIntegration_UploadPhotoRejectsInvalidMime(t *testing.T) {
+	ts, _, sender, _ := setupTestServer(t)
+
+	auth := startAndVerifyAuth(t, ts.URL, sender, "photo-invalid@example.com")
+
+	resp := uploadPhoto(t, ts.URL, auth.AccessToken, "avatar.txt", "text/plain", []byte("not an image"))
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("upload status = %d, want 422: %s", resp.StatusCode, string(readBody(t, resp)))
+	}
+
+	var errResp apperror.ErrorResponse
+	decodeJSON(t, resp, &errResp)
+	if errResp.Error.Code != apperror.CodeValidationError {
+		t.Fatalf("error.code = %q, want %q", errResp.Error.Code, apperror.CodeValidationError)
+	}
+}
+
+func TestIntegration_UploadPhotoRejectsOversizeBody(t *testing.T) {
+	ts, _, sender, _ := setupTestServer(t)
+
+	auth := startAndVerifyAuth(t, ts.URL, sender, "photo-large@example.com")
+
+	resp := uploadPhoto(t, ts.URL, auth.AccessToken, "avatar.jpg", "image/jpeg", bytes.Repeat([]byte("a"), (1<<20)+1))
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("upload status = %d, want 422: %s", resp.StatusCode, string(readBody(t, resp)))
+	}
+
+	var errResp apperror.ErrorResponse
+	decodeJSON(t, resp, &errResp)
+	if errResp.Error.Code != apperror.CodeValidationError {
+		t.Fatalf("error.code = %q, want %q", errResp.Error.Code, apperror.CodeValidationError)
+	}
+}
+
+func uploadPhoto(t *testing.T, baseURL, token, filename, contentType string, payload []byte) *http.Response {
+	t.Helper()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	part, err := writer.CreatePart(textprotoMIMEHeader(filename, contentType))
+	if err != nil {
+		t.Fatalf("create multipart part: %v", err)
+	}
+	if _, err := part.Write(payload); err != nil {
+		t.Fatalf("write multipart payload: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, tsJoin(baseURL, "/api/v1/me/photo"), &body)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("upload photo: %v", err)
+	}
+	return resp
+}
+
+func textprotoMIMEHeader(filename, contentType string) textproto.MIMEHeader {
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", `form-data; name="photo"; filename="`+filename+`"`)
+	header.Set("Content-Type", contentType)
+	return header
+}
+
+func tsJoin(baseURL, path string) string {
+	return baseURL + path
 }

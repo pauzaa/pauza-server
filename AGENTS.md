@@ -15,7 +15,9 @@ pauza-server/
 ├── migrations/           # embedded SQL migrations
 ├── BACKEND_SPEC.md       # API and schema contract
 ├── .env.example          # canonical env template
-└── docker-compose.yml    # local API + Postgres + Redis stack
+├── docker-compose.yml    # shared Compose base for app-facing services
+├── docker-compose.dev.yml # local dev overlay (Nginx + Postgres + Redis)
+└── docker-compose.prod.yml # production overlay (single-host Nginx + API + DB + Redis)
 ```
 
 Child docs:
@@ -76,7 +78,7 @@ Child docs:
 
 ## COMMANDS
 ```bash
-docker compose up --build
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 
 cp .env.example .env
 set -a; source .env; set +a
@@ -96,6 +98,8 @@ go test ./internal/handler -run '^TestLive_TimestampIsRecent$'
 ```
 
 ## NOTES
-- `docker-compose.yml` supplies dev defaults for API, Postgres, and Redis, but it does not apply migrations automatically.
+- Use `docker-compose.yml` with `docker-compose.dev.yml` for local development and with `docker-compose.prod.yml` for single-host production-style deployments; the overlays load `.env.dev` and `.env.prod` via `env_file`.
+- Compose does not apply migrations automatically; run the migrate binary as a separate release step.
 - Build commands leave gitignored local binaries in the repo root (`server`, `migrate`, `seed-admin`, `pauza-server`).
 - The current pre-release schema is flattened into `migrations/000001_initial_schema.up.sql`.
+- For RevenueCat integration work, prefer local code/spec context first, but web-search current RevenueCat official documentation when API, webhook, or customer-state details may have changed.

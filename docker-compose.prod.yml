@@ -1,0 +1,77 @@
+services:
+  api:
+    image: docker.io/your-dockerhub-user/pauza-server:latest
+    pull_policy: always
+    env_file:
+      - ./.env.prod
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  nginx:
+    image: nginx:1.27-alpine
+    pull_policy: always
+    env_file:
+      - ./.env.prod
+    command: ["/bin/sh", "/opt/pauza/start-prod-nginx.sh"]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx/production-bootstrap.conf.template:/etc/nginx/templates/production-bootstrap.conf.template:ro
+      - ./deploy/nginx/production-tls.conf.template:/etc/nginx/templates/production-tls.conf.template:ro
+      - ./deploy/nginx/start-prod-nginx.sh:/opt/pauza/start-prod-nginx.sh:ro
+      - letsencrypt:/etc/letsencrypt
+      - certbot-webroot:/var/www/certbot
+
+  certbot:
+    image: certbot/certbot:latest
+    pull_policy: always
+    env_file:
+      - ./.env.prod
+    command: ["/bin/sh", "/opt/pauza/run-certbot.sh"]
+    depends_on:
+      nginx:
+        condition: service_started
+    volumes:
+      - ./deploy/certbot/run-certbot.sh:/opt/pauza/run-certbot.sh:ro
+      - letsencrypt:/etc/letsencrypt
+      - certbot-webroot:/var/www/certbot
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    pull_policy: always
+    env_file:
+      - ./.env.prod
+    volumes:
+      - pgdata-prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    pull_policy: always
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata-prod:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  letsencrypt:
+  pgdata-prod:
+  certbot-webroot:
+  redisdata-prod:

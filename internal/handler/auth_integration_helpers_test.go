@@ -112,10 +112,11 @@ func testConfig() *config.Config {
 	}
 }
 
-func setupTestServer(t *testing.T) (*httptest.Server, *pgxpool.Pool, *captureSender) {
+func setupTestServer(t *testing.T) (*httptest.Server, *pgxpool.Pool, *captureSender, string) {
 	t.Helper()
 
 	dbURL := testDatabaseURL(t)
+	photoDir := t.TempDir()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -139,7 +140,11 @@ func setupTestServer(t *testing.T) (*httptest.Server, *pgxpool.Pool, *captureSen
 	}
 
 	sender := &captureSender{}
-	srv, cleanup := server.New(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), pool, sender, nil)
+	cfg := testConfig()
+	cfg.PhotoStorageDir = photoDir
+	cfg.PhotoPublicBaseURL = "https://api.test/photos"
+
+	srv, cleanup := server.New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, sender, nil)
 	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(func() {
 		ts.Close()
@@ -147,7 +152,7 @@ func setupTestServer(t *testing.T) (*httptest.Server, *pgxpool.Pool, *captureSen
 		pool.Close()
 	})
 
-	return ts, pool, sender
+	return ts, pool, sender, photoDir
 }
 
 func postJSON(t *testing.T, url string, body any) *http.Response {

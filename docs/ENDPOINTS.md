@@ -1,6 +1,6 @@
 # API Endpoints Reference
 
-> Derived from source code. This document covers all **32 endpoints** currently
+> Derived from source code. This document covers all **31 endpoints** currently
 > wired in `internal/server/server.go`.
 
 ---
@@ -757,7 +757,7 @@ Upload a profile photo. Uses `multipart/form-data` instead of JSON.
 
 ```json
 {
-  "profile_picture_url": "https://cdn.example.com/photos/abc123.jpg"
+  "profile_picture_url": "https://api.example.com/photos/abc123.jpg"
 }
 ```
 
@@ -768,6 +768,10 @@ Upload a profile photo. Uses `multipart/form-data` instead of JSON.
 | `VALIDATION_ERROR` (422) | Missing photo, body exceeds 1 MiB, or invalid image format |
 | `UNAUTHORIZED` (401) | Missing or invalid JWT |
 | `INTERNAL_ERROR` (500) | Photo storage failure |
+
+Uploaded files are written to `PHOTO_STORAGE_DIR` on the deployed machine. A
+reverse proxy such as Nginx must expose that directory at the same public path
+configured by `PHOTO_PUBLIC_BASE_URL`.
 | `RATE_LIMITED` (429) | Too many requests |
 
 ---
@@ -873,7 +877,9 @@ List the authenticated user's accepted friends.
 > **Note:** `FriendListOutput`, `FriendRow`, `BasicUserRow`, and
 > `PaginationResult` have no JSON tags — field names are emitted as PascalCase
 > by Go's `encoding/json`. `Friends` may be `null` (not `[]`) when empty
-> (Go nil slice serialisation).
+> (Go nil slice serialisation). The shared `BasicUserRow` type includes
+> `LeaderboardVisible`, but this endpoint's SQL does not populate it, so the
+> field currently serializes as `false`.
 
 ```json
 {
@@ -885,7 +891,7 @@ List the authenticated user's accepted friends.
         "Name": "Jane",
         "Username": "jane42",
         "ProfilePictureURL": null,
-        "LeaderboardVisible": true
+        "LeaderboardVisible": false
       },
       "Since": "2025-01-15T08:30:00Z"
     }
@@ -963,7 +969,9 @@ List pending friend requests received by the authenticated user.
 
 > **Note:** `FriendRequestsOutput`, `FriendRequestRow`, and `BasicUserRow`
 > have no JSON tags — field names are PascalCase. `Requests` may be `null`
-> (not `[]`) when empty (Go nil slice serialisation).
+> (not `[]`) when empty (Go nil slice serialisation). The shared
+> `BasicUserRow.LeaderboardVisible` field is not populated by this endpoint's
+> query and currently serializes as `false`.
 
 ```json
 {
@@ -975,7 +983,7 @@ List pending friend requests received by the authenticated user.
         "Name": "Bob",
         "Username": "bob99",
         "ProfilePictureURL": null,
-        "LeaderboardVisible": true
+        "LeaderboardVisible": false
       },
       "CreatedAt": "2025-01-15T08:30:00Z"
     }

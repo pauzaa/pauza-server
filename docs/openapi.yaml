@@ -288,6 +288,7 @@ components:
       properties:
         profile_picture_url:
           type: string
+          description: Public URL served by the deployment's reverse proxy from machine-local photo storage.
 
     MessageResponse:
       type: object
@@ -1605,6 +1606,15 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
+    SubscriptionRequired:
+      description: Active premium subscription required.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
     ValidationError:
       description: Request validation failed (422).
       headers:
@@ -1840,6 +1850,15 @@ paths:
       responses:
         "200":
           description: User profile returned.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -1867,6 +1886,15 @@ paths:
       responses:
         "200":
           description: Updated user profile returned.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -1901,6 +1929,15 @@ paths:
       responses:
         "200":
           description: Availability result.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -1919,7 +1956,7 @@ paths:
       operationId: uploadPhoto
       tags: [Profile]
       summary: Upload profile photo
-      description: Accepts a JPEG or PNG image. In practice the entire request is capped at 1 MiB by global middleware before the upload handler runs. Requires a user JWT and is rate limited by user ID using the `general-api` tier.
+      description: Accepts a JPEG or PNG image. In practice the entire request is capped at 1 MiB by global middleware before the upload handler runs. Requires a user JWT and is rate limited by user ID using the `general-api` tier. Uploaded files are stored on machine-local disk and are expected to be served by a reverse proxy such as Nginx at the configured `PHOTO_PUBLIC_BASE_URL`.
       security:
         - UserJWT: []
       requestBody:
@@ -1936,6 +1973,15 @@ paths:
       responses:
         "200":
           description: Photo uploaded; new URL returned.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -1960,6 +2006,15 @@ paths:
       responses:
         "200":
           description: 'Returns the generic anti-enumeration message, "If the account is eligible for deletion, a confirmation code has been sent."'
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -1988,6 +2043,15 @@ paths:
       responses:
         "200":
           description: Account deleted.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -2021,6 +2085,15 @@ paths:
       responses:
         "200":
           description: Device registered.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -2051,6 +2124,15 @@ paths:
       responses:
         "200":
           description: Device unregistered.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -2091,6 +2173,15 @@ paths:
       responses:
         "200":
           description: Paginated friend list.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -2098,7 +2189,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          $ref: "#/components/responses/SubscriptionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2121,6 +2212,15 @@ paths:
       responses:
         "201":
           description: Friend request created.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -2128,7 +2228,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          $ref: "#/components/responses/SubscriptionRequired"
         "409":
           $ref: "#/components/responses/Conflict"
         "422":
@@ -2149,6 +2249,15 @@ paths:
       responses:
         "200":
           description: Pending incoming requests.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -2156,7 +2265,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          $ref: "#/components/responses/SubscriptionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2173,6 +2282,15 @@ paths:
       responses:
         "200":
           description: Pending outgoing requests.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -2180,7 +2298,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          $ref: "#/components/responses/SubscriptionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2204,6 +2322,15 @@ paths:
       responses:
         "200":
           description: Request accepted.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -2211,7 +2338,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          $ref: "#/components/responses/SubscriptionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2235,6 +2362,15 @@ paths:
       responses:
         "200":
           description: Request declined.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -2242,7 +2378,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          $ref: "#/components/responses/SubscriptionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2266,6 +2402,15 @@ paths:
       responses:
         "200":
           description: Friend removed.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -2273,7 +2418,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          $ref: "#/components/responses/SubscriptionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2303,6 +2448,15 @@ paths:
       responses:
         "200":
           description: Friend statistics returned.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -2310,7 +2464,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          $ref: "#/components/responses/SubscriptionRequired"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2335,6 +2489,15 @@ paths:
       responses:
         "200":
           description: Matching users returned.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -2342,7 +2505,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          $ref: "#/components/responses/SubscriptionRequired"
         "422":
           $ref: "#/components/responses/ValidationError"
         "429":
@@ -2377,6 +2540,15 @@ paths:
       responses:
         "200":
           description: Streak leaderboard returned.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -2412,6 +2584,15 @@ paths:
       responses:
         "200":
           description: Focus-time leaderboard returned.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -2443,6 +2624,15 @@ paths:
       responses:
         "200":
           description: Sync completed. Server changes and new cursor returned.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -2572,6 +2762,15 @@ paths:
       responses:
         "200":
           description: Paginated user list.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -2601,6 +2800,15 @@ paths:
       responses:
         "200":
           description: Full user detail.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -2627,6 +2835,15 @@ paths:
       responses:
         "200":
           description: Aggregate platform statistics.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -2662,6 +2879,15 @@ paths:
       responses:
         "200":
           description: Entitlement managed.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:
@@ -2711,6 +2937,15 @@ paths:
       responses:
         "200":
           description: Paginated entitlement list.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
           content:
             application/json:
               schema:

@@ -7,6 +7,8 @@
 
 # Environment (contains secrets)
 .env
+.env.dev
+.env.prod
 
 # IDE
 .idea/

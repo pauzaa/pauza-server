@@ -799,7 +799,7 @@ Returns the authenticated user's profile and current subscription status.
   "email": "user@example.com",
   "name": "John Doe",
   "username": "johndoe",
-  "profile_picture_url": "https://storage.example.com/photos/uuid.jpg",
+  "profile_picture_url": "https://api.example.com/photos/uuid.jpg",
   "leaderboard_visible": true,
   "created_at": "2024-01-15T10:30:00Z",
   "subscription": {
@@ -856,7 +856,7 @@ Upload a profile photo.
 
 ```json
 {
-  "profile_picture_url": "https://storage.example.com/photos/uuid.jpg"
+  "profile_picture_url": "https://api.example.com/photos/uuid.jpg"
 }
 ```
 
@@ -1692,50 +1692,34 @@ For `VALIDATION_ERROR`, the `details` field contains per-field errors:
 
 ### 12.1 Docker Compose
 
-For local development, Docker Compose typically runs at least three services:
-the API, PostgreSQL, and Redis. Production deployment topology may differ.
+This repository uses a shared Compose base file plus environment-specific
+overlays. Development runs the API behind Nginx with bundled PostgreSQL and
+Redis. Production uses a single-host full-stack deployment that runs Nginx,
+the API, PostgreSQL, and Redis on the same machine.
 
 ```yaml
-# docker-compose.yml (reference structure)
-version: "3.8"
+# docker-compose.yml + docker-compose.dev.yml (reference structure)
 
 services:
   api:
     build: .
-    ports:
-      - "8080:8080"
-    environment:
-      - DATABASE_URL=postgres://pauza:password@db:5432/pauza?sslmode=disable
-      - JWT_SECRET=<secret>
-      - JWT_ACCESS_TOKEN_TTL=15m
-      - JWT_REFRESH_TOKEN_TTL=720h
-      - REVENUECAT_API_KEY=<key>
-      - REVENUECAT_WEBHOOK_SECRET=<secret>
-      - REDIS_URL=redis://redis:6379/0
-      - FIREBASE_SERVICE_ACCOUNT_JSON=<path-or-base64 or empty when push is disabled>
-      - SMTP_HOST=<host>
-      - SMTP_PORT=587
-      - SMTP_USERNAME=<username>
-      - SMTP_PASSWORD=<password>
-      - SMTP_FROM=noreply@pauza.app
-      - SMTP_TIMEOUT=30s
-      - SMTP_TLS_POLICY=mandatory
-      - TRUSTED_PROXIES=<cidr-list>
-      - CLEANUP_INTERVAL=1h
-      - OTP_RETENTION_PERIOD=24h
-      - REFRESH_TOKEN_REVOKED_RETENTION=168h
-      - ADMIN_SEED_USERNAME=admin
-      - ADMIN_SEED_PASSWORD=<password>
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    volumes:
+      - photodata:/var/lib/pauza/photos
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/live"]
       interval: 30s
       timeout: 5s
       retries: 3
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./deploy/nginx/development.conf:/etc/nginx/conf.d/default.conf:ro
+      - photodata:/var/lib/pauza/photos:ro
+    depends_on:
+      api:
+        condition: service_healthy
 
   db:
     image: postgres:16-alpine
@@ -1761,6 +1745,45 @@ services:
 
 volumes:
   pgdata:
+  photodata:
+```
+
+Production uses `docker-compose.yml` with `docker-compose.prod.yml`, keeps
+Nginx as the public entrypoint, and loads the API environment from `.env.prod`
+while also running local PostgreSQL and Redis services.
+
+```yaml
+# docker-compose.yml + docker-compose.prod.yml (reference structure)
+
+services:
+  api:
+    env_file:
+      - ./.env.prod
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+  nginx:
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx/production-compose.conf:/etc/nginx/conf.d/default.conf:ro
+      - photodata:/var/lib/pauza/photos:ro
+  db:
+    image: postgres:16-alpine
+    volumes:
+      - pgdata-prod:/var/lib/postgresql/data
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redisdata-prod:/data
+```
+
+Migrations remain a separate release step, for example:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api ./pauza-migrate
 ```
 
 ### 12.2 Environment Variables
@@ -1823,7 +1846,7 @@ The following items are intentionally excluded from this specification:
 | **User blocking** | The ability to block other users (preventing friend requests, hiding from search) is deferred to a future iteration. |
 | **Contact-based friend discovery** | Syncing phone contacts to find existing Pauza users is deferred to a future iteration. |
 | **Push notification preferences** | Per-notification-type opt-in/opt-out settings are deferred. All notification types are sent to all users initially. |
-| **File/photo storage infrastructure** | The spec assumes profile photos are stored in an external object storage service (e.g., AWS S3, Google Cloud Storage). The specific storage provider and configuration are deployment decisions. |
+| **File/photo storage infrastructure** | Profile photos are stored on local disk on the deployed machine. The deployment must expose `PHOTO_STORAGE_DIR` at the same public path configured by `PHOTO_PUBLIC_BASE_URL`, typically via Nginx. |
 | **Web frontend for admin panel** | This spec covers the admin REST API only. The admin web UI is a separate project that consumes these endpoints. |
 
 ### 13.1 Possible Future Features

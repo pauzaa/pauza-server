@@ -16,10 +16,11 @@ type Store interface {
 	Save(ctx context.Context, file multipart.File, extension string) (string, error)
 }
 
-// FileStore writes uploaded photos into a deployment-provided writable path and
-// returns a URL rooted at a deployment-provided public base URL. The backend
-// does not serve those files itself; the path may be backed by external object
-// storage or another storage integration chosen by the deployment.
+// FileStore writes uploaded photos into a deployment-provided writable
+// directory on the server's local filesystem and returns a URL rooted at a
+// deployment-provided public base URL. The Go API does not serve those files
+// itself; a reverse proxy such as Nginx is expected to publish the storage
+// directory at the configured public path.
 type FileStore struct {
 	dir           string
 	publicBaseURL string

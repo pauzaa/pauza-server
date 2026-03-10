@@ -52,9 +52,10 @@ type Config struct {
 	// in-memory limiter.
 	RedisURL string `envconfig:"REDIS_URL"`
 
-	// Profile photo storage sink. The backend writes uploads into a
-	// deployment-provided path and returns URLs rooted at the configured public
-	// base URL; serving/publication is handled outside the app.
+	// Profile photo storage. The backend writes uploads into a
+	// deployment-provided local filesystem path and returns URLs rooted at the
+	// configured public base URL. A reverse proxy such as Nginx is expected to
+	// serve that directory at the matching public path.
 	PhotoStorageDir    string `envconfig:"PHOTO_STORAGE_DIR" required:"true"`
 	PhotoPublicBaseURL string `envconfig:"PHOTO_PUBLIC_BASE_URL" required:"true"`
 

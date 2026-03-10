@@ -50,6 +50,8 @@ func testConfig() *config.Config {
 		AdminJWTAccessTokenTTL: time.Hour,
 		AdminRateLimit:         10000,
 		AdminRateWindow:        time.Minute,
+		PhotoStorageDir:        "/tmp/pauza-server-test-photos",
+		PhotoPublicBaseURL:     "https://api.test/photos",
 	}
 }
 
