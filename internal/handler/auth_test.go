@@ -35,6 +35,10 @@ import (
 // compiler already verifies satisfaction at the call site in newTestAuthHandler.
 type mockEmailSender struct{}
 
+func (m *mockEmailSender) Probe(_ context.Context) error {
+	return nil
+}
+
 func (m *mockEmailSender) SendOTP(_ context.Context, _, _, _ string) error {
 	return nil
 }
@@ -946,6 +950,26 @@ type mockAuthService struct {
 	deleteMeFn               func(ctx context.Context, in service.DeleteMeInput) (service.MessageOutput, error)
 }
 
+type testRateLimitedError struct {
+	retryAfter time.Duration
+	message    string
+}
+
+func (e testRateLimitedError) Error() string {
+	if e.message != "" {
+		return e.message
+	}
+	return service.ErrRateLimited.Error()
+}
+
+func (e testRateLimitedError) Unwrap() error {
+	return service.ErrRateLimited
+}
+
+func (e testRateLimitedError) RetryAfter() time.Duration {
+	return e.retryAfter
+}
+
 // Compile-time check: *mockAuthService satisfies AuthServicer.
 var _ AuthServicer = (*mockAuthService)(nil)
 
@@ -1446,11 +1470,12 @@ type testUpdateMeUserResponse struct {
 	Subscription       *testAuthSubscriptionData `json:"subscription"`
 }
 
-// testAuthSubscriptionData mirrors the subscription payload shape nested in
+// testAuthSubscriptionData mirrors the entitlement payload shape nested in
 // profile responses for unit tests.
 type testAuthSubscriptionData struct {
-	Type      string `json:"type"`
-	ExpiresAt string `json:"expires_at"`
+	Entitlement      string  `json:"entitlement"`
+	IsActive         bool    `json:"is_active"`
+	CurrentPeriodEnd *string `json:"current_period_end"`
 }
 
 // testUsernameAvailableResponse is a test-local DTO for decoding the stable
@@ -1781,7 +1806,10 @@ func TestForgotPassword_ServiceRateLimited_Returns429(t *testing.T) {
 
 	mock := &mockAuthService{
 		forgotPasswordFn: func(_ context.Context, _ service.ForgotPasswordInput) (service.MessageOutput, error) {
-			return service.MessageOutput{}, fmt.Errorf("%w: too many requests", service.ErrRateLimited)
+			return service.MessageOutput{}, testRateLimitedError{
+				retryAfter: 500 * time.Millisecond,
+				message:    "rate limited: too many requests",
+			}
 		},
 	}
 	h := NewAuthHandler(mock, noopLogger())
@@ -1795,5 +1823,79 @@ func TestForgotPassword_ServiceRateLimited_Returns429(t *testing.T) {
 
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After = %q, want %q", got, "1")
+	}
+
+	var resp apperror.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error.Code != apperror.CodeRateLimited {
+		t.Errorf("code = %q, want %q", resp.Error.Code, apperror.CodeRateLimited)
+	}
+}
+
+// TestForgotPassword_ServiceInternal_Returns500 verifies that when the service
+// returns ErrInternal the handler translates it to a 500 response.
+func TestForgotPassword_ServiceInternal_Returns500(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockAuthService{
+		forgotPasswordFn: func(_ context.Context, _ service.ForgotPasswordInput) (service.MessageOutput, error) {
+			return service.MessageOutput{}, service.ErrInternal
+		},
+	}
+	h := NewAuthHandler(mock, noopLogger())
+
+	body := `{"email":"user@example.com"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/forgot-password", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ForgotPassword(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+// TestResetPassword_ServiceRateLimited_Returns429AndRetryAfter verifies that
+// service-generated rate limits on reset-password include the Retry-After
+// header and RATE_LIMITED error envelope.
+func TestResetPassword_ServiceRateLimited_Returns429AndRetryAfter(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockAuthService{
+		resetPasswordFn: func(_ context.Context, _ service.ResetPasswordInput) (service.MessageOutput, error) {
+			return service.MessageOutput{}, testRateLimitedError{
+				retryAfter: 1500 * time.Millisecond,
+				message:    "rate limited: too many requests",
+			}
+		},
+	}
+	h := NewAuthHandler(mock, noopLogger())
+
+	body := `{"email":"user@example.com","otp":"123456","new_password":"NewStrongPass123!"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/reset-password", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ResetPassword(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "2" {
+		t.Fatalf("Retry-After = %q, want %q", got, "2")
+	}
+
+	var resp apperror.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error.Code != apperror.CodeRateLimited {
+		t.Errorf("code = %q, want %q", resp.Error.Code, apperror.CodeRateLimited)
 	}
 }

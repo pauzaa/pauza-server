@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -94,15 +95,12 @@ type userResponse struct {
 	Subscription *subscriptionResponse `json:"subscription"`
 }
 
-// subscriptionResponse represents the user's active subscription, if any.
+// subscriptionResponse represents the user's stored entitlement snapshot, if any.
 // The shape matches BACKEND_SPEC Section 5.3 (GET /api/v1/me).
 type subscriptionResponse struct {
-	PlanID           string         `json:"plan_id"`
-	PlanName         string         `json:"plan_name"`
-	Status           string         `json:"status"`
-	IsStudent        bool           `json:"is_student"`
-	CurrentPeriodEnd *string        `json:"current_period_end"`
-	Features         map[string]any `json:"features"`
+	Entitlement      string  `json:"entitlement"`
+	IsActive         bool    `json:"is_active"`
+	CurrentPeriodEnd *string `json:"current_period_end"`
 }
 
 // loginRequest is the expected JSON body for POST /api/v1/auth/login.
@@ -208,6 +206,16 @@ func writeServiceError(w http.ResponseWriter, err error) {
 	case errors.Is(err, service.ErrUnauthorized):
 		apperror.Unauthorized(w, serviceMessage(err, service.ErrUnauthorized, "Unauthorized"))
 	case errors.Is(err, service.ErrRateLimited):
+		if retryAfter, ok := service.RetryAfter(err); ok {
+			seconds := int(retryAfter / time.Second)
+			if retryAfter%time.Second != 0 {
+				seconds++
+			}
+			if seconds < 1 {
+				seconds = 1
+			}
+			w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		}
 		apperror.RateLimited(w, serviceMessage(err, service.ErrRateLimited, "Too many requests"))
 	default:
 		// ErrInternal and any unexpected errors → generic 500.
@@ -251,15 +259,12 @@ func userProfileToResponse(p service.UserProfile) userResponse {
 	return resp
 }
 
-// subscriptionInfoToResponse converts a service.SubscriptionInfo to a
+// subscriptionInfoToResponse converts a service.EntitlementInfo to a
 // subscriptionResponse suitable for JSON serialization.
-func subscriptionInfoToResponse(info *service.SubscriptionInfo) *subscriptionResponse {
+func subscriptionInfoToResponse(info *service.EntitlementInfo) *subscriptionResponse {
 	resp := &subscriptionResponse{
-		PlanID:    info.PlanID,
-		PlanName:  info.PlanName,
-		Status:    info.Status,
-		IsStudent: info.IsStudent,
-		Features:  info.Features,
+		Entitlement: info.Entitlement,
+		IsActive:    info.IsActive,
 	}
 	if info.CurrentPeriodEnd != nil {
 		s := info.CurrentPeriodEnd.UTC().Format(time.RFC3339)

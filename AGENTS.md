@@ -32,7 +32,7 @@ Child docs:
 | Startup and shutdown | `cmd/server/main.go` | config -> DB -> mail -> Redis -> server.New -> cleanup |
 | Router and middleware wiring | `internal/server/server.go` | probes, auth routes, rate-limit attachment |
 | Auth policy | `internal/service/auth.go` | register, verify, login, refresh, forgot/reset, anti-enumeration |
-| Auth SQL | `internal/repository/auth.go` | user, OTP, refresh-token, subscription queries and locks |
+| Auth SQL | `internal/repository/auth.go` | user, OTP, refresh-token, entitlement queries and locks |
 | JWT / OTP / password | `internal/auth/AGENTS.md` | token and credential primitives |
 | DB runtime helpers | `internal/database/AGENTS.md` | connect, migrate, seed, cleanup, destructive test helpers |
 | HTTP boundary | `internal/handler/AGENTS.md` | request decoding, validation, response mapping |
@@ -98,4 +98,4 @@ go test ./internal/handler -run '^TestLive_TimestampIsRecent$'
 ## NOTES
 - `docker-compose.yml` supplies dev defaults for API, Postgres, and Redis, but it does not apply migrations automatically.
 - Build commands leave gitignored local binaries in the repo root (`server`, `migrate`, `seed-admin`, `pauza-server`).
-- The next migration number after the baseline is `000002`.
+- The current pre-release schema is flattened into `migrations/000001_initial_schema.up.sql`.

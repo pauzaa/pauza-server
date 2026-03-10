@@ -9,6 +9,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const syncTombstoneRetention = 90 * 24 * time.Hour
+
 // CleanupConfig controls the periodic auth-data cleanup job.
 type CleanupConfig struct {
 	// Interval is the time between consecutive cleanup passes.
@@ -23,7 +25,7 @@ type CleanupConfig struct {
 	// RefreshTokenMaxAge is the retention window applied to both expired
 	// and revoked refresh tokens. Expired tokens are deleted when
 	// expires_at < now() - RefreshTokenMaxAge; revoked tokens are deleted
-	// when created_at < now() - RefreshTokenMaxAge. A single duration
+	// when revoked_at < now() - RefreshTokenMaxAge. A single duration
 	// keeps both predicates aligned with the same cleanup indexes.
 	RefreshTokenMaxAge time.Duration
 }
@@ -90,6 +92,13 @@ func runCleanup(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, cf
 		logger.InfoContext(ctx, "auth cleanup: deleted old OTP codes", "count", otpDeleted)
 	}
 
+	otpFailedAttemptsDeleted, err := cleanupOTPFailedAttempts(ctx, pool, cfg.OTPRetention)
+	if err != nil {
+		logger.ErrorContext(ctx, "auth cleanup: failed to delete old OTP failed attempts", "err", err)
+	} else if otpFailedAttemptsDeleted > 0 {
+		logger.InfoContext(ctx, "auth cleanup: deleted old OTP failed attempts", "count", otpFailedAttemptsDeleted)
+	}
+
 	rtExpired, err := cleanupExpiredRefreshTokens(ctx, pool, cfg.RefreshTokenMaxAge)
 	if err != nil {
 		logger.ErrorContext(ctx, "auth cleanup: failed to delete expired refresh tokens", "err", err)
@@ -102,6 +111,13 @@ func runCleanup(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, cf
 		logger.ErrorContext(ctx, "auth cleanup: failed to delete revoked refresh tokens", "err", err)
 	} else if rtRevoked > 0 {
 		logger.InfoContext(ctx, "auth cleanup: deleted revoked refresh tokens", "count", rtRevoked)
+	}
+
+	syncTombstonesDeleted, err := cleanupSyncTombstones(ctx, pool, syncTombstoneRetention)
+	if err != nil {
+		logger.ErrorContext(ctx, "auth cleanup: failed to delete old sync tombstones", "err", err)
+	} else if syncTombstonesDeleted > 0 {
+		logger.InfoContext(ctx, "auth cleanup: deleted old sync tombstones", "count", syncTombstonesDeleted)
 	}
 }
 
@@ -118,12 +134,28 @@ func cleanupOTPCodes(ctx context.Context, pool *pgxpool.Pool, retention time.Dur
 	return tag.RowsAffected(), nil
 }
 
-// cleanupExpiredRefreshTokens deletes refresh tokens whose expires_at is
-// older than the retention window, i.e. rows where
-// expires_at < now() - maxAge. Uses idx_refresh_tokens_expires_at.
+// cleanupOTPFailedAttempts deletes failed OTP-attempt rows whose attempted_at
+// is older than the retention window, i.e. rows where
+// attempted_at < now() - retention.
+// Uses idx_otp_failed_attempts_user_purpose_attempted_at.
+func cleanupOTPFailedAttempts(ctx context.Context, pool *pgxpool.Pool, retention time.Duration) (int64, error) {
+	tag, err := pool.Exec(ctx,
+		`DELETE FROM otp_failed_attempts WHERE attempted_at < now() - $1::interval`,
+		retention)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// cleanupExpiredRefreshTokens deletes non-revoked refresh tokens whose
+// expires_at is older than the retention window, i.e. rows where
+// revoked = false AND expires_at < now() - maxAge. Revoked rows are retained
+// and pruned by cleanupRevokedRefreshTokens based on revoked_at.
 func cleanupExpiredRefreshTokens(ctx context.Context, pool *pgxpool.Pool, maxAge time.Duration) (int64, error) {
 	tag, err := pool.Exec(ctx,
-		`DELETE FROM refresh_tokens WHERE expires_at < now() - $1::interval`,
+		`DELETE FROM refresh_tokens
+		 WHERE revoked = false AND expires_at < now() - $1::interval`,
 		maxAge)
 	if err != nil {
 		return 0, err
@@ -132,14 +164,27 @@ func cleanupExpiredRefreshTokens(ctx context.Context, pool *pgxpool.Pool, maxAge
 }
 
 // cleanupRevokedRefreshTokens deletes revoked refresh tokens whose
-// created_at is older than the retention window, i.e. rows where
-// revoked = true AND created_at < now() - maxAge.
-// Uses idx_refresh_tokens_revoked_created (partial index on revoked = true).
+// revoked_at is older than the retention window, i.e. rows where
+// revoked = true AND revoked_at < now() - maxAge.
+// Uses idx_refresh_tokens_revoked_at (partial index on revoked = true).
 func cleanupRevokedRefreshTokens(ctx context.Context, pool *pgxpool.Pool, maxAge time.Duration) (int64, error) {
 	tag, err := pool.Exec(ctx,
 		`DELETE FROM refresh_tokens
-		 WHERE revoked = true AND created_at < now() - $1::interval`,
+		 WHERE revoked = true AND revoked_at < now() - $1::interval`,
 		maxAge)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// cleanupSyncTombstones deletes sync tombstones older than the retention
+// window, i.e. rows where deleted_at < now() - retention.
+// Uses idx_sync_tombstones_user_time.
+func cleanupSyncTombstones(ctx context.Context, pool *pgxpool.Pool, retention time.Duration) (int64, error) {
+	tag, err := pool.Exec(ctx,
+		`DELETE FROM sync_tombstones WHERE deleted_at < now() - $1::interval`,
+		retention)
 	if err != nil {
 		return 0, err
 	}

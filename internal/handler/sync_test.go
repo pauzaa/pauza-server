@@ -1,9 +1,12 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,11 +22,38 @@ type mockSyncService struct {
 	syncFn func(ctx context.Context, in service.SyncInput) (service.SyncOutput, error)
 }
 
+type failingSyncResponseWriter struct {
+	header     http.Header
+	statuses   []int
+	writeCalls int
+	body       []byte
+}
+
 func (m *mockSyncService) Sync(ctx context.Context, in service.SyncInput) (service.SyncOutput, error) {
 	if m.syncFn != nil {
 		return m.syncFn(ctx, in)
 	}
 	return service.SyncOutput{}, nil
+}
+
+func (w *failingSyncResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *failingSyncResponseWriter) WriteHeader(statusCode int) {
+	w.statuses = append(w.statuses, statusCode)
+}
+
+func (w *failingSyncResponseWriter) Write(p []byte) (int, error) {
+	w.writeCalls++
+	if len(p) > 0 {
+		w.body = append(w.body, p[0])
+		return 1, io.ErrClosedPipe
+	}
+	return 0, io.ErrClosedPipe
 }
 
 func validSyncPayload() string {
@@ -175,5 +205,60 @@ func TestSync_SubsetOfTablesAllowed(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestSync_EncodeFailureDoesNotWriteSecondResponse(t *testing.T) {
+	h := NewSyncHandler(&mockSyncService{syncFn: func(_ context.Context, in service.SyncInput) (service.SyncOutput, error) {
+		return syncmodel.Response{ServerTime: 1000, Tables: syncmodel.TableChangesByTable{}}, nil
+	}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(validSyncPayload()))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-1"}))
+	w := &failingSyncResponseWriter{}
+
+	h.Sync(w, req)
+
+	if len(w.statuses) != 1 {
+		t.Fatalf("WriteHeader calls = %d, want 1", len(w.statuses))
+	}
+	if w.statuses[0] != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.statuses[0])
+	}
+	if w.writeCalls == 0 {
+		t.Fatal("expected encoder to attempt writing response body")
+	}
+	if w.writeCalls != 1 {
+		t.Fatalf("Write calls = %d, want 1", w.writeCalls)
+	}
+	if string(w.body) != "{" {
+		t.Fatalf("body prefix = %q, want %q", string(w.body), "{")
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want %q", got, "application/json")
+	}
+}
+
+func TestSync_EncodeFailureLogsWithInjectedLogger(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
+	h := NewSyncHandlerWithLogger(&mockSyncService{syncFn: func(_ context.Context, in service.SyncInput) (service.SyncOutput, error) {
+		return syncmodel.Response{ServerTime: 1000, Tables: syncmodel.TableChangesByTable{}}, nil
+	}}, logger)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(validSyncPayload()))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-1"}))
+	w := &failingSyncResponseWriter{}
+
+	h.Sync(w, req)
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, `"msg":"failed to encode sync response"`) {
+		t.Fatalf("expected injected logger output, got %q", logOutput)
+	}
+	if !strings.Contains(logOutput, `"err":"io: read/write on closed pipe"`) {
+		t.Fatalf("expected encode error in injected logger output, got %q", logOutput)
 	}
 }

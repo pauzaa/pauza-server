@@ -1,5 +1,5 @@
 -- 000001_initial_schema.up.sql
--- Creates all 19 tables defined in BACKEND_SPEC.md §3.1 and §3.2
+-- Creates the full pre-release schema exactly as defined by the current BACKEND_SPEC.md.
 -- Tables are ordered by FK dependency (parents before children).
 
 -- =============================================================================
@@ -39,22 +39,34 @@ CREATE TABLE otp_codes (
 CREATE INDEX idx_otp_codes_user_purpose ON otp_codes (user_id, purpose, used, expires_at);
 CREATE INDEX idx_otp_codes_expires_at   ON otp_codes (expires_at);
 
--- 3. refresh_tokens (FK -> users)
+-- 3. otp_failed_attempts (FK -> users)
+CREATE TABLE otp_failed_attempts (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  purpose      TEXT NOT NULL CHECK (purpose IN ('email_verification', 'password_reset')),
+  attempted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_otp_failed_attempts_user_purpose_attempted_at
+  ON otp_failed_attempts (user_id, purpose, attempted_at);
+
+-- 4. refresh_tokens (FK -> users)
 CREATE TABLE refresh_tokens (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   token_hash TEXT NOT NULL UNIQUE,
   expires_at TIMESTAMPTZ NOT NULL,
   revoked    BOOLEAN NOT NULL DEFAULT FALSE,
+  revoked_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_refresh_tokens_user       ON refresh_tokens (user_id, revoked);
 CREATE INDEX idx_refresh_tokens_expires_at ON refresh_tokens (expires_at);
-CREATE INDEX idx_refresh_tokens_revoked_created
-    ON refresh_tokens (created_at) WHERE revoked = true;
+CREATE INDEX idx_refresh_tokens_revoked_at
+    ON refresh_tokens (revoked_at) WHERE revoked = true;
 
--- 4. admin_credentials (no FK deps)
+-- 5. admin_credentials (no FK deps)
 CREATE TABLE admin_credentials (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   username      TEXT NOT NULL UNIQUE,
@@ -62,53 +74,29 @@ CREATE TABLE admin_credentials (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 5. subscription_plans (no FK deps)
-CREATE TABLE subscription_plans (
-  id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name                     TEXT NOT NULL,
-  duration_type            TEXT NOT NULL CHECK (duration_type IN ('monthly', 'yearly', 'lifetime')),
-  price_cents              INTEGER NOT NULL CHECK (price_cents >= 0),
-  currency                 TEXT NOT NULL DEFAULT 'USD',
-  features_json            JSONB NOT NULL DEFAULT '{}',
-  is_active                BOOLEAN NOT NULL DEFAULT TRUE,
-  student_discount_percent INTEGER NOT NULL DEFAULT 0 CHECK (student_discount_percent BETWEEN 0 AND 100),
-  created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+-- 6. user_entitlements (FK -> users)
+CREATE TABLE user_entitlements (
+  id                              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id                         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  entitlement                     TEXT NOT NULL,
+  is_active                       BOOLEAN NOT NULL DEFAULT FALSE,
+  revenuecat_app_user_id          TEXT,
+  revenuecat_original_app_user_id TEXT,
+  current_period_end              TIMESTAMPTZ,
+  last_webhook_event_at           TIMESTAMPTZ,
+  created_at                      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at                      TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CHECK (length(trim(entitlement)) > 0),
+  UNIQUE (user_id, entitlement)
 );
 
--- 6. subscription_plan_discounts (FK -> subscription_plans)
-CREATE TABLE subscription_plan_discounts (
-  id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  plan_id          UUID NOT NULL REFERENCES subscription_plans(id) ON DELETE CASCADE,
-  discount_percent INTEGER NOT NULL CHECK (discount_percent BETWEEN 1 AND 100),
-  starts_at        TIMESTAMPTZ NOT NULL,
-  ends_at          TIMESTAMPTZ NOT NULL,
-  description      TEXT NOT NULL DEFAULT '',
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+CREATE INDEX idx_user_entitlements_user_active ON user_entitlements (user_id, is_active);
+CREATE INDEX idx_user_entitlements_entitlement_active ON user_entitlements (entitlement, is_active);
+CREATE INDEX idx_user_entitlements_rc_app_user_id ON user_entitlements (revenuecat_app_user_id);
+CREATE INDEX idx_user_entitlements_rc_original_app_user_id ON user_entitlements (revenuecat_original_app_user_id);
 
-  CHECK (ends_at > starts_at)
-);
-
-CREATE INDEX idx_plan_discounts_plan ON subscription_plan_discounts (plan_id, starts_at, ends_at);
-
--- 7. user_subscriptions (FK -> users, subscription_plans)
-CREATE TABLE user_subscriptions (
-  id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id                  UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  plan_id                  UUID NOT NULL REFERENCES subscription_plans(id),
-  revenuecat_subscription_id TEXT,
-  status                   TEXT NOT NULL CHECK (status IN ('active', 'expired', 'cancelled', 'trial')),
-  current_period_start     TIMESTAMPTZ,
-  current_period_end       TIMESTAMPTZ,
-  is_student               BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX idx_user_subscriptions_user ON user_subscriptions (user_id, status);
-CREATE INDEX idx_user_subscriptions_revenuecat ON user_subscriptions (revenuecat_subscription_id);
-
--- 8. friendships (FK -> users x2: requester_id, addressee_id)
+-- 7. friendships (FK -> users x2: requester_id, addressee_id)
 CREATE TABLE friendships (
   id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   requester_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -124,7 +112,7 @@ CREATE TABLE friendships (
 CREATE INDEX idx_friendships_addressee ON friendships (addressee_id, status);
 CREATE INDEX idx_friendships_requester ON friendships (requester_id, status);
 
--- 9. device_tokens (FK -> users)
+-- 8. device_tokens (FK -> users)
 CREATE TABLE device_tokens (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -136,7 +124,7 @@ CREATE TABLE device_tokens (
 
 CREATE INDEX idx_device_tokens_user ON device_tokens (user_id);
 
--- 10. sync_tombstones (FK -> users)
+-- 9. sync_tombstones (FK -> users)
 CREATE TABLE sync_tombstones (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -154,7 +142,7 @@ CREATE INDEX idx_sync_tombstones_user_time ON sync_tombstones (user_id, deleted_
 -- Composite primary keys include user_id.
 -- =============================================================================
 
--- 11. modes (FK -> users)
+-- 10. modes (FK -> users)
 CREATE TABLE modes (
   user_id                UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   id                     TEXT NOT NULL,
@@ -171,7 +159,7 @@ CREATE TABLE modes (
   PRIMARY KEY (user_id, id)
 );
 
--- 12. mode_blocked_apps (FK -> users, modes)
+-- 11. mode_blocked_apps (FK -> users, modes)
 CREATE TABLE mode_blocked_apps (
   user_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   mode_id        TEXT NOT NULL,
@@ -185,7 +173,7 @@ CREATE TABLE mode_blocked_apps (
     FOREIGN KEY (user_id, mode_id) REFERENCES modes (user_id, id) ON DELETE CASCADE
 );
 
--- 13. schedules (FK -> users, modes)
+-- 12. schedules (FK -> users, modes)
 CREATE TABLE schedules (
   user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   id           TEXT NOT NULL,
@@ -203,7 +191,7 @@ CREATE TABLE schedules (
     FOREIGN KEY (user_id, mode_id) REFERENCES modes (user_id, id) ON DELETE CASCADE
 );
 
--- 14. restriction_sessions (FK -> users, modes)
+-- 13. restriction_sessions (FK -> users, modes)
 CREATE TABLE restriction_sessions (
   user_id              UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   session_id           TEXT NOT NULL,
@@ -228,7 +216,7 @@ CREATE TABLE restriction_sessions (
 CREATE INDEX idx_restriction_sessions_mode ON restriction_sessions (user_id, mode_id);
 CREATE INDEX idx_restriction_sessions_started ON restriction_sessions (user_id, started_at DESC);
 
--- 15. restriction_lifecycle_events (FK -> users, modes, restriction_sessions)
+-- 14. restriction_lifecycle_events (FK -> users, modes, restriction_sessions)
 -- NOTE: No updated_at column — this is an append-only events table.
 CREATE TABLE restriction_lifecycle_events (
   user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -250,7 +238,7 @@ CREATE TABLE restriction_lifecycle_events (
 
 CREATE INDEX idx_lifecycle_events_session ON restriction_lifecycle_events (user_id, session_id);
 
--- 16. nfc_linked_chips (FK -> users)
+-- 15. nfc_linked_chips (FK -> users)
 CREATE TABLE nfc_linked_chips (
   user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   id              TEXT NOT NULL,
@@ -263,7 +251,7 @@ CREATE TABLE nfc_linked_chips (
   UNIQUE (user_id, chip_identifier)
 );
 
--- 17. qr_linked_codes (FK -> users)
+-- 16. qr_linked_codes (FK -> users)
 CREATE TABLE qr_linked_codes (
   user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   id         TEXT NOT NULL,
@@ -276,7 +264,7 @@ CREATE TABLE qr_linked_codes (
   UNIQUE (user_id, scan_value)
 );
 
--- 18. streak_session_daily_rollups (FK -> users, restriction_sessions)
+-- 17. streak_session_daily_rollups (FK -> users, restriction_sessions)
 CREATE TABLE streak_session_daily_rollups (
   user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   session_id   TEXT NOT NULL,
@@ -289,7 +277,7 @@ CREATE TABLE streak_session_daily_rollups (
     FOREIGN KEY (user_id, session_id) REFERENCES restriction_sessions (user_id, session_id) ON DELETE CASCADE
 );
 
--- 19. streak_daily_aggregates (FK -> users)
+-- 18. streak_daily_aggregates (FK -> users)
 CREATE TABLE streak_daily_aggregates (
   user_id              UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   local_day            TEXT NOT NULL CHECK (length(local_day) = 10),

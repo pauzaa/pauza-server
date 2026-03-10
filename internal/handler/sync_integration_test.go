@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/IsorilovA/pauza-server/internal/apperror"
 	"github.com/IsorilovA/pauza-server/internal/syncmodel"
 )
 
@@ -364,5 +365,36 @@ func TestIntegration_Sync_CascadeTombstonesReturnedOnFullRestore(t *testing.T) {
 	}
 	if out.Tables.StreakSessionDailyRollups == nil || len(out.Tables.StreakSessionDailyRollups.Deletions) == 0 || out.Tables.StreakSessionDailyRollups.Deletions[0].SessionID != "sess1" {
 		t.Fatalf("expected streak_session_daily_rollups tombstone in full restore response")
+	}
+}
+
+func TestIntegration_Sync_DeletedUserRejected(t *testing.T) {
+	ts, pool, mailer := setupTestServer(t)
+	auth := registerAndVerify(t, ts.URL, mailer, "sync-deleted-user@example.com", "StrongPass123!")
+
+	resp := postSync(t, ts.URL, auth.AccessToken, syncPayload())
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("sync before delete: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	discardBody(t, resp)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := pool.Exec(ctx, "DELETE FROM users WHERE id = $1", auth.User.ID)
+	if err != nil {
+		t.Fatalf("deleting user row: %v", err)
+	}
+
+	resp = postSync(t, ts.URL, auth.AccessToken, syncPayload())
+	if resp.StatusCode != http.StatusUnauthorized {
+		body := readBody(t, resp)
+		t.Fatalf("sync after delete: expected 401, got %d: %s", resp.StatusCode, body)
+	}
+
+	var errResp apperror.ErrorResponse
+	decodeJSON(t, resp, &errResp)
+	if errResp.Error.Code != apperror.CodeUnauthorized {
+		t.Errorf("sync after delete: code = %q, want %q", errResp.Error.Code, apperror.CodeUnauthorized)
 	}
 }

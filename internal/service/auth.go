@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -78,17 +77,14 @@ type UserProfile struct {
 	ProfilePictureURL  *string
 	LeaderboardVisible bool
 	CreatedAt          time.Time
-	Subscription       *SubscriptionInfo
+	Subscription       *EntitlementInfo
 }
 
-// SubscriptionInfo represents an active subscription.
-type SubscriptionInfo struct {
-	PlanID           string
-	PlanName         string
-	Status           string
-	IsStudent        bool
+// EntitlementInfo represents a stored entitlement snapshot.
+type EntitlementInfo struct {
+	Entitlement      string
+	IsActive         bool
 	CurrentPeriodEnd *time.Time
-	Features         map[string]any
 }
 
 // LoginInput holds the validated fields for a login request.
@@ -166,12 +162,23 @@ type DeleteMeInput struct {
 type AuthService struct {
 	pool               repository.Pool
 	repo               repository.AuthRepository
+	otpAttemptBudgeter interface {
+		CountFailedOTPAttemptsSinceForUpdate(ctx context.Context, db repository.DBTX, userID, purpose string, since time.Time) (int, error)
+	}
+	otpAttemptRetrier interface {
+		GetOldestFailedOTPAttemptSinceForUpdate(ctx context.Context, db repository.DBTX, userID, purpose string, since time.Time) (time.Time, error)
+	}
 	mailer             mail.Sender
 	jwtSecret          string
 	jwtAccessTokenTTL  time.Duration
 	jwtRefreshTokenTTL time.Duration
 	logger             *slog.Logger
+	otpAttemptRecorder interface {
+		InsertFailedOTPAttempt(ctx context.Context, db repository.DBTX, userID, purpose string, attemptedAt time.Time) error
+	}
 }
+
+const cleanupTimeout = 5 * time.Second
 
 // NewAuthService creates an AuthService with the given dependencies.
 func NewAuthService(
@@ -183,21 +190,33 @@ func NewAuthService(
 	jwtRefreshTokenTTL time.Duration,
 	logger *slog.Logger,
 ) *AuthService {
+	budgeter, _ := repo.(interface {
+		CountFailedOTPAttemptsSinceForUpdate(ctx context.Context, db repository.DBTX, userID, purpose string, since time.Time) (int, error)
+	})
+	retrier, _ := repo.(interface {
+		GetOldestFailedOTPAttemptSinceForUpdate(ctx context.Context, db repository.DBTX, userID, purpose string, since time.Time) (time.Time, error)
+	})
+	recorder, _ := repo.(interface {
+		InsertFailedOTPAttempt(ctx context.Context, db repository.DBTX, userID, purpose string, attemptedAt time.Time) error
+	})
 	return &AuthService{
 		pool:               pool,
 		repo:               repo,
+		otpAttemptBudgeter: budgeter,
+		otpAttemptRetrier:  retrier,
 		mailer:             mailer,
 		jwtSecret:          jwtSecret,
 		jwtAccessTokenTTL:  jwtAccessTokenTTL,
 		jwtRefreshTokenTTL: jwtRefreshTokenTTL,
 		logger:             logger,
+		otpAttemptRecorder: recorder,
 	}
 }
 
 // Register handles the registration use case: create an unverified user,
 // generate an OTP, send it via email, and return a result indicating that
-// OTP verification is required. On SMTP failure the created rows are
-// cleaned up.
+// OTP verification is required. Any existing email returns a conflict.
+// On SMTP failure the created rows are cleaned up.
 func (s *AuthService) Register(ctx context.Context, in RegisterInput) (RegisterOutput, error) {
 	email := normalizeEmail(in.Email)
 
@@ -209,8 +228,8 @@ func (s *AuthService) Register(ctx context.Context, in RegisterInput) (RegisterO
 		return RegisterOutput{}, ErrInternal
 	}
 
-	// Perform the existing-user check, stale-unverified cleanup, and new
-	// user + OTP insert inside a single transaction.
+	// Perform the existing-user check and new user + OTP insert inside a
+	// single transaction.
 	regTx, err := s.pool.Begin(ctx)
 	if err != nil {
 		s.logger.Error("beginning registration transaction", "err", err)
@@ -219,28 +238,9 @@ func (s *AuthService) Register(ctx context.Context, in RegisterInput) (RegisterO
 	defer regTx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
 
 	// Check if a user already exists with this email (FOR UPDATE lock).
-	existing, err := s.repo.GetUserByEmailForUpdate(ctx, regTx, email)
+	_, err = s.repo.GetUserByEmailForUpdate(ctx, regTx, email)
 	if err == nil {
-		// User row found.
-		if existing.EmailVerified {
-			return RegisterOutput{}, fmt.Errorf("%w: email already registered", ErrConflict)
-		}
-		// Unverified user exists — clean up OTPs and user row.
-		if err := s.repo.DeleteOTPsByUserAndPurpose(ctx, regTx, existing.ID, "email_verification"); err != nil {
-			s.logger.Error("deleting stale otp rows", "err", err)
-			return RegisterOutput{}, ErrInternal
-		}
-		deleted, err := s.repo.DeleteUnverifiedUser(ctx, regTx, existing.ID)
-		if err != nil {
-			s.logger.Error("deleting stale unverified user", "err", err)
-			return RegisterOutput{}, ErrInternal
-		}
-		if deleted == 0 {
-			s.logger.Error("stale-user delete affected 0 rows despite FOR UPDATE lock",
-				"existing_user_id", existing.ID,
-				"email", redact.Email(email))
-			return RegisterOutput{}, fmt.Errorf("%w: email already registered", ErrConflict)
-		}
+		return RegisterOutput{}, fmt.Errorf("%w: email already registered", ErrConflict)
 	} else if !errors.Is(err, repository.ErrNotFound) {
 		s.logger.Error("checking existing user", "err", err)
 		return RegisterOutput{}, ErrInternal
@@ -324,7 +324,7 @@ func (s *AuthService) Register(ctx context.Context, in RegisterInput) (RegisterO
 	// Send OTP via email. If this fails, clean up the rows we just committed.
 	if err := s.mailer.SendOTP(ctx, email, otp, mail.PurposeEmailVerification); err != nil {
 		s.logger.Error("sending otp email", "email", redact.Email(email), "err", err)
-		s.cleanupFailedRegistration(ctx, otpID, userID)
+		s.cleanupFailedRegistration(otpID, userID)
 		return RegisterOutput{}, ErrInternal
 	}
 
@@ -334,25 +334,28 @@ func (s *AuthService) Register(ctx context.Context, in RegisterInput) (RegisterO
 // cleanupFailedRegistration removes the OTP and unverified user rows created
 // during a registration whose SMTP send failed. It runs in a new transaction
 // and logs any errors without propagating them.
-func (s *AuthService) cleanupFailedRegistration(ctx context.Context, otpID, userID string) {
-	cleanupTx, txErr := s.pool.Begin(ctx)
+func (s *AuthService) cleanupFailedRegistration(otpID, userID string) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer cancel()
+
+	cleanupTx, txErr := s.pool.Begin(cleanupCtx)
 	if txErr != nil {
 		s.logger.Error("beginning smtp-failure cleanup transaction", "err", txErr)
 		return
 	}
 
-	if err := s.repo.DeleteOTPByID(ctx, cleanupTx, otpID); err != nil {
+	if err := s.repo.DeleteOTPByID(cleanupCtx, cleanupTx, otpID); err != nil {
 		s.logger.Error("cleaning up otp after email failure", "err", err)
-		if rbErr := cleanupTx.Rollback(ctx); rbErr != nil {
+		if rbErr := cleanupTx.Rollback(cleanupCtx); rbErr != nil {
 			s.logger.Error("rolling back smtp-failure cleanup transaction", "err", rbErr)
 		}
 		return
 	}
 
-	deleted, err := s.repo.DeleteUnverifiedUser(ctx, cleanupTx, userID)
+	deleted, err := s.repo.DeleteUnverifiedUser(cleanupCtx, cleanupTx, userID)
 	if err != nil {
 		s.logger.Error("cleaning up user after email failure", "err", err)
-		if rbErr := cleanupTx.Rollback(ctx); rbErr != nil {
+		if rbErr := cleanupTx.Rollback(cleanupCtx); rbErr != nil {
 			s.logger.Error("rolling back smtp-failure cleanup transaction", "err", rbErr)
 		}
 		return
@@ -362,7 +365,7 @@ func (s *AuthService) cleanupFailedRegistration(ctx context.Context, otpID, user
 			"user_id", userID)
 	}
 
-	if commitErr := cleanupTx.Commit(ctx); commitErr != nil {
+	if commitErr := cleanupTx.Commit(cleanupCtx); commitErr != nil {
 		s.logger.Error("committing smtp-failure cleanup transaction", "err", commitErr)
 	}
 }
@@ -399,9 +402,24 @@ func (s *AuthService) VerifyOTP(ctx context.Context, in VerifyOTPInput) (AuthOut
 		return AuthOutput{}, ErrInternal
 	}
 
-	// Too many attempts on this OTP.
-	if otp.Attempts >= auth.MaxOTPAttempts {
-		return AuthOutput{}, fmt.Errorf("%w: too many verification attempts", ErrRateLimited)
+	// Too many failed attempts for this email verification window.
+	attemptWindowStart := time.Now().UTC().Add(-auth.OTPExpiry)
+	if s.otpAttemptBudgeter == nil || s.otpAttemptRetrier == nil || s.otpAttemptRecorder == nil {
+		s.logger.Error("verify-otp failed-attempt persistence not configured")
+		return AuthOutput{}, ErrInternal
+	}
+
+	attemptsUsed, err := s.otpAttemptBudgeter.CountFailedOTPAttemptsSinceForUpdate(ctx, tx, user.ID, "email_verification", attemptWindowStart)
+	if err != nil {
+		s.logger.Error("counting verify-otp failed attempts", "err", err)
+		return AuthOutput{}, ErrInternal
+	}
+	if attemptsUsed >= auth.MaxOTPAttempts {
+		rateLimitedErr := s.newOTPAttemptsRateLimitedError(ctx, tx, user.ID, "email_verification", attemptWindowStart)
+		if errors.Is(rateLimitedErr, ErrInternal) {
+			return AuthOutput{}, ErrInternal
+		}
+		return AuthOutput{}, rateLimitedErr
 	}
 
 	// Code mismatch: increment attempts and return unauthorized.
@@ -411,6 +429,11 @@ func (s *AuthService) VerifyOTP(ctx context.Context, in VerifyOTPInput) (AuthOut
 		return AuthOutput{}, ErrInternal
 	}
 	if !otpMatch {
+		failedAttemptAt := time.Now().UTC()
+		if err := s.otpAttemptRecorder.InsertFailedOTPAttempt(ctx, tx, user.ID, "email_verification", failedAttemptAt); err != nil {
+			s.logger.Error("recording failed verify-otp attempt", "err", err)
+			return AuthOutput{}, ErrInternal
+		}
 		if err := s.repo.IncrementOTPAttempts(ctx, tx, otp.ID); err != nil {
 			s.logger.Error("incrementing otp attempts", "err", err)
 		} else if commitErr := tx.Commit(ctx); commitErr != nil {
@@ -480,7 +503,7 @@ func (s *AuthService) VerifyOTP(ctx context.Context, in VerifyOTPInput) (AuthOut
 }
 
 // Login handles the login use case: verify credentials, issue tokens,
-// and return the auth result with subscription info.
+// and return the auth result with entitlement info.
 func (s *AuthService) Login(ctx context.Context, in LoginInput) (AuthOutput, error) {
 	email := normalizeEmail(in.Email)
 
@@ -506,6 +529,12 @@ func (s *AuthService) Login(ctx context.Context, in LoginInput) (AuthOutput, err
 	}
 	if !match {
 		return AuthOutput{}, fmt.Errorf("%w: invalid email or password", ErrUnauthorized)
+	}
+
+	subscription, err := s.lookupEntitlementSnapshot(ctx, user.ID)
+	if err != nil {
+		s.logger.Error("querying user entitlement", "user_id", user.ID, "err", err)
+		return AuthOutput{}, ErrInternal
 	}
 
 	// Issue tokens and store refresh token inside a transaction so that
@@ -552,7 +581,7 @@ func (s *AuthService) Login(ctx context.Context, in LoginInput) (AuthOutput, err
 			ProfilePictureURL:  user.ProfilePictureURL,
 			LeaderboardVisible: user.LeaderboardVisible,
 			CreatedAt:          user.CreatedAt,
-			Subscription:       s.lookupSubscription(ctx, user.ID),
+			Subscription:       subscription,
 		},
 	}, nil
 }
@@ -646,7 +675,8 @@ const ForgotPasswordMinDuration = 500 * time.Millisecond
 
 // ForgotPassword handles the forgot-password use case: look up the verified
 // user, generate an OTP, store it, and send a password-reset email. Returns
-// a generic message regardless of whether the user exists (anti-enumeration).
+// a generic message when the user is unknown or unverified (anti-enumeration),
+// but returns ErrInternal for infrastructure or delivery failures.
 //
 // The caller is responsible for applying the timing floor
 // (ForgotPasswordMinDuration) around this call.
@@ -655,14 +685,8 @@ func (s *AuthService) ForgotPassword(ctx context.Context, in ForgotPasswordInput
 
 	msg := MessageOutput{Message: "If the email is registered, a reset code has been sent."}
 
-	// Look up verified user.
-	user, err := s.repo.GetVerifiedUserByEmail(ctx, s.pool, email)
-	if errors.Is(err, repository.ErrNotFound) {
-		// Unknown user — return generic message to prevent enumeration.
-		return msg, nil
-	}
-	if err != nil {
-		s.logger.Error("forgot-password failure", "stage", "user_lookup", "err", err)
+	if err := s.mailer.Probe(ctx); err != nil {
+		s.logger.Error("forgot-password failure", "stage", "mail_probe", "err", err)
 		return MessageOutput{}, ErrInternal
 	}
 
@@ -686,8 +710,29 @@ func (s *AuthService) ForgotPassword(ctx context.Context, in ForgotPasswordInput
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
 
+	// Lock the user row before replacing password-reset codes so concurrent
+	// forgot-password requests cannot leave multiple active codes behind.
+	user, err := s.repo.GetUserByEmailForUpdate(ctx, tx, email)
+	if errors.Is(err, repository.ErrNotFound) {
+		// Unknown user — return generic message to prevent enumeration.
+		return msg, nil
+	}
+	if err != nil {
+		s.logger.Error("forgot-password failure", "stage", "user_lookup", "err", err)
+		return MessageOutput{}, ErrInternal
+	}
+	if !user.EmailVerified {
+		return msg, nil
+	}
+
+	if err := s.repo.DeleteOTPsByUserAndPurpose(ctx, tx, user.ID, "password_reset"); err != nil {
+		s.logger.Error("forgot-password failure", "stage", "otp_delete_existing", "err", err)
+		return MessageOutput{}, ErrInternal
+	}
+
 	expiresAt := time.Now().UTC().Add(auth.OTPExpiry)
-	if _, err := s.repo.InsertOTP(ctx, tx, user.ID, otpHash, "password_reset", expiresAt); err != nil {
+	otpID, err := s.repo.InsertOTP(ctx, tx, user.ID, otpHash, "password_reset", expiresAt)
+	if err != nil {
 		s.logger.Error("forgot-password failure", "stage", "otp_insert", "err", err)
 		return MessageOutput{}, ErrInternal
 	}
@@ -697,13 +742,41 @@ func (s *AuthService) ForgotPassword(ctx context.Context, in ForgotPasswordInput
 		return MessageOutput{}, ErrInternal
 	}
 
-	// Send OTP email. On failure, log and still return success — SMTP
-	// outages should not change the response shape visible to the client.
+	// Send OTP email.
 	if err := s.mailer.SendOTP(ctx, email, otp, mail.PurposePasswordReset); err != nil {
 		s.logger.Error("sending password reset email", "email", redact.Email(email), "err", err)
+		s.cleanupFailedPasswordResetOTP(otpID)
+
+		return MessageOutput{}, ErrInternal
 	}
 
 	return msg, nil
+}
+
+// cleanupFailedPasswordResetOTP removes the password-reset OTP row created
+// for a forgot-password request whose delivery later failed. It runs in a new
+// transaction and logs any errors without propagating them.
+func (s *AuthService) cleanupFailedPasswordResetOTP(otpID string) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer cancel()
+
+	cleanupTx, txErr := s.pool.Begin(cleanupCtx)
+	if txErr != nil {
+		s.logger.Error("beginning password-reset email failure cleanup transaction", "err", txErr)
+		return
+	}
+
+	if err := s.repo.DeleteOTPByID(cleanupCtx, cleanupTx, otpID); err != nil {
+		s.logger.Error("cleaning up password-reset otp after email failure", "err", err)
+		if rbErr := cleanupTx.Rollback(cleanupCtx); rbErr != nil {
+			s.logger.Error("rolling back password-reset email failure cleanup transaction", "err", rbErr)
+		}
+		return
+	}
+
+	if commitErr := cleanupTx.Commit(cleanupCtx); commitErr != nil {
+		s.logger.Error("committing password-reset email failure cleanup transaction", "err", commitErr)
+	}
 }
 
 // ResetPassword handles the reset-password use case: validate the OTP,
@@ -746,9 +819,24 @@ func (s *AuthService) ResetPassword(ctx context.Context, in ResetPasswordInput) 
 		return MessageOutput{}, ErrInternal
 	}
 
-	// Too many attempts on this OTP.
-	if otp.Attempts >= auth.MaxOTPAttempts {
-		return MessageOutput{}, fmt.Errorf("%w: too many verification attempts", ErrRateLimited)
+	// Too many failed attempts for this password reset window.
+	attemptWindowStart := time.Now().UTC().Add(-auth.OTPExpiry)
+	if s.otpAttemptBudgeter == nil || s.otpAttemptRetrier == nil || s.otpAttemptRecorder == nil {
+		s.logger.Error("reset-password failed-attempt persistence not configured")
+		return MessageOutput{}, ErrInternal
+	}
+
+	attemptsUsed, err := s.otpAttemptBudgeter.CountFailedOTPAttemptsSinceForUpdate(ctx, tx, user.ID, "password_reset", attemptWindowStart)
+	if err != nil {
+		s.logger.Error("counting reset-password failed attempts", "err", err)
+		return MessageOutput{}, ErrInternal
+	}
+	if attemptsUsed >= auth.MaxOTPAttempts {
+		rateLimitedErr := s.newOTPAttemptsRateLimitedError(ctx, tx, user.ID, "password_reset", attemptWindowStart)
+		if errors.Is(rateLimitedErr, ErrInternal) {
+			return MessageOutput{}, ErrInternal
+		}
+		return MessageOutput{}, rateLimitedErr
 	}
 
 	// Code mismatch: increment attempts and return unauthorized.
@@ -758,6 +846,11 @@ func (s *AuthService) ResetPassword(ctx context.Context, in ResetPasswordInput) 
 		return MessageOutput{}, ErrInternal
 	}
 	if !resetOTPMatch {
+		failedAttemptAt := time.Now().UTC()
+		if err := s.otpAttemptRecorder.InsertFailedOTPAttempt(ctx, tx, user.ID, "password_reset", failedAttemptAt); err != nil {
+			s.logger.Error("recording failed reset-password attempt", "err", err)
+			return MessageOutput{}, ErrInternal
+		}
 		if err := s.repo.IncrementOTPAttempts(ctx, tx, otp.ID); err != nil {
 			s.logger.Error("incrementing otp attempts", "err", err)
 		} else if commitErr := tx.Commit(ctx); commitErr != nil {
@@ -769,6 +862,10 @@ func (s *AuthService) ResetPassword(ctx context.Context, in ResetPasswordInput) 
 	// Mark OTP used.
 	if err := s.repo.MarkOTPUsed(ctx, tx, otp.ID); err != nil {
 		s.logger.Error("marking reset otp used", "err", err)
+		return MessageOutput{}, ErrInternal
+	}
+	if err := s.repo.DeleteOTPsByUserAndPurpose(ctx, tx, user.ID, "password_reset"); err != nil {
+		s.logger.Error("deleting password reset otps after successful reset", "err", err)
 		return MessageOutput{}, ErrInternal
 	}
 
@@ -797,7 +894,7 @@ func (s *AuthService) ResetPassword(ctx context.Context, in ResetPasswordInput) 
 }
 
 // GetMe handles the get-profile use case: look up the authenticated user
-// and return their profile with subscription info.
+// and return their profile with entitlement info.
 func (s *AuthService) GetMe(ctx context.Context, in GetMeInput) (UserProfile, error) {
 	user, err := s.repo.GetVerifiedUserByID(ctx, s.pool, in.UserID)
 	if errors.Is(err, repository.ErrNotFound) {
@@ -805,6 +902,12 @@ func (s *AuthService) GetMe(ctx context.Context, in GetMeInput) (UserProfile, er
 	}
 	if err != nil {
 		s.logger.Error("querying user profile", "err", err)
+		return UserProfile{}, ErrInternal
+	}
+
+	subscription, err := s.lookupEntitlementSnapshot(ctx, user.ID)
+	if err != nil {
+		s.logger.Error("querying user entitlement", "user_id", user.ID, "err", err)
 		return UserProfile{}, ErrInternal
 	}
 
@@ -816,13 +919,13 @@ func (s *AuthService) GetMe(ctx context.Context, in GetMeInput) (UserProfile, er
 		ProfilePictureURL:  user.ProfilePictureURL,
 		LeaderboardVisible: user.LeaderboardVisible,
 		CreatedAt:          user.CreatedAt,
-		Subscription:       s.lookupSubscription(ctx, user.ID),
+		Subscription:       subscription,
 	}, nil
 }
 
 // UpdateMe handles the profile update use case: apply the provided fields
 // to the authenticated user's profile and return the updated profile with
-// subscription info.
+// entitlement info.
 func (s *AuthService) UpdateMe(ctx context.Context, in UpdateMeInput) (UserProfile, error) {
 	updated, err := s.repo.UpdateUser(ctx, s.pool, in.UserID, in.Name, in.Username, in.LeaderboardVisible)
 	if errors.Is(err, repository.ErrNotFound) {
@@ -836,6 +939,12 @@ func (s *AuthService) UpdateMe(ctx context.Context, in UpdateMeInput) (UserProfi
 		return UserProfile{}, ErrInternal
 	}
 
+	subscription, err := s.lookupEntitlementSnapshot(ctx, updated.ID)
+	if err != nil {
+		s.logger.Error("querying user entitlement", "user_id", updated.ID, "err", err)
+		return UserProfile{}, ErrInternal
+	}
+
 	return UserProfile{
 		ID:                 updated.ID,
 		Email:              updated.Email,
@@ -844,7 +953,7 @@ func (s *AuthService) UpdateMe(ctx context.Context, in UpdateMeInput) (UserProfi
 		ProfilePictureURL:  updated.ProfilePictureURL,
 		LeaderboardVisible: updated.LeaderboardVisible,
 		CreatedAt:          updated.CreatedAt,
-		Subscription:       s.lookupSubscription(ctx, updated.ID),
+		Subscription:       subscription,
 	}, nil
 }
 
@@ -852,6 +961,9 @@ func (s *AuthService) UpdateMe(ctx context.Context, in UpdateMeInput) (UserProfi
 func (s *AuthService) CheckUsernameAvailable(ctx context.Context, in UsernameAvailableInput) (UsernameAvailableOutput, error) {
 	taken, err := s.repo.IsUsernameTaken(ctx, s.pool, in.Username, in.UserID)
 	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return UsernameAvailableOutput{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+		}
 		s.logger.Error("checking username availability", "err", err)
 		return UsernameAvailableOutput{}, ErrInternal
 	}
@@ -902,6 +1014,55 @@ func normalizeEmail(raw string) string {
 	return strings.ToLower(strings.TrimSpace(raw))
 }
 
+type retryAfterError struct {
+	err        error
+	retryAfter time.Duration
+}
+
+func (e retryAfterError) Error() string {
+	return e.err.Error()
+}
+
+func (e retryAfterError) Unwrap() error {
+	return e.err
+}
+
+func (e retryAfterError) RetryAfter() time.Duration {
+	return e.retryAfter
+}
+
+// RetryAfter extracts retry-after metadata from a service error, if present.
+func RetryAfter(err error) (time.Duration, bool) {
+	var withRetryAfter interface {
+		RetryAfter() time.Duration
+	}
+	if !errors.As(err, &withRetryAfter) {
+		return 0, false
+	}
+	return withRetryAfter.RetryAfter(), true
+}
+
+func (s *AuthService) newOTPAttemptsRateLimitedError(ctx context.Context, db repository.DBTX, userID, purpose string, since time.Time) error {
+	retryAfter := auth.OTPExpiry
+	oldestAttemptAt, err := s.otpAttemptRetrier.GetOldestFailedOTPAttemptSinceForUpdate(ctx, db, userID, purpose, since)
+	if err != nil && !errors.Is(err, repository.ErrNotFound) {
+		s.logger.Error("querying oldest failed otp attempt for retry-after", "purpose", purpose, "err", err)
+		return ErrInternal
+	}
+	if err == nil {
+		retryAfter = time.Until(oldestAttemptAt.Add(auth.OTPExpiry))
+	}
+
+	if retryAfter < time.Second {
+		retryAfter = time.Second
+	}
+
+	return retryAfterError{
+		err:        fmt.Errorf("%w: too many verification attempts", ErrRateLimited),
+		retryAfter: retryAfter,
+	}
+}
+
 // generateUsername returns a random username in the form "user_" + 24 hex chars
 // (96 bits of entropy).
 func generateUsername() (string, error) {
@@ -928,34 +1089,21 @@ func isUniqueViolation(err error, constraint string) bool {
 	return true
 }
 
-// lookupSubscription fetches the user's active subscription. It is intentionally
-// non-fatal: a subscription lookup failure must never block authentication.
-// If no active subscription exists or the query errors, nil is returned.
-func (s *AuthService) lookupSubscription(ctx context.Context, userID string) *SubscriptionInfo {
-	row, err := s.repo.GetActiveSubscription(ctx, s.pool, userID)
+// lookupEntitlementSnapshot fetches the user's stored premium entitlement snapshot.
+// If no snapshot exists, nil is returned.
+func (s *AuthService) lookupEntitlementSnapshot(ctx context.Context, userID string) (*EntitlementInfo, error) {
+	row, err := s.repo.GetEntitlementSnapshot(ctx, s.pool, userID)
 	if errors.Is(err, repository.ErrNotFound) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		s.logger.Warn("querying user subscription", "user_id", userID, "err", err)
-		return nil
+		return nil, err
 	}
 
-	info := &SubscriptionInfo{
-		PlanID:           row.PlanID,
-		PlanName:         row.PlanName,
-		Status:           row.Status,
-		IsStudent:        row.IsStudent,
+	info := &EntitlementInfo{
+		Entitlement:      row.Entitlement,
+		IsActive:         row.IsActive,
 		CurrentPeriodEnd: row.CurrentPeriodEnd,
 	}
-
-	if len(row.FeaturesJSON) > 0 {
-		if err := json.Unmarshal(row.FeaturesJSON, &info.Features); err != nil {
-			s.logger.Warn("unmarshalling subscription features", "user_id", userID, "err", err)
-		}
-	}
-	if info.Features == nil {
-		info.Features = make(map[string]any)
-	}
-	return info
+	return info, nil
 }

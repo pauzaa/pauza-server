@@ -59,14 +59,11 @@ type RefreshTokenRow struct {
 	ExpiresAt time.Time
 }
 
-// SubscriptionRow holds the columns returned by subscription lookups.
-type SubscriptionRow struct {
-	PlanID           string
-	PlanName         string
-	Status           string
-	IsStudent        bool
+// EntitlementRow holds the columns returned by entitlement lookups.
+type EntitlementRow struct {
+	Entitlement      string
+	IsActive         bool
 	CurrentPeriodEnd *time.Time
-	FeaturesJSON     []byte
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +91,10 @@ type AuthRepository interface {
 	// GetVerifiedUserByID returns the verified user matching the given
 	// ID. Returns ErrNotFound when no row exists.
 	GetVerifiedUserByID(ctx context.Context, db DBTX, userID string) (UserRow, error)
+
+	// GetVerifiedUserByIDForUpdate is like GetVerifiedUserByID but acquires a
+	// FOR UPDATE row lock.
+	GetVerifiedUserByIDForUpdate(ctx context.Context, db DBTX, userID string) (UserRow, error)
 
 	// GetUserByID returns the user matching the given ID (regardless of
 	// verification status). Returns ErrNotFound when no row exists.
@@ -163,21 +164,23 @@ type AuthRepository interface {
 	// ErrNotFound when no matching row exists.
 	GetRefreshTokenByHashForUpdate(ctx context.Context, db DBTX, tokenHash string) (RefreshTokenRow, error)
 
-	// RevokeRefreshToken revokes a single refresh token by ID.
+	// RevokeRefreshToken revokes a single refresh token by ID and records the
+	// first time that token was revoked.
 	RevokeRefreshToken(ctx context.Context, db DBTX, tokenID string) error
 
-	// RevokeAllRefreshTokens revokes every refresh token for a user.
+	// RevokeAllRefreshTokens revokes every refresh token for a user and records
+	// the first time each token was revoked.
 	RevokeAllRefreshTokens(ctx context.Context, db DBTX, userID string) error
 
 	// GetUserEmailByID returns the email for a user. Returns ErrNotFound
 	// when no row exists.
 	GetUserEmailByID(ctx context.Context, db DBTX, userID string) (string, error)
 
-	// --- subscriptions ---
+	// --- entitlements ---
 
-	// GetActiveSubscription returns the user's active subscription, if
-	// any. Returns ErrNotFound when no active subscription exists.
-	GetActiveSubscription(ctx context.Context, db DBTX, userID string) (SubscriptionRow, error)
+	// GetEntitlementSnapshot returns the user's stored premium entitlement
+	// snapshot, if any. Returns ErrNotFound when no premium snapshot exists.
+	GetEntitlementSnapshot(ctx context.Context, db DBTX, userID string) (EntitlementRow, error)
 }
 
 // ErrNotFound is returned when a queried row does not exist.
@@ -267,6 +270,19 @@ func (r *PgxAuthRepository) GetVerifiedUserByID(ctx context.Context, db DBTX, us
 	u, err := scanUserRow(row)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return UserRow{}, fmt.Errorf("getting verified user by id: %w", err)
+	}
+	return u, err
+}
+
+func (r *PgxAuthRepository) GetVerifiedUserByIDForUpdate(ctx context.Context, db DBTX, userID string) (UserRow, error) {
+	row := db.QueryRow(ctx,
+		`SELECT `+userColumns+`
+		 FROM users WHERE id = $1 AND email_verified = true FOR UPDATE`,
+		userID,
+	)
+	u, err := scanUserRow(row)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return UserRow{}, fmt.Errorf("getting verified user by id for update: %w", err)
 	}
 	return u, err
 }
@@ -379,9 +395,21 @@ func (r *PgxAuthRepository) UpdateUser(ctx context.Context, db DBTX, userID stri
 func (r *PgxAuthRepository) IsUsernameTaken(ctx context.Context, db DBTX, username string, excludeUserID string) (bool, error) {
 	var exists bool
 	err := db.QueryRow(ctx,
-		"SELECT EXISTS(SELECT 1 FROM users WHERE lower(username) = lower($1) AND ($2 = '' OR id != $2))",
+		`SELECT EXISTS(
+			SELECT 1
+			FROM users AS other
+			WHERE auth_user.id = $2
+			  AND lower(other.username) = lower($1)
+			  AND other.id != auth_user.id
+		)
+		FROM users AS auth_user
+		WHERE auth_user.id = $2
+		  AND auth_user.email_verified = true`,
 		username, excludeUserID,
 	).Scan(&exists)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrNotFound
+	}
 	if err != nil {
 		return false, fmt.Errorf("checking username availability: %w", err)
 	}
@@ -439,6 +467,60 @@ func (r *PgxAuthRepository) GetActiveOTPForUpdate(ctx context.Context, db DBTX, 
 		return OTPRow{}, fmt.Errorf("getting active otp for update: %w", err)
 	}
 	return o, nil
+}
+
+func (r *PgxAuthRepository) CountFailedOTPAttemptsSinceForUpdate(ctx context.Context, db DBTX, userID, purpose string, since time.Time) (int, error) {
+	var attempts int
+	err := db.QueryRow(ctx,
+		`SELECT COUNT(*)
+		 FROM (
+		 	SELECT 1
+		 	FROM otp_failed_attempts
+		 	WHERE user_id = $1
+		 	  AND purpose = $2
+		 	  AND attempted_at >= $3
+		 	FOR UPDATE
+		 ) AS locked_attempts`,
+		userID, purpose, since,
+	).Scan(&attempts)
+	if err != nil {
+		return 0, fmt.Errorf("counting failed otp attempts since for update: %w", err)
+	}
+	return attempts, nil
+}
+
+func (r *PgxAuthRepository) GetOldestFailedOTPAttemptSinceForUpdate(ctx context.Context, db DBTX, userID, purpose string, since time.Time) (time.Time, error) {
+	var attemptedAt time.Time
+	err := db.QueryRow(ctx,
+		`SELECT attempted_at
+		 FROM otp_failed_attempts
+		 WHERE user_id = $1
+		   AND purpose = $2
+		   AND attempted_at >= $3
+		 ORDER BY attempted_at ASC
+		 LIMIT 1
+		 FOR UPDATE`,
+		userID, purpose, since,
+	).Scan(&attemptedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, ErrNotFound
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("getting oldest failed otp attempt since for update: %w", err)
+	}
+	return attemptedAt, nil
+}
+
+func (r *PgxAuthRepository) InsertFailedOTPAttempt(ctx context.Context, db DBTX, userID, purpose string, attemptedAt time.Time) error {
+	_, err := db.Exec(ctx,
+		`INSERT INTO otp_failed_attempts (user_id, purpose, attempted_at)
+		 VALUES ($1, $2, $3)`,
+		userID, purpose, attemptedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("inserting failed otp attempt: %w", err)
+	}
+	return nil
 }
 
 func (r *PgxAuthRepository) IncrementOTPAttempts(ctx context.Context, db DBTX, otpID string) error {
@@ -519,7 +601,10 @@ func (r *PgxAuthRepository) GetRefreshTokenByHashForUpdate(ctx context.Context, 
 
 func (r *PgxAuthRepository) RevokeRefreshToken(ctx context.Context, db DBTX, tokenID string) error {
 	_, err := db.Exec(ctx,
-		"UPDATE refresh_tokens SET revoked = true WHERE id = $1",
+		`UPDATE refresh_tokens
+		 SET revoked = true,
+		     revoked_at = COALESCE(revoked_at, now())
+		 WHERE id = $1`,
 		tokenID,
 	)
 	if err != nil {
@@ -530,7 +615,10 @@ func (r *PgxAuthRepository) RevokeRefreshToken(ctx context.Context, db DBTX, tok
 
 func (r *PgxAuthRepository) RevokeAllRefreshTokens(ctx context.Context, db DBTX, userID string) error {
 	_, err := db.Exec(ctx,
-		"UPDATE refresh_tokens SET revoked = true WHERE user_id = $1",
+		`UPDATE refresh_tokens
+		 SET revoked = true,
+		     revoked_at = COALESCE(revoked_at, now())
+		 WHERE user_id = $1`,
 		userID,
 	)
 	if err != nil {
@@ -554,24 +642,22 @@ func (r *PgxAuthRepository) GetUserEmailByID(ctx context.Context, db DBTX, userI
 	return email, nil
 }
 
-// --- subscriptions --------------------------------------------------------
+// --- entitlements ---------------------------------------------------------
 
-func (r *PgxAuthRepository) GetActiveSubscription(ctx context.Context, db DBTX, userID string) (SubscriptionRow, error) {
-	var s SubscriptionRow
+func (r *PgxAuthRepository) GetEntitlementSnapshot(ctx context.Context, db DBTX, userID string) (EntitlementRow, error) {
+	var e EntitlementRow
 	err := db.QueryRow(ctx,
-		`SELECT sp.id, sp.name, us.status, us.is_student, us.current_period_end, sp.features_json
-		 FROM user_subscriptions us
-		 JOIN subscription_plans sp ON sp.id = us.plan_id
-		 WHERE us.user_id = $1 AND us.status IN ('active', 'trial')
-		 ORDER BY us.created_at DESC
+		`SELECT entitlement, is_active, current_period_end
+		 FROM user_entitlements
+		 WHERE user_id = $1 AND entitlement = 'premium'
 		 LIMIT 1`,
 		userID,
-	).Scan(&s.PlanID, &s.PlanName, &s.Status, &s.IsStudent, &s.CurrentPeriodEnd, &s.FeaturesJSON)
+	).Scan(&e.Entitlement, &e.IsActive, &e.CurrentPeriodEnd)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return SubscriptionRow{}, ErrNotFound
+		return EntitlementRow{}, ErrNotFound
 	}
 	if err != nil {
-		return SubscriptionRow{}, fmt.Errorf("getting active subscription: %w", err)
+		return EntitlementRow{}, fmt.Errorf("getting entitlement snapshot: %w", err)
 	}
-	return s, nil
+	return e, nil
 }

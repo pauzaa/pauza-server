@@ -1,8 +1,11 @@
 package middleware_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -21,6 +24,14 @@ import (
 var okHandler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 })
+
+type errLimiter struct{}
+
+func (errLimiter) Allow(context.Context, string) (ratelimit.Result, error) {
+	return ratelimit.Result{}, errors.New("backend unavailable")
+}
+
+func (errLimiter) Stop() {}
 
 func TestRateLimit_AllowsUnderLimit(t *testing.T) {
 	const rate = 3
@@ -155,6 +166,26 @@ func TestRateLimit_DifferentKeysAreIndependent(t *testing.T) {
 
 	if rec3.Code != http.StatusOK {
 		t.Fatalf("IP2 first request: expected 200, got %d", rec3.Code)
+	}
+}
+
+func TestRateLimit_FailOpenAllowedOmitsBudgetHeaders(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	lim := ratelimit.NewFailOpen(errLimiter{}, logger)
+
+	handler := middleware.RateLimit(lim, 5, middleware.IPKey)(okHandler)
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	for _, header := range []string{"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After"} {
+		if got := rec.Header().Get(header); got != "" {
+			t.Errorf("%s = %q, want empty", header, got)
+		}
 	}
 }
 

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -17,10 +18,15 @@ type SyncInput struct {
 
 type SyncOutput = syncmodel.Response
 
+type syncUserVerifier interface {
+	GetVerifiedUserByIDForUpdate(ctx context.Context, db repository.DBTX, userID string) (repository.UserRow, error)
+}
+
 type SyncService struct {
-	pool   repository.Pool
-	repo   repository.SyncRepository
-	logger *slog.Logger
+	pool         repository.Pool
+	repo         repository.SyncRepository
+	userVerifier syncUserVerifier
+	logger       *slog.Logger
 }
 
 func normalizeTableChanges[T any, D any](changes syncmodel.TableChanges[T, D]) syncmodel.TableChanges[T, D] {
@@ -33,8 +39,8 @@ func normalizeTableChanges[T any, D any](changes syncmodel.TableChanges[T, D]) s
 	return changes
 }
 
-func NewSyncService(pool repository.Pool, repo repository.SyncRepository, logger *slog.Logger) *SyncService {
-	return &SyncService{pool: pool, repo: repo, logger: logger}
+func NewSyncService(pool repository.Pool, repo repository.SyncRepository, userVerifier syncUserVerifier, logger *slog.Logger) *SyncService {
+	return &SyncService{pool: pool, repo: repo, userVerifier: userVerifier, logger: logger}
 }
 
 func (s *SyncService) Sync(ctx context.Context, in SyncInput) (SyncOutput, error) {
@@ -46,6 +52,15 @@ func (s *SyncService) Sync(ctx context.Context, in SyncInput) (SyncOutput, error
 	defer func() {
 		_ = tx.Rollback(ctx)
 	}()
+
+	_, errUser := s.userVerifier.GetVerifiedUserByIDForUpdate(ctx, tx, in.UserID)
+	if errUser != nil {
+		if errors.Is(errUser, repository.ErrNotFound) {
+			return SyncOutput{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+		}
+		s.logger.Error("querying user for sync", "err", errUser)
+		return SyncOutput{}, ErrInternal
+	}
 
 	out := SyncOutput{}
 

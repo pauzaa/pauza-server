@@ -26,8 +26,6 @@ func setRequiredEnvVars(t *testing.T) {
 		"REVENUECAT_API_KEY":            "rc_test_key",
 		"REVENUECAT_WEBHOOK_SECRET":     "rc_test_secret",
 		"FIREBASE_SERVICE_ACCOUNT_JSON": "{}",
-		"STUDENT_VERIFICATION_PROVIDER": "sheerid",
-		"STUDENT_VERIFICATION_API_KEY":  "sv_test_key",
 		"REDIS_URL":                     "redis://localhost:6379/0",
 	}
 
@@ -121,8 +119,6 @@ func TestLoad_MissingRequiredVar(t *testing.T) {
 	t.Setenv("REVENUECAT_API_KEY", "rc_test_key")
 	t.Setenv("REVENUECAT_WEBHOOK_SECRET", "rc_test_secret")
 	t.Setenv("FIREBASE_SERVICE_ACCOUNT_JSON", "{}")
-	t.Setenv("STUDENT_VERIFICATION_PROVIDER", "sheerid")
-	t.Setenv("STUDENT_VERIFICATION_API_KEY", "sv_test_key")
 	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
 
 	// Ensure DATABASE_URL is unset even if the developer has it in their shell.
@@ -287,19 +283,6 @@ func TestLoad_TooLongAdminSeedPassword(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "72 bytes") {
 		t.Errorf("expected error to mention 72 bytes, got: %v", err)
-	}
-}
-
-func TestLoad_InvalidStudentVerificationProvider(t *testing.T) {
-	setRequiredEnvVars(t)
-	t.Setenv("STUDENT_VERIFICATION_PROVIDER", "unknown_provider")
-
-	_, err := Load()
-	if err == nil {
-		t.Fatal("expected error for unknown provider, got nil")
-	}
-	if !strings.Contains(err.Error(), "STUDENT_VERIFICATION_PROVIDER") {
-		t.Errorf("expected error to mention STUDENT_VERIFICATION_PROVIDER, got: %v", err)
 	}
 }
 
@@ -724,7 +707,6 @@ func TestLoadMigrate_DoesNotRequireServerVars(t *testing.T) {
 		"SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM",
 		"REVENUECAT_API_KEY", "REVENUECAT_WEBHOOK_SECRET",
 		"FIREBASE_SERVICE_ACCOUNT_JSON",
-		"STUDENT_VERIFICATION_PROVIDER", "STUDENT_VERIFICATION_API_KEY",
 	} {
 		prev, hadPrev := os.LookupEnv(key)
 		os.Unsetenv(key)
@@ -883,7 +865,6 @@ func TestLoadSeedAdmin_DoesNotRequireServerVars(t *testing.T) {
 		"SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM",
 		"REVENUECAT_API_KEY", "REVENUECAT_WEBHOOK_SECRET",
 		"FIREBASE_SERVICE_ACCOUNT_JSON",
-		"STUDENT_VERIFICATION_PROVIDER", "STUDENT_VERIFICATION_API_KEY",
 	} {
 		prev, hadPrev := os.LookupEnv(key)
 		os.Unsetenv(key)

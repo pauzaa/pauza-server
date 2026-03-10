@@ -73,6 +73,23 @@ func goMailTLSPolicy(policy string) gomail.TLSPolicy {
 	}
 }
 
+// newClient builds a go-mail client with the sender's configured transport
+// settings.
+func (s *SMTPSender) newClient() (*gomail.Client, error) {
+	client, err := gomail.NewClient(s.host,
+		gomail.WithPort(s.port),
+		gomail.WithUsername(s.username),
+		gomail.WithPassword(s.password),
+		gomail.WithSMTPAuth(gomail.SMTPAuthPlain),
+		gomail.WithTimeout(s.timeout),
+		gomail.WithTLSPolicy(goMailTLSPolicy(s.tlsPolicy)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("%s", redact.SanitizeEmail(err.Error()))
+	}
+	return client, nil
+}
+
 // subjectForPurpose returns an email subject line for the given OTP purpose.
 // It returns an empty string for unrecognized purposes; callers must validate
 // before invoking this helper.
@@ -103,6 +120,24 @@ func containsCRLF(s string) bool {
 //
 // The underlying go-mail client honours the configured timeout via context
 // deadline and applies the configured TLS policy.
+func (s *SMTPSender) Probe(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("probing smtp transport: %w", err)
+	}
+
+	client, err := s.newClient()
+	if err != nil {
+		return fmt.Errorf("probing smtp transport: %s", err)
+	}
+
+	if err := client.DialWithContext(ctx); err != nil {
+		return fmt.Errorf("probing smtp transport: %s", redact.SanitizeEmail(err.Error()))
+	}
+	defer client.Close() //nolint:errcheck // best-effort close after successful probe dial
+
+	return nil
+}
+
 func (s *SMTPSender) SendOTP(ctx context.Context, to, otp, purpose string) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("sending otp email: %w", err)
@@ -142,16 +177,9 @@ func (s *SMTPSender) SendOTP(ctx context.Context, to, otp, purpose string) error
 	msg.SetBodyString(gomail.TypeTextPlain, body)
 
 	// Build go-mail client with configured options.
-	client, err := gomail.NewClient(s.host,
-		gomail.WithPort(s.port),
-		gomail.WithUsername(s.username),
-		gomail.WithPassword(s.password),
-		gomail.WithSMTPAuth(gomail.SMTPAuthPlain),
-		gomail.WithTimeout(s.timeout),
-		gomail.WithTLSPolicy(goMailTLSPolicy(s.tlsPolicy)),
-	)
+	client, err := s.newClient()
 	if err != nil {
-		return fmt.Errorf("sending otp email: %s", redact.SanitizeEmail(err.Error()))
+		return fmt.Errorf("sending otp email: %s", err)
 	}
 
 	if err := client.DialAndSendWithContext(ctx, msg); err != nil {

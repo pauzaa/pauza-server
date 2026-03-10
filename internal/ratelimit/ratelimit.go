@@ -10,11 +10,10 @@ import (
 type Result struct {
 	// Allowed is true when the request is within the rate budget.
 	Allowed bool
-	// Remaining is how many requests are still available in the current
-	// window (zero when the request is denied).
+	// Remaining is how many requests are still available before the next
+	// request would be denied (zero when the request is denied).
 	Remaining int
-	// ResetAt is the UTC time when the current window expires and counters
-	// reset.
+	// ResetAt is the UTC time when another request slot will become available.
 	ResetAt time.Time
 }
 
@@ -33,13 +32,12 @@ type Limiter interface {
 	Stop()
 }
 
-// entry tracks the request count and window start for a single key.
+// entry tracks request timestamps for a single key.
 type entry struct {
-	count    int
-	windowAt time.Time
+	timestamps []time.Time
 }
 
-// MemoryLimiter is a concurrency-safe, in-memory, fixed-window rate limiter
+// MemoryLimiter is a concurrency-safe, in-memory, sliding-window rate limiter
 // keyed by arbitrary strings. It is independent of net/http and suitable for
 // use in middleware or service-layer call sites.
 //
@@ -59,7 +57,8 @@ type MemoryLimiter struct {
 }
 
 // New creates a MemoryLimiter that allows rate requests per window for each
-// key. A background goroutine evicts stale entries once per window.
+// key using a sliding-window algorithm. A background goroutine evicts stale
+// entries once per window.
 func New(rate int, window time.Duration) *MemoryLimiter {
 	l := &MemoryLimiter{
 		rate:    rate,
@@ -82,21 +81,10 @@ func (l *MemoryLimiter) Allow(_ context.Context, key string) (Result, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	e, ok := l.entries[key]
-	if !ok || now.Sub(e.windowAt) >= l.window {
-		// First request or the window has expired; start a new window.
-		e = entry{count: 1, windowAt: now}
+	e := l.pruneEntry(l.entries[key], now)
+	if len(e.timestamps) >= l.rate {
+		resetAt := e.timestamps[0].Add(l.window)
 		l.entries[key] = e
-		return Result{
-			Allowed:   true,
-			Remaining: l.rate - 1,
-			ResetAt:   now.Add(l.window),
-		}, nil
-	}
-
-	resetAt := e.windowAt.Add(l.window)
-
-	if e.count >= l.rate {
 		return Result{
 			Allowed:   false,
 			Remaining: 0,
@@ -104,11 +92,12 @@ func (l *MemoryLimiter) Allow(_ context.Context, key string) (Result, error) {
 		}, nil
 	}
 
-	e.count++
+	e.timestamps = append(e.timestamps, now)
 	l.entries[key] = e
+	resetAt := e.timestamps[0].Add(l.window)
 	return Result{
 		Allowed:   true,
-		Remaining: l.rate - e.count,
+		Remaining: l.rate - len(e.timestamps),
 		ResetAt:   resetAt,
 	}, nil
 }
@@ -145,14 +134,29 @@ func (l *MemoryLimiter) evictLoop() {
 	}
 }
 
-// evict removes all entries whose window has fully elapsed.
+// evict removes all entries whose tracked timestamps have fully elapsed.
 func (l *MemoryLimiter) evict() {
 	now := l.now().UTC()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for key, e := range l.entries {
-		if now.Sub(e.windowAt) >= l.window {
+		e = l.pruneEntry(e, now)
+		if len(e.timestamps) == 0 {
 			delete(l.entries, key)
+			continue
+		}
+		l.entries[key] = e
+	}
+}
+
+func (l *MemoryLimiter) pruneEntry(e entry, now time.Time) entry {
+	cutoff := now.Add(-l.window)
+	keep := e.timestamps[:0]
+	for _, ts := range e.timestamps {
+		if ts.After(cutoff) {
+			keep = append(keep, ts)
 		}
 	}
+	e.timestamps = keep
+	return e
 }

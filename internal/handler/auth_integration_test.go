@@ -54,8 +54,10 @@ const (
 
 // captureSender is an in-memory mail.Sender that records every OTP sent.
 type captureSender struct {
-	mu    sync.Mutex
-	calls []capturedOTP
+	mu       sync.Mutex
+	calls    []capturedOTP
+	probeErr error
+	sendErr  error
 }
 
 // Compile-time interface check: captureSender must implement mail.Sender
@@ -68,11 +70,17 @@ type capturedOTP struct {
 	Purpose string
 }
 
+func (s *captureSender) Probe(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.probeErr
+}
+
 func (s *captureSender) SendOTP(_ context.Context, to, otp, purpose string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, capturedOTP{To: to, OTP: otp, Purpose: purpose})
-	return nil
+	return s.sendErr
 }
 
 // lastOTP returns the most recently captured OTP for the given email and
@@ -104,32 +112,26 @@ func testDatabaseURL(t *testing.T) string {
 // limits are set high so that rapid sequential test requests are not throttled.
 func testConfig() *config.Config {
 	return &config.Config{
-		Port:                     8080,
-		LogLevel:                 "info",
-		JWTSecret:                testJWTSecret,
-		JWTAccessTokenTTL:        testJWTAccessTokenTTL,
-		JWTRefreshTokenTTL:       testJWTRefreshTokenTTL,
-		SMTPHost:                 "localhost",
-		SMTPPort:                 1025,
-		SMTPUsername:             "test",
-		SMTPPassword:             "test",
-		SMTPFrom:                 "test@example.com",
-		SMTPTimeout:              30 * time.Second,
-		SMTPTLSPolicy:            "none",
-		RegisterRateLimit:        10000,
-		RegisterRateWindow:       time.Minute,
-		LoginRateLimit:           10000,
-		LoginRateWindow:          time.Minute,
-		RefreshRateLimit:         10000,
-		RefreshRateWindow:        time.Minute,
-		ForgotPasswordRateLimit:  10000,
-		ForgotPasswordRateWindow: time.Minute,
-		ResetPasswordRateLimit:   10000,
-		ResetPasswordRateWindow:  time.Minute,
-		VerifyOTPRateLimit:       10000,
-		VerifyOTPRateWindow:      time.Minute,
-		SyncRateLimit:            10000,
-		SyncRateWindow:           time.Minute,
+		Port:                 8080,
+		LogLevel:             "info",
+		JWTSecret:            testJWTSecret,
+		JWTAccessTokenTTL:    testJWTAccessTokenTTL,
+		JWTRefreshTokenTTL:   testJWTRefreshTokenTTL,
+		SMTPHost:             "localhost",
+		SMTPPort:             1025,
+		SMTPUsername:         "test",
+		SMTPPassword:         "test",
+		SMTPFrom:             "test@example.com",
+		SMTPTimeout:          30 * time.Second,
+		SMTPTLSPolicy:        "none",
+		AuthRateLimit:        10000,
+		AuthRateWindow:       time.Minute,
+		VerifyOTPRateLimit:   10000,
+		VerifyOTPRateWindow:  time.Minute,
+		GeneralAPIRateLimit:  10000,
+		GeneralAPIRateWindow: time.Minute,
+		SyncRateLimit:        10000,
+		SyncRateWindow:       time.Minute,
 	}
 }
 
@@ -316,14 +318,11 @@ type registerResponse struct {
 	OTPRequired bool `json:"otp_required"`
 }
 
-// meSubscriptionResponse mirrors the handler's /me subscription shape.
+// meSubscriptionResponse mirrors the handler's /me entitlement shape.
 type meSubscriptionResponse struct {
-	PlanID           string         `json:"plan_id"`
-	PlanName         string         `json:"plan_name"`
-	Status           string         `json:"status"`
-	IsStudent        bool           `json:"is_student"`
-	CurrentPeriodEnd *string        `json:"current_period_end"`
-	Features         map[string]any `json:"features"`
+	Entitlement      string  `json:"entitlement"`
+	IsActive         bool    `json:"is_active"`
+	CurrentPeriodEnd *string `json:"current_period_end"`
 }
 
 // meResponse mirrors the handler's /me response shape for decoding.
@@ -546,137 +545,8 @@ func TestIntegration_GetMe(t *testing.T) {
 	}
 }
 
-// TestIntegration_SubscriptionPlans exercises the public plans endpoint through
-// the real server stack and verifies the happy-path response contract.
-func TestIntegration_SubscriptionPlans(t *testing.T) {
-	ts, pool, _ := setupTestServer(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	startsAt := time.Now().UTC().Add(-1 * time.Hour)
-	endsAt := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Second)
-
-	_, err := pool.Exec(ctx, `
-		INSERT INTO subscription_plans (id, name, duration_type, price_cents, currency, features_json, is_active, student_discount_percent, created_at, updated_at)
-		VALUES
-			($1, 'Premium Monthly', 'monthly', 499, 'USD', '{"friendships":true,"advanced_stats":true}', true, 20, now(), now()),
-			($2, 'Premium Yearly', 'yearly', 4999, 'USD', '{"friendships":true,"offline":true}', true, 35, now(), now()),
-			($3, 'Legacy Plan', 'lifetime', 9999, 'USD', '{"legacy":true}', false, 0, now(), now())
-	`,
-		"11111111-1111-1111-1111-111111111111",
-		"22222222-2222-2222-2222-222222222222",
-		"33333333-3333-3333-3333-333333333333",
-	)
-	if err != nil {
-		t.Fatalf("inserting subscription plans: %v", err)
-	}
-
-	_, err = pool.Exec(ctx, `
-		INSERT INTO subscription_plan_discounts (id, plan_id, discount_percent, starts_at, ends_at, description, created_at)
-		VALUES ($1, $2, 15, $3, $4, 'Spring Sale', now())
-	`, "44444444-4444-4444-4444-444444444444", "11111111-1111-1111-1111-111111111111", startsAt, endsAt)
-	if err != nil {
-		t.Fatalf("inserting active plan discount: %v", err)
-	}
-
-	resp, err := http.Get(ts.URL + "/api/v1/subscriptions/plans")
-	if err != nil {
-		t.Fatalf("GET /subscriptions/plans: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		body := readBody(t, resp)
-		t.Fatalf("GET /subscriptions/plans: expected 200, got %d: %s", resp.StatusCode, body)
-	}
-
-	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
-		t.Errorf("GET /subscriptions/plans: Content-Type = %q, want %q", ct, "application/json")
-	}
-
-	type activeDiscountResponse struct {
-		DiscountPercent int    `json:"discount_percent"`
-		EndsAt          string `json:"ends_at"`
-		Description     string `json:"description"`
-	}
-	type planResponse struct {
-		ID                     string                  `json:"id"`
-		Name                   string                  `json:"name"`
-		DurationType           string                  `json:"duration_type"`
-		PriceCents             int                     `json:"price_cents"`
-		Currency               string                  `json:"currency"`
-		StudentDiscountPercent int                     `json:"student_discount_percent"`
-		Features               map[string]any          `json:"features"`
-		ActiveDiscount         *activeDiscountResponse `json:"active_discount"`
-	}
-	var out struct {
-		Plans []planResponse `json:"plans"`
-	}
-	decodeJSON(t, resp, &out)
-
-	if len(out.Plans) != 2 {
-		t.Fatalf("GET /subscriptions/plans: plans len = %d, want 2", len(out.Plans))
-	}
-
-	plansByID := make(map[string]planResponse, len(out.Plans))
-	for _, plan := range out.Plans {
-		plansByID[plan.ID] = plan
-	}
-
-	monthly, ok := plansByID["11111111-1111-1111-1111-111111111111"]
-	if !ok {
-		t.Fatal("monthly plan missing from response")
-	}
-	if monthly.ID != "11111111-1111-1111-1111-111111111111" {
-		t.Errorf("monthly.id = %q, want %q", monthly.ID, "11111111-1111-1111-1111-111111111111")
-	}
-	if monthly.Name != "Premium Monthly" {
-		t.Errorf("monthly.name = %q, want %q", monthly.Name, "Premium Monthly")
-	}
-	if monthly.DurationType != "monthly" {
-		t.Errorf("monthly.duration_type = %q, want %q", monthly.DurationType, "monthly")
-	}
-	if monthly.PriceCents != 499 {
-		t.Errorf("monthly.price_cents = %d, want %d", monthly.PriceCents, 499)
-	}
-	if monthly.StudentDiscountPercent != 20 {
-		t.Errorf("monthly.student_discount_percent = %d, want %d", monthly.StudentDiscountPercent, 20)
-	}
-	if monthly.Features["friendships"] != true {
-		t.Errorf("monthly.features.friendships = %#v, want true", monthly.Features["friendships"])
-	}
-	if monthly.Features["advanced_stats"] != true {
-		t.Errorf("monthly.features.advanced_stats = %#v, want true", monthly.Features["advanced_stats"])
-	}
-	if monthly.ActiveDiscount == nil {
-		t.Fatal("monthly.active_discount = nil, want value")
-	}
-	if monthly.ActiveDiscount.DiscountPercent != 15 {
-		t.Errorf("monthly.active_discount.discount_percent = %d, want %d", monthly.ActiveDiscount.DiscountPercent, 15)
-	}
-	if monthly.ActiveDiscount.Description != "Spring Sale" {
-		t.Errorf("monthly.active_discount.description = %q, want %q", monthly.ActiveDiscount.Description, "Spring Sale")
-	}
-	if monthly.ActiveDiscount.EndsAt != endsAt.Format(time.RFC3339) {
-		t.Errorf("monthly.active_discount.ends_at = %q, want %q", monthly.ActiveDiscount.EndsAt, endsAt.Format(time.RFC3339))
-	}
-
-	yearly, ok := plansByID["22222222-2222-2222-2222-222222222222"]
-	if !ok {
-		t.Fatal("yearly plan missing from response")
-	}
-	if yearly.ID != "22222222-2222-2222-2222-222222222222" {
-		t.Errorf("yearly.id = %q, want %q", yearly.ID, "22222222-2222-2222-2222-222222222222")
-	}
-	if yearly.ActiveDiscount != nil {
-		t.Errorf("yearly.active_discount = %#v, want nil", yearly.ActiveDiscount)
-	}
-	if yearly.Features["offline"] != true {
-		t.Errorf("yearly.features.offline = %#v, want true", yearly.Features["offline"])
-	}
-}
-
 // TestIntegration_GetMe_WithActiveSubscription verifies that GET /api/v1/me
-// includes the active subscription contract when the user has a subscription.
+// includes the active entitlement contract when the user has an entitlement.
 func TestIntegration_GetMe_WithActiveSubscription(t *testing.T) {
 	ts, pool, mailer := setupTestServer(t)
 
@@ -691,19 +561,11 @@ func TestIntegration_GetMe_WithActiveSubscription(t *testing.T) {
 	periodEnd := time.Now().UTC().Add(30 * 24 * time.Hour).Truncate(time.Second)
 
 	_, err := pool.Exec(ctx, `
-		INSERT INTO subscription_plans (id, name, duration_type, price_cents, currency, features_json, is_active, student_discount_percent, created_at, updated_at)
-		VALUES ($1, 'Premium Monthly', 'monthly', 499, 'USD', '{"friendships":true,"advanced_stats":true}', true, 20, now(), now())
-	`, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+		INSERT INTO user_entitlements (id, user_id, entitlement, is_active, current_period_end, created_at, updated_at)
+		VALUES ($1, $2, 'premium', true, $3, now(), now())
+	`, "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", ar.User.ID, periodEnd)
 	if err != nil {
-		t.Fatalf("inserting subscription plan: %v", err)
-	}
-
-	_, err = pool.Exec(ctx, `
-		INSERT INTO user_subscriptions (id, user_id, plan_id, status, current_period_start, current_period_end, is_student, created_at, updated_at)
-		VALUES ($1, $2, $3, 'active', now(), $4, true, now(), now())
-	`, "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", ar.User.ID, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", periodEnd)
-	if err != nil {
-		t.Fatalf("inserting user subscription: %v", err)
+		t.Fatalf("inserting user entitlement: %v", err)
 	}
 
 	resp := getWithAuth(t, ts.URL+"/api/v1/me", ar.AccessToken)
@@ -725,17 +587,11 @@ func TestIntegration_GetMe_WithActiveSubscription(t *testing.T) {
 	if me.Subscription == nil {
 		t.Fatal("GET /me with subscription: subscription = nil, want value")
 	}
-	if me.Subscription.PlanID != "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" {
-		t.Errorf("subscription.plan_id = %q, want %q", me.Subscription.PlanID, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	if me.Subscription.Entitlement != "premium" {
+		t.Errorf("subscription.entitlement = %q, want %q", me.Subscription.Entitlement, "premium")
 	}
-	if me.Subscription.PlanName != "Premium Monthly" {
-		t.Errorf("subscription.plan_name = %q, want %q", me.Subscription.PlanName, "Premium Monthly")
-	}
-	if me.Subscription.Status != "active" {
-		t.Errorf("subscription.status = %q, want %q", me.Subscription.Status, "active")
-	}
-	if !me.Subscription.IsStudent {
-		t.Error("subscription.is_student = false, want true")
+	if !me.Subscription.IsActive {
+		t.Error("subscription.is_active = false, want true")
 	}
 	if me.Subscription.CurrentPeriodEnd == nil {
 		t.Fatal("subscription.current_period_end = nil, want value")
@@ -743,11 +599,54 @@ func TestIntegration_GetMe_WithActiveSubscription(t *testing.T) {
 	if *me.Subscription.CurrentPeriodEnd != periodEnd.Format(time.RFC3339) {
 		t.Errorf("subscription.current_period_end = %q, want %q", *me.Subscription.CurrentPeriodEnd, periodEnd.Format(time.RFC3339))
 	}
-	if me.Subscription.Features["friendships"] != true {
-		t.Errorf("subscription.features.friendships = %#v, want true", me.Subscription.Features["friendships"])
+}
+
+// TestIntegration_GetMe_WithInactiveSubscriptionSnapshot verifies that stored
+// inactive premium snapshots still appear in the profile response.
+func TestIntegration_GetMe_WithInactiveSubscriptionSnapshot(t *testing.T) {
+	ts, pool, mailer := setupTestServer(t)
+
+	const email = "getme-inactive-sub@example.com"
+	const password = "StrongPass123!"
+
+	ar := registerAndVerify(t, ts.URL, mailer, email, password)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	periodEnd := time.Now().UTC().Add(14 * 24 * time.Hour).Truncate(time.Second)
+
+	_, err := pool.Exec(ctx, `
+		INSERT INTO user_entitlements (id, user_id, entitlement, is_active, current_period_end, created_at, updated_at)
+		VALUES ($1, $2, 'premium', false, $3, now(), now())
+	`, "cccccccc-cccc-cccc-cccc-cccccccccccc", ar.User.ID, periodEnd)
+	if err != nil {
+		t.Fatalf("inserting inactive user entitlement: %v", err)
 	}
-	if me.Subscription.Features["advanced_stats"] != true {
-		t.Errorf("subscription.features.advanced_stats = %#v, want true", me.Subscription.Features["advanced_stats"])
+
+	resp := getWithAuth(t, ts.URL+"/api/v1/me", ar.AccessToken)
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("GET /me with inactive subscription: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+
+	var me meResponse
+	decodeJSON(t, resp, &me)
+
+	if me.Subscription == nil {
+		t.Fatal("GET /me with inactive subscription: subscription = nil, want value")
+	}
+	if me.Subscription.Entitlement != "premium" {
+		t.Errorf("subscription.entitlement = %q, want %q", me.Subscription.Entitlement, "premium")
+	}
+	if me.Subscription.IsActive {
+		t.Error("subscription.is_active = true, want false")
+	}
+	if me.Subscription.CurrentPeriodEnd == nil {
+		t.Fatal("subscription.current_period_end = nil, want value")
+	}
+	if *me.Subscription.CurrentPeriodEnd != periodEnd.Format(time.RFC3339) {
+		t.Errorf("subscription.current_period_end = %q, want %q", *me.Subscription.CurrentPeriodEnd, periodEnd.Format(time.RFC3339))
 	}
 }
 
@@ -861,6 +760,43 @@ func TestIntegration_GetMe_DeletedUser(t *testing.T) {
 	decodeJSON(t, resp, &errResp)
 	if errResp.Error.Code != apperror.CodeUnauthorized {
 		t.Errorf("GET /me after delete: code = %q, want %q", errResp.Error.Code, apperror.CodeUnauthorized)
+	}
+}
+
+// TestIntegration_UsernameAvailable_DeletedUser verifies that a valid JWT for a
+// deleted user is rejected by username availability checks.
+func TestIntegration_UsernameAvailable_DeletedUser(t *testing.T) {
+	ts, pool, mailer := setupTestServer(t)
+
+	const email = "deleted-username-available@example.com"
+	const password = "StrongPass123!"
+
+	ar := registerAndVerify(t, ts.URL, mailer, email, password)
+
+	resp := getWithAuth(t, ts.URL+"/api/v1/me/username-available?username=still_free", ar.AccessToken)
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("GET /me/username-available before delete: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	discardBody(t, resp)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := pool.Exec(ctx, "DELETE FROM users WHERE id = $1", ar.User.ID)
+	if err != nil {
+		t.Fatalf("deleting user row: %v", err)
+	}
+
+	resp = getWithAuth(t, ts.URL+"/api/v1/me/username-available?username=still_free", ar.AccessToken)
+	if resp.StatusCode != http.StatusUnauthorized {
+		body := readBody(t, resp)
+		t.Fatalf("GET /me/username-available after delete: expected 401, got %d: %s", resp.StatusCode, body)
+	}
+
+	var errResp apperror.ErrorResponse
+	decodeJSON(t, resp, &errResp)
+	if errResp.Error.Code != apperror.CodeUnauthorized {
+		t.Errorf("GET /me/username-available after delete: code = %q, want %q", errResp.Error.Code, apperror.CodeUnauthorized)
 	}
 }
 
@@ -979,6 +915,142 @@ func TestIntegration_ForgotResetLogin(t *testing.T) {
 	discardBody(t, resp)
 }
 
+// TestIntegration_ForgotPassword_NewIssuanceInvalidatesOlderResetOTP verifies
+// that only the latest password-reset OTP remains usable after a second
+// forgot-password request.
+func TestIntegration_ForgotPassword_NewIssuanceInvalidatesOlderResetOTP(t *testing.T) {
+	ts, pool, mailer := setupTestServer(t)
+
+	const email = "reset-latest@example.com"
+	const password = "OriginalPass123!"
+	const newPassword = "BrandNewPass456!"
+
+	registerAndVerify(t, ts.URL, mailer, email, password)
+
+	resp := postJSON(t, ts.URL+"/api/v1/auth/forgot-password", map[string]string{"email": email})
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("first forgot-password: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	discardBody(t, resp)
+
+	firstOTP, err := mailer.lastOTP(email, mail.PurposePasswordReset)
+	if err != nil {
+		t.Fatalf("capturing first reset OTP: %v", err)
+	}
+
+	resp = postJSON(t, ts.URL+"/api/v1/auth/forgot-password", map[string]string{"email": email})
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("second forgot-password: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	discardBody(t, resp)
+
+	secondOTP, err := mailer.lastOTP(email, mail.PurposePasswordReset)
+	if err != nil {
+		t.Fatalf("capturing second reset OTP: %v", err)
+	}
+	if secondOTP == firstOTP {
+		t.Fatal("expected second reset OTP to differ from first")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var activeResetOTPCount int
+	err = pool.QueryRow(ctx,
+		`SELECT count(*) FROM otp_codes oc
+		 JOIN users u ON u.id = oc.user_id
+		 WHERE lower(u.email) = $1
+		   AND oc.purpose = 'password_reset'
+		   AND oc.used = false
+		   AND oc.expires_at > now()`,
+		email,
+	).Scan(&activeResetOTPCount)
+	if err != nil {
+		t.Fatalf("counting active reset OTP rows: %v", err)
+	}
+	if activeResetOTPCount != 1 {
+		t.Fatalf("active reset OTP count = %d, want 1", activeResetOTPCount)
+	}
+
+	resp = postJSON(t, ts.URL+"/api/v1/auth/reset-password", map[string]string{
+		"email":        email,
+		"otp":          firstOTP,
+		"new_password": newPassword,
+	})
+	if resp.StatusCode != http.StatusUnauthorized {
+		body := readBody(t, resp)
+		t.Fatalf("reset with first OTP: expected 401, got %d: %s", resp.StatusCode, body)
+	}
+	discardBody(t, resp)
+
+	resp = postJSON(t, ts.URL+"/api/v1/auth/reset-password", map[string]string{
+		"email":        email,
+		"otp":          secondOTP,
+		"new_password": newPassword,
+	})
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("reset with second OTP: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	discardBody(t, resp)
+}
+
+// TestIntegration_ResetPassword_SuccessClearsRemainingResetOTPs verifies that
+// after a successful password reset, no password-reset OTP rows remain for the
+// user.
+func TestIntegration_ResetPassword_SuccessClearsRemainingResetOTPs(t *testing.T) {
+	ts, pool, mailer := setupTestServer(t)
+
+	const email = "reset-clears@example.com"
+	const password = "OriginalPass123!"
+	const newPassword = "BrandNewPass456!"
+
+	registerAndVerify(t, ts.URL, mailer, email, password)
+
+	resp := postJSON(t, ts.URL+"/api/v1/auth/forgot-password", map[string]string{"email": email})
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("forgot-password: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	discardBody(t, resp)
+
+	resetOTP, err := mailer.lastOTP(email, mail.PurposePasswordReset)
+	if err != nil {
+		t.Fatalf("capturing reset OTP: %v", err)
+	}
+
+	resp = postJSON(t, ts.URL+"/api/v1/auth/reset-password", map[string]string{
+		"email":        email,
+		"otp":          resetOTP,
+		"new_password": newPassword,
+	})
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("reset-password: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	discardBody(t, resp)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var resetOTPCount int
+	err = pool.QueryRow(ctx,
+		`SELECT count(*) FROM otp_codes oc
+		 JOIN users u ON u.id = oc.user_id
+		 WHERE lower(u.email) = $1
+		   AND oc.purpose = 'password_reset'`,
+		email,
+	).Scan(&resetOTPCount)
+	if err != nil {
+		t.Fatalf("counting remaining reset OTP rows: %v", err)
+	}
+	if resetOTPCount != 0 {
+		t.Fatalf("remaining reset OTP rows = %d, want 0", resetOTPCount)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Error path tests
 // ---------------------------------------------------------------------------
@@ -1009,10 +1081,9 @@ func TestIntegration_RegisterDuplicateVerifiedEmail(t *testing.T) {
 	}
 }
 
-// TestIntegration_RegisterStaleUnverifiedCleanup verifies that re-registering
-// with an email that has an unverified user cleans up the stale record and
-// allows a fresh registration.
-func TestIntegration_RegisterStaleUnverifiedCleanup(t *testing.T) {
+// TestIntegration_RegisterDuplicateUnverifiedEmail verifies that registering
+// with an email that already belongs to an unverified account now returns 409.
+func TestIntegration_RegisterDuplicateUnverifiedEmail(t *testing.T) {
 	ts, _, mailer := setupTestServer(t)
 
 	const email = "stale@example.com"
@@ -1028,31 +1099,26 @@ func TestIntegration_RegisterStaleUnverifiedCleanup(t *testing.T) {
 	}
 	discardBody(t, resp)
 
-	// Second registration with the same email — should clean up the stale
-	// unverified user and succeed.
+	// Second registration with the same email should now return 409.
 	resp = postJSON(t, ts.URL+"/api/v1/auth/register", map[string]string{
 		"email": email, "password": password,
 	})
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusConflict {
 		body := readBody(t, resp)
-		t.Fatalf("re-register: expected 200, got %d: %s", resp.StatusCode, body)
+		t.Fatalf("duplicate unverified register: expected 409, got %d: %s", resp.StatusCode, body)
 	}
-	discardBody(t, resp)
-
-	// Verify the new registration works end-to-end.
-	otp, err := mailer.lastOTP(email, mail.PurposeEmailVerification)
-	if err != nil {
-		t.Fatalf("no OTP captured after re-register: %v", err)
+	var errResp apperror.ErrorResponse
+	decodeJSON(t, resp, &errResp)
+	if errResp.Error.Code != apperror.CodeConflict {
+		t.Errorf("duplicate unverified register: expected code %q, got %q", apperror.CodeConflict, errResp.Error.Code)
 	}
 
-	resp = postJSON(t, ts.URL+"/api/v1/auth/verify-otp", map[string]string{
-		"email": email, "otp": otp,
-	})
-	if resp.StatusCode != http.StatusOK {
-		body := readBody(t, resp)
-		t.Fatalf("verify-otp after re-register: expected 200, got %d: %s", resp.StatusCode, body)
+	mailer.mu.Lock()
+	callCount := len(mailer.calls)
+	mailer.mu.Unlock()
+	if callCount != 1 {
+		t.Fatalf("SendOTP call count = %d, want %d", callCount, 1)
 	}
-	discardBody(t, resp)
 }
 
 // TestIntegration_LoginWrongPassword verifies that logging in with a wrong
@@ -1475,6 +1541,96 @@ func TestIntegration_ForgotPasswordNonExistentEmail(t *testing.T) {
 	discardBody(t, resp)
 }
 
+// TestIntegration_ForgotPassword_MailProbeOutageIsAntiEnumerating verifies
+// that forgot-password returns the same 500 response for existing and unknown
+// emails when the mail transport probe is down.
+func TestIntegration_ForgotPassword_MailProbeOutageIsAntiEnumerating(t *testing.T) {
+	mailer := &captureSender{}
+	ts, _ := setupTestServerWithMailer(t, mailer)
+
+	const email = "forgot-outage@example.com"
+	const password = "StrongPass123!"
+
+	registerAndVerify(t, ts.URL, mailer, email, password)
+
+	mailer.mu.Lock()
+	mailer.probeErr = errors.New("smtp down")
+	mailer.mu.Unlock()
+
+	respKnown := postJSON(t, ts.URL+"/api/v1/auth/forgot-password", map[string]string{"email": email})
+	respUnknown := postJSON(t, ts.URL+"/api/v1/auth/forgot-password", map[string]string{"email": "ghost@example.com"})
+
+	if respKnown.StatusCode != http.StatusInternalServerError {
+		body := readBody(t, respKnown)
+		t.Fatalf("forgot-password existing during outage: expected 500, got %d: %s", respKnown.StatusCode, body)
+	}
+	if respUnknown.StatusCode != http.StatusInternalServerError {
+		body := readBody(t, respUnknown)
+		t.Fatalf("forgot-password unknown during outage: expected 500, got %d: %s", respUnknown.StatusCode, body)
+	}
+
+	bodyKnown := string(readBody(t, respKnown))
+	bodyUnknown := string(readBody(t, respUnknown))
+	if bodyKnown != bodyUnknown {
+		t.Fatalf("outage responses differ for existing vs unknown email:\nknown: %s\nunknown: %s", bodyKnown, bodyUnknown)
+	}
+
+	mailer.mu.Lock()
+	callCount := len(mailer.calls)
+	mailer.mu.Unlock()
+	if callCount < 2 {
+		t.Fatalf("expected registration and verification OTP sends before outage, got %d", callCount)
+	}
+}
+
+// TestIntegration_ForgotPassword_SendFailureAfterProbe_Returns500 verifies
+// that password-reset delivery failures now surface as 500 responses.
+func TestIntegration_ForgotPassword_SendFailureAfterProbe_Returns500(t *testing.T) {
+	mailer := &captureSender{}
+	ts, _ := setupTestServerWithMailer(t, mailer)
+
+	const email = "forgot-send-failure@example.com"
+	const password = "StrongPass123!"
+
+	registerAndVerify(t, ts.URL, mailer, email, password)
+
+	mailer.mu.Lock()
+	baselineCalls := len(mailer.calls)
+	mailer.sendErr = errors.New("smtp send failed")
+	mailer.mu.Unlock()
+
+	respKnown := postJSON(t, ts.URL+"/api/v1/auth/forgot-password", map[string]string{"email": email})
+	respUnknown := postJSON(t, ts.URL+"/api/v1/auth/forgot-password", map[string]string{"email": "ghost@example.com"})
+
+	if respKnown.StatusCode != http.StatusInternalServerError {
+		body := readBody(t, respKnown)
+		t.Fatalf("forgot-password existing during send failure: expected 500, got %d: %s", respKnown.StatusCode, body)
+	}
+	if respUnknown.StatusCode != http.StatusInternalServerError {
+		body := readBody(t, respUnknown)
+		t.Fatalf("forgot-password unknown during send failure: expected 500, got %d: %s", respUnknown.StatusCode, body)
+	}
+
+	bodyKnown := string(readBody(t, respKnown))
+	bodyUnknown := string(readBody(t, respUnknown))
+	if bodyKnown != bodyUnknown {
+		t.Fatalf("send-failure responses differ for existing vs unknown email:\nknown: %s\nunknown: %s", bodyKnown, bodyUnknown)
+	}
+
+	mailer.mu.Lock()
+	defer mailer.mu.Unlock()
+	if got := len(mailer.calls); got != baselineCalls+1 {
+		t.Fatalf("SendOTP call count = %d, want %d", got, baselineCalls+1)
+	}
+	last := mailer.calls[len(mailer.calls)-1]
+	if last.To != email {
+		t.Fatalf("last SendOTP recipient = %q, want %q", last.To, email)
+	}
+	if last.Purpose != mail.PurposePasswordReset {
+		t.Fatalf("last SendOTP purpose = %q, want %q", last.Purpose, mail.PurposePasswordReset)
+	}
+}
+
 // TestIntegration_VerifyOTPWrongCode3x verifies that auth.MaxOTPAttempts wrong
 // OTP attempts exhaust the code and a subsequent attempt returns 429 (rate limited).
 func TestIntegration_VerifyOTPWrongCode3x(t *testing.T) {
@@ -1527,6 +1683,160 @@ func TestIntegration_VerifyOTPWrongCode3x(t *testing.T) {
 	decodeJSON(t, resp, &errResp)
 	if errResp.Error.Code != apperror.CodeRateLimited {
 		t.Errorf("expected code %q, got %q", apperror.CodeRateLimited, errResp.Error.Code)
+	}
+}
+
+// TestIntegration_VerifyOTPAttemptBudgetNotResetByDuplicateRegisterConflict
+// verifies that a duplicate registration conflict does not reset the existing
+// verification OTP attempt budget or mint a fresh OTP.
+func TestIntegration_VerifyOTPAttemptBudgetNotResetByDuplicateRegisterConflict(t *testing.T) {
+	ts, _, mailer := setupTestServer(t)
+
+	const email = "verify-otp-budget@example.com"
+	const password = "StrongPass123!"
+
+	resp := postJSON(t, ts.URL+"/api/v1/auth/register", map[string]string{
+		"email": email, "password": password,
+	})
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("first register: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	discardBody(t, resp)
+
+	firstOTP, err := mailer.lastOTP(email, mail.PurposeEmailVerification)
+	if err != nil {
+		t.Fatalf("no first OTP captured: %v", err)
+	}
+	wrongOTP := "000000"
+	if wrongOTP == firstOTP {
+		wrongOTP = "999999"
+	}
+
+	for i := 1; i <= auth.MaxOTPAttempts; i++ {
+		resp = postJSON(t, ts.URL+"/api/v1/auth/verify-otp", map[string]string{
+			"email": email, "otp": wrongOTP,
+		})
+		if resp.StatusCode != http.StatusUnauthorized {
+			body := readBody(t, resp)
+			t.Fatalf("wrong OTP before duplicate register attempt %d: expected 401, got %d: %s", i, resp.StatusCode, body)
+		}
+		discardBody(t, resp)
+	}
+
+	resp = postJSON(t, ts.URL+"/api/v1/auth/register", map[string]string{
+		"email": email, "password": password,
+	})
+	if resp.StatusCode != http.StatusConflict {
+		body := readBody(t, resp)
+		t.Fatalf("duplicate register after exhausted attempts: expected 409, got %d: %s", resp.StatusCode, body)
+	}
+	var conflictResp apperror.ErrorResponse
+	decodeJSON(t, resp, &conflictResp)
+	if conflictResp.Error.Code != apperror.CodeConflict {
+		t.Errorf("expected code %q, got %q", apperror.CodeConflict, conflictResp.Error.Code)
+	}
+
+	resp = postJSON(t, ts.URL+"/api/v1/auth/verify-otp", map[string]string{
+		"email": email, "otp": firstOTP,
+	})
+	if resp.StatusCode != http.StatusTooManyRequests {
+		body := readBody(t, resp)
+		t.Fatalf("correct original OTP after duplicate conflict: expected 429, got %d: %s", resp.StatusCode, body)
+	}
+	var errResp apperror.ErrorResponse
+	decodeJSON(t, resp, &errResp)
+	if errResp.Error.Code != apperror.CodeRateLimited {
+		t.Errorf("expected code %q, got %q", apperror.CodeRateLimited, errResp.Error.Code)
+	}
+	if resp.Header.Get("Retry-After") == "" {
+		t.Error("expected Retry-After header on 429 verify-otp response")
+	}
+
+	mailer.mu.Lock()
+	callCount := len(mailer.calls)
+	mailer.mu.Unlock()
+	if callCount != 1 {
+		t.Fatalf("SendOTP call count = %d, want %d", callCount, 1)
+	}
+}
+
+// TestIntegration_ResetPasswordAttemptsPersistAcrossFreshOTP verifies that
+// reset-password attempts made against an older OTP still exhaust the shared
+// attempt budget for a fresh OTP issued within the same expiry window.
+func TestIntegration_ResetPasswordAttemptsPersistAcrossFreshOTP(t *testing.T) {
+	ts, _, mailer := setupTestServer(t)
+
+	const email = "reset-otp-budget@example.com"
+	const password = "StrongPass123!"
+
+	registerAndVerify(t, ts.URL, mailer, email, password)
+
+	resp := postJSON(t, ts.URL+"/api/v1/auth/forgot-password", map[string]string{"email": email})
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("first forgot-password: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	discardBody(t, resp)
+
+	firstOTP, err := mailer.lastOTP(email, mail.PurposePasswordReset)
+	if err != nil {
+		t.Fatalf("no first password reset OTP captured: %v", err)
+	}
+	wrongOTP := "000000"
+	if wrongOTP == firstOTP {
+		wrongOTP = "999999"
+	}
+
+	for i := 1; i < auth.MaxOTPAttempts; i++ {
+		resp = postJSON(t, ts.URL+"/api/v1/auth/reset-password", map[string]string{
+			"email": email, "otp": wrongOTP, "new_password": "NewStrongPass123!",
+		})
+		if resp.StatusCode != http.StatusUnauthorized {
+			body := readBody(t, resp)
+			t.Fatalf("wrong reset OTP before refresh attempt %d: expected 401, got %d: %s", i, resp.StatusCode, body)
+		}
+		discardBody(t, resp)
+	}
+
+	resp = postJSON(t, ts.URL+"/api/v1/auth/forgot-password", map[string]string{"email": email})
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("second forgot-password: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	discardBody(t, resp)
+
+	freshOTP, err := mailer.lastOTP(email, mail.PurposePasswordReset)
+	if err != nil {
+		t.Fatalf("no fresh password reset OTP captured: %v", err)
+	}
+	if freshOTP == wrongOTP {
+		wrongOTP = "111111"
+	}
+
+	resp = postJSON(t, ts.URL+"/api/v1/auth/reset-password", map[string]string{
+		"email": email, "otp": wrongOTP, "new_password": "NewStrongPass123!",
+	})
+	if resp.StatusCode != http.StatusUnauthorized {
+		body := readBody(t, resp)
+		t.Fatalf("wrong reset OTP on fresh code: expected 401, got %d: %s", resp.StatusCode, body)
+	}
+	discardBody(t, resp)
+
+	resp = postJSON(t, ts.URL+"/api/v1/auth/reset-password", map[string]string{
+		"email": email, "otp": freshOTP, "new_password": "NewestStrongPass123!",
+	})
+	if resp.StatusCode != http.StatusTooManyRequests {
+		body := readBody(t, resp)
+		t.Fatalf("correct fresh reset OTP after budget exhausted: expected 429, got %d: %s", resp.StatusCode, body)
+	}
+	var errResp apperror.ErrorResponse
+	decodeJSON(t, resp, &errResp)
+	if errResp.Error.Code != apperror.CodeRateLimited {
+		t.Errorf("expected code %q, got %q", apperror.CodeRateLimited, errResp.Error.Code)
+	}
+	if resp.Header.Get("Retry-After") == "" {
+		t.Error("expected Retry-After header on 429 reset-password response")
 	}
 }
 
@@ -1783,18 +2093,18 @@ func TestIntegration_ConcurrentRegistrationSameEmail(t *testing.T) {
 	}
 }
 
-// TestIntegration_ConcurrentReRegistrationLifecycle exercises the full lifecycle
-// of concurrent re-registration followed by verification and login. The scenario
+// TestIntegration_ConcurrentDuplicateUnverifiedRegistrationLifecycle exercises
+// the full lifecycle when an initial unverified registration is followed by
+// concurrent duplicate registrations that must all conflict. The scenario
 // is:
 //  1. Register email A (first registration, unverified).
-//  2. Fire N concurrent re-registrations for the same email.
-//  3. Verify that after the race the surviving user can verify OTP, login, and
-//     use the refresh token — proving the full auth lifecycle is intact.
+//  2. Fire N concurrent duplicate registrations for the same email.
+//  3. Verify the original registration can still verify OTP, login, and use the
+//     refresh token — proving duplicate conflicts do not corrupt the lifecycle.
 //
-// This is more end-to-end than TestIntegration_ConcurrentRegistrationSameEmail
-// because it starts from an existing unverified user (the common re-registration
-// case) and verifies the full post-verification lifecycle, not just DB state.
-func TestIntegration_ConcurrentReRegistrationLifecycle(t *testing.T) {
+// This is more end-to-end than TestIntegration_RegisterDuplicateUnverifiedEmail
+// because it adds concurrency and full post-verification lifecycle checks.
+func TestIntegration_ConcurrentDuplicateUnverifiedRegistrationLifecycle(t *testing.T) {
 	ts, pool, mailer := setupTestServer(t)
 
 	const email = "concurrent-rereg@example.com"
@@ -1811,8 +2121,8 @@ func TestIntegration_ConcurrentReRegistrationLifecycle(t *testing.T) {
 	}
 	discardBody(t, resp)
 
-	// Step 2: Fire N concurrent re-registrations that all see the stale
-	// unverified user and race to clean it up.
+	// Step 2: Fire N concurrent duplicate registrations against the existing
+	// unverified user.
 	type result struct {
 		status int
 		err    error
@@ -1863,22 +2173,21 @@ func TestIntegration_ConcurrentReRegistrationLifecycle(t *testing.T) {
 	start.Done()
 	done.Wait()
 
-	// At least one re-registration must have succeeded.
-	successCount := 0
 	for i, r := range results {
 		if r.err != nil {
 			t.Errorf("goroutine %d: %v", i, r.err)
 			continue
 		}
-		if r.status == http.StatusOK {
-			successCount++
+		if r.status != http.StatusConflict {
+			t.Errorf("goroutine %d: status = %d, want %d", i, r.status, http.StatusConflict)
 		}
 	}
-	if successCount == 0 {
-		for i, r := range results {
-			t.Logf("  goroutine %d: status=%d err=%v", i, r.status, r.err)
-		}
-		t.Fatal("expected at least one successful re-registration")
+
+	mailer.mu.Lock()
+	callCount := len(mailer.calls)
+	mailer.mu.Unlock()
+	if callCount != 1 {
+		t.Fatalf("SendOTP call count = %d, want %d", callCount, 1)
 	}
 
 	// --- Verify post-race database state ---
@@ -1977,6 +2286,10 @@ type smtpRaceSender struct {
 // Compile-time interface check.
 var _ mail.Sender = (*smtpRaceSender)(nil)
 
+func (s *smtpRaceSender) Probe(context.Context) error {
+	return nil
+}
+
 func (s *smtpRaceSender) SendOTP(ctx context.Context, to, otp, purpose string) error {
 	s.mu.Lock()
 	// Snapshot the current call index before releasing the lock so the
@@ -2019,18 +2332,17 @@ func (s *smtpRaceSender) lastOTP(email, purpose string) (string, error) {
 	return "", fmt.Errorf("no OTP found for %s / %s", email, purpose)
 }
 
-// TestIntegration_RegisterSMTPFailureCleanupRace proves that when an earlier
-// registration's SMTP send fails, the ID-scoped cleanup does not accidentally
-// remove a newer concurrent registration for the same email.
+// TestIntegration_RegisterSMTPFailureCleanupRace proves that when an in-flight
+// registration later fails its SMTP send, a concurrent duplicate request still
+// gets 409 and the failed registration's cleanup removes the temporary rows.
 //
 // Timeline:
 //  1. Registration A commits user_A + otp_A to DB, then blocks on SendOTP.
 //  2. Registration B arrives for the same email while A is blocked.
-//     B cleans up the stale unverified user_A, inserts user_B + otp_B,
-//     commits, and its SendOTP succeeds.
+//     B sees the committed unverified user_A and returns 409.
 //  3. Registration A's SendOTP unblocks and returns an error.
-//     A's cleanup deletes by user_A's ID and otp_A's ID — both already gone.
-//  4. user_B and otp_B survive; the test verifies OTP for B.
+//     A's cleanup deletes user_A and otp_A by ID.
+//  4. No rows remain for the email, and a fresh follow-up registration works.
 func TestIntegration_RegisterSMTPFailureCleanupRace(t *testing.T) {
 	sender := &smtpRaceSender{
 		gate: make(chan struct{}),
@@ -2094,16 +2406,20 @@ func TestIntegration_RegisterSMTPFailureCleanupRace(t *testing.T) {
 		}
 	}
 
-	// Registration B: same email. This should clean up A's stale unverified
-	// user, create a new user+OTP, and succeed (second SendOTP call succeeds).
+	// Registration B: same email while A is still in-flight. This should see the
+	// committed unverified user and return 409.
 	respB := postJSON(t, ts.URL+"/api/v1/auth/register", map[string]string{
 		"email": email, "password": password,
 	})
-	if respB.StatusCode != http.StatusOK {
+	if respB.StatusCode != http.StatusConflict {
 		body := readBody(t, respB)
-		t.Fatalf("Registration B: expected 200, got %d: %s", respB.StatusCode, body)
+		t.Fatalf("Registration B: expected 409, got %d: %s", respB.StatusCode, body)
 	}
-	discardBody(t, respB)
+	var conflictResp apperror.ErrorResponse
+	decodeJSON(t, respB, &conflictResp)
+	if conflictResp.Error.Code != apperror.CodeConflict {
+		t.Errorf("Registration B: expected code %q, got %q", apperror.CodeConflict, conflictResp.Error.Code)
+	}
 
 	// Now unblock Registration A's SendOTP so it fails and runs cleanup.
 	close(sender.gate)
@@ -2118,55 +2434,46 @@ func TestIntegration_RegisterSMTPFailureCleanupRace(t *testing.T) {
 		t.Errorf("Registration A: expected 500, got %d", regAStatus)
 	}
 
-	// --- Verify that Registration B's user survived ---
+	// --- Verify that cleanup removed A's temporary rows ---
 
-	// The user row for this email must exist and be unverified (not yet OTP-confirmed).
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	var emailVerified bool
+	var userCount int
 	err := pool.QueryRow(ctx,
-		"SELECT email_verified FROM users WHERE lower(email) = $1", email,
-	).Scan(&emailVerified)
+		"SELECT count(*) FROM users WHERE lower(email) = $1", email,
+	).Scan(&userCount)
 	if err != nil {
-		t.Fatalf("querying user after race: %v", err)
+		t.Fatalf("counting users after race: %v", err)
 	}
-	if emailVerified {
-		t.Fatal("user should be unverified before OTP verification")
+	if userCount != 0 {
+		t.Fatalf("user count after failed registration cleanup = %d, want 0", userCount)
 	}
 
-	// Look up the surviving user's ID for OTP assertions.
-	var survivingUserID string
-	err = pool.QueryRow(ctx,
-		"SELECT id FROM users WHERE lower(email) = $1", email,
-	).Scan(&survivingUserID)
-	if err != nil {
-		t.Fatalf("looking up surviving user_id: %v", err)
-	}
-
-	// Exactly one active (unused, non-expired) email_verification OTP must
-	// exist for Registration B's user. Registration A's cleanup targets its
-	// own otpID, so B's OTP must survive untouched.
 	var otpCount int
 	err = pool.QueryRow(ctx,
-		`SELECT count(*) FROM otp_codes
-		 WHERE user_id = $1
-		   AND purpose = 'email_verification'
-		   AND used = false
-		   AND expires_at > now()`,
-		survivingUserID,
+		"SELECT count(*) FROM otp_codes oc JOIN users u ON u.id = oc.user_id WHERE lower(u.email) = $1", email,
 	).Scan(&otpCount)
 	if err != nil {
 		t.Fatalf("counting OTP rows after race: %v", err)
 	}
-	if otpCount != 1 {
-		t.Fatalf("expected exactly 1 active OTP row for Registration B's user, got %d", otpCount)
+	if otpCount != 0 {
+		t.Fatalf("otp count after failed registration cleanup = %d, want 0", otpCount)
 	}
 
-	// Retrieve the OTP captured by B's successful send and verify it.
+	// A fresh follow-up registration after cleanup should now succeed.
+	respC := postJSON(t, ts.URL+"/api/v1/auth/register", map[string]string{
+		"email": email, "password": password,
+	})
+	if respC.StatusCode != http.StatusOK {
+		body := readBody(t, respC)
+		t.Fatalf("Registration C: expected 200, got %d: %s", respC.StatusCode, body)
+	}
+	discardBody(t, respC)
+
 	otp, err := sender.lastOTP(email, mail.PurposeEmailVerification)
 	if err != nil {
-		t.Fatalf("no OTP captured for Registration B: %v", err)
+		t.Fatalf("no OTP captured for Registration C: %v", err)
 	}
 
 	verifyResp := postJSON(t, ts.URL+"/api/v1/auth/verify-otp", map[string]string{
@@ -2174,7 +2481,7 @@ func TestIntegration_RegisterSMTPFailureCleanupRace(t *testing.T) {
 	})
 	if verifyResp.StatusCode != http.StatusOK {
 		body := readBody(t, verifyResp)
-		t.Fatalf("verify-otp for Registration B: expected 200, got %d: %s", verifyResp.StatusCode, body)
+		t.Fatalf("verify-otp after cleanup: expected 200, got %d: %s", verifyResp.StatusCode, body)
 	}
 	var ar authResponse
 	decodeJSON(t, verifyResp, &ar)

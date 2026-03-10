@@ -32,23 +32,17 @@ func testConfig() *config.Config {
 		SMTPUsername:       "test",
 		SMTPPassword:       "test",
 		SMTPFrom:           "test@example.com",
-		// Per-endpoint rate limits — use generous values so tests are not
+		// Consolidated rate limits — use generous values so tests are not
 		// throttled. The window must also be positive (MemoryLimiter uses
 		// it for the eviction ticker).
-		RegisterRateLimit:        10000,
-		RegisterRateWindow:       time.Minute,
-		LoginRateLimit:           10000,
-		LoginRateWindow:          time.Minute,
-		RefreshRateLimit:         10000,
-		RefreshRateWindow:        time.Minute,
-		ForgotPasswordRateLimit:  10000,
-		ForgotPasswordRateWindow: time.Minute,
-		ResetPasswordRateLimit:   10000,
-		ResetPasswordRateWindow:  time.Minute,
-		VerifyOTPRateLimit:       10000,
-		VerifyOTPRateWindow:      time.Minute,
-		SyncRateLimit:            10000,
-		SyncRateWindow:           time.Minute,
+		AuthRateLimit:        10000,
+		AuthRateWindow:       time.Minute,
+		VerifyOTPRateLimit:   10000,
+		VerifyOTPRateWindow:  time.Minute,
+		GeneralAPIRateLimit:  10000,
+		GeneralAPIRateWindow: time.Minute,
+		SyncRateLimit:        10000,
+		SyncRateWindow:       time.Minute,
 	}
 }
 
@@ -364,35 +358,6 @@ func TestNew_AuthRoutesExist(t *testing.T) {
 	}
 }
 
-// TestNew_SubscriptionPlansRouteIsPublicUnderAPIV1 verifies that the plans
-// endpoint stays mounted at GET /api/v1/subscriptions/plans without JWT
-// protection, and is not exposed outside the versioned API group.
-func TestNew_SubscriptionPlansRouteIsPublicUnderAPIV1(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
-	defer cleanup()
-
-	publicReq := httptest.NewRequest(http.MethodGet, "/api/v1/subscriptions/plans", nil)
-	publicRec := httptest.NewRecorder()
-
-	srv.Handler.ServeHTTP(publicRec, publicReq)
-
-	if publicRec.Code == http.StatusNotFound {
-		t.Fatal("expected GET /api/v1/subscriptions/plans to be wired, got 404")
-	}
-	if publicRec.Code == http.StatusUnauthorized {
-		t.Fatal("expected GET /api/v1/subscriptions/plans to stay public, got 401")
-	}
-
-	unversionedReq := httptest.NewRequest(http.MethodGet, "/subscriptions/plans", nil)
-	unversionedRec := httptest.NewRecorder()
-
-	srv.Handler.ServeHTTP(unversionedRec, unversionedReq)
-
-	if unversionedRec.Code != http.StatusNotFound {
-		t.Fatalf("expected GET /subscriptions/plans to stay outside the versioned API, got %d", unversionedRec.Code)
-	}
-}
-
 // TestNew_ProtectedMeRoutesExist verifies that the protected /me endpoints
 // are wired (non-404). Without a valid JWT the auth middleware returns 401,
 // which proves the route exists and the middleware runs. A 404 would mean
@@ -523,6 +488,64 @@ func TestNew_SyncRateLimitPerUser(t *testing.T) {
 
 	if rec3.Code == http.StatusTooManyRequests {
 		t.Fatalf("expected different user to have separate sync budget")
+	}
+}
+
+func TestNew_SyncAndGeneralAPILimitsAreIndependent(t *testing.T) {
+	cfg := testConfig()
+	cfg.GeneralAPIRateLimit = 1
+	cfg.GeneralAPIRateWindow = time.Minute
+	cfg.SyncRateLimit = 1
+	cfg.SyncRateWindow = time.Minute
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	defer cleanup()
+
+	token, err := auth.IssueAccessToken("user-a", "a@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
+	if err != nil {
+		t.Fatalf("issuing token: %v", err)
+	}
+
+	meReq := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	meReq.Header.Set("Authorization", "Bearer "+token)
+	meRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(meRec, meReq)
+	if meRec.Code != http.StatusInternalServerError {
+		t.Fatalf("first GET /me: expected 500 after auth pass-through, got %d", meRec.Code)
+	}
+
+	meReq2 := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	meReq2.Header.Set("Authorization", "Bearer "+token)
+	meRec2 := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(meRec2, meReq2)
+	if meRec2.Code != http.StatusTooManyRequests {
+		t.Fatalf("second GET /me: expected 429 after general API budget exhausted, got %d", meRec2.Code)
+	}
+
+	body := `{"tables":{"modes":{"last_synced_at":0,"upserts":[],"deletions":[]},"mode_blocked_apps":{"last_synced_at":0,"upserts":[],"deletions":[]},"schedules":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_sessions":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"last_synced_at":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"last_synced_at":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"last_synced_at":0,"upserts":[],"deletions":[]}}}`
+	syncReq := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(body))
+	syncReq.Header.Set("Content-Type", "application/json")
+	syncReq.Header.Set("Authorization", "Bearer "+token)
+	syncRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(syncRec, syncReq)
+	if syncRec.Code != http.StatusInternalServerError {
+		t.Fatalf("sync after exhausting general API limit: expected 500 from nil pool, got %d", syncRec.Code)
+	}
+
+	syncReq2 := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(body))
+	syncReq2.Header.Set("Content-Type", "application/json")
+	syncReq2.Header.Set("Authorization", "Bearer "+token)
+	syncRec2 := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(syncRec2, syncReq2)
+	if syncRec2.Code != http.StatusTooManyRequests {
+		t.Fatalf("second sync request: expected 429 after sync budget exhausted, got %d", syncRec2.Code)
+	}
+
+	meReq3 := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	meReq3.Header.Set("Authorization", "Bearer "+token)
+	meRec3 := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(meRec3, meReq3)
+	if meRec3.Code != http.StatusTooManyRequests {
+		t.Fatalf("GET /me after exhausting sync limit: expected existing 429 from general API budget, got %d", meRec3.Code)
 	}
 }
 
@@ -869,18 +892,16 @@ func TestLimitBody_AllowsNormalBody(t *testing.T) {
 	}
 }
 
-// TestNew_IndependentRateLimitBudgets proves that register and login endpoints
-// use independent rate-limit budgets. Exhausting the register budget must not
-// affect the login endpoint and vice versa. The test sets a budget of 1 for
-// register and a generous budget for login, sends 2 register requests (the
-// second should be rate-limited), then verifies that login still succeeds.
-func TestNew_IndependentRateLimitBudgets(t *testing.T) {
+// TestNew_AuthEndpointsShareRateLimitBudget proves that register and login
+// endpoints now use the shared auth rate-limit group. Exhausting the register
+// budget must also throttle login requests from the same client.
+func TestNew_AuthEndpointsShareRateLimitBudget(t *testing.T) {
 	cfg := testConfig()
-	// Tight budget for register; generous for login.
-	cfg.RegisterRateLimit = 1
-	cfg.RegisterRateWindow = time.Minute
-	cfg.LoginRateLimit = 10000
-	cfg.LoginRateWindow = time.Minute
+	// Tight budget for the shared auth group; generous for protected routes.
+	cfg.AuthRateLimit = 1
+	cfg.AuthRateWindow = time.Minute
+	cfg.GeneralAPIRateLimit = 10000
+	cfg.GeneralAPIRateWindow = time.Minute
 
 	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
 	defer cleanup()
@@ -910,15 +931,90 @@ func TestNew_IndependentRateLimitBudgets(t *testing.T) {
 		t.Errorf("second register request: expected 429, got %d", rec.Code)
 	}
 
-	// Login request from the same IP — must NOT be rate-limited because
-	// login has its own independent budget.
+	// Login request from the same IP should also be rate-limited because
+	// it shares the auth budget with register.
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(loginBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "10.0.0.1:12347"
 	rec = httptest.NewRecorder()
 	srv.Handler.ServeHTTP(rec, req)
 
-	if rec.Code == http.StatusTooManyRequests {
-		t.Error("login request should not be rate-limited when only register budget is exhausted")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("login request: expected 429 after shared auth budget exhausted, got %d", rec.Code)
+	}
+}
+
+// TestNew_VerifyOTPUsesSharedAuthIPRateLimit proves that verify-otp is part of
+// the shared auth IP budget, independent of the per-email limiter.
+func TestNew_VerifyOTPUsesSharedAuthIPRateLimit(t *testing.T) {
+	cfg := testConfig()
+	cfg.AuthRateLimit = 1
+	cfg.AuthRateWindow = time.Minute
+	cfg.VerifyOTPRateLimit = 10000
+	cfg.VerifyOTPRateWindow = time.Minute
+
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	defer cleanup()
+
+	firstReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verify-otp", strings.NewReader(`{"email":"first@example.com","otp":"123456"}`))
+	firstReq.Header.Set("Content-Type", "application/json")
+	firstReq.RemoteAddr = "10.0.0.1:12345"
+	firstRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(firstRec, firstReq)
+	if firstRec.Code == http.StatusTooManyRequests {
+		t.Fatal("first verify-otp request should not be rate-limited")
+	}
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verify-otp", strings.NewReader(`{"email":"second@example.com","otp":"123456"}`))
+	secondReq.Header.Set("Content-Type", "application/json")
+	secondReq.RemoteAddr = "10.0.0.1:54321"
+	secondRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(secondRec, secondReq)
+
+	if secondRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second verify-otp request from same IP: expected 429, got %d", secondRec.Code)
+	}
+}
+
+// TestNew_VerifyOTPUsesPerEmailRateLimitAcrossIPs proves that verify-otp also
+// has its dedicated email-based limiter, independent of the shared auth IP
+// limiter.
+func TestNew_VerifyOTPUsesPerEmailRateLimitAcrossIPs(t *testing.T) {
+	cfg := testConfig()
+	cfg.AuthRateLimit = 10000
+	cfg.AuthRateWindow = time.Minute
+	cfg.VerifyOTPRateLimit = 1
+	cfg.VerifyOTPRateWindow = time.Minute
+
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	defer cleanup()
+
+	firstReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verify-otp", strings.NewReader(`{"email":"shared@example.com","otp":"123456"}`))
+	firstReq.Header.Set("Content-Type", "application/json")
+	firstReq.RemoteAddr = "10.0.0.1:12345"
+	firstRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(firstRec, firstReq)
+	if firstRec.Code == http.StatusTooManyRequests {
+		t.Fatal("first verify-otp request should not be rate-limited")
+	}
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verify-otp", strings.NewReader(`{"email":"shared@example.com","otp":"123456"}`))
+	secondReq.Header.Set("Content-Type", "application/json")
+	secondReq.RemoteAddr = "10.0.0.2:12345"
+	secondRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(secondRec, secondReq)
+
+	if secondRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second verify-otp request for same email across IPs: expected 429, got %d", secondRec.Code)
+	}
+
+	thirdReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verify-otp", strings.NewReader(`{"email":"other@example.com","otp":"123456"}`))
+	thirdReq.Header.Set("Content-Type", "application/json")
+	thirdReq.RemoteAddr = "10.0.0.3:12345"
+	thirdRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(thirdRec, thirdReq)
+
+	if thirdRec.Code == http.StatusTooManyRequests {
+		t.Fatal("different verify-otp email should not share the exhausted per-email budget")
 	}
 }

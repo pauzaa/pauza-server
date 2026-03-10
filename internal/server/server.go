@@ -83,9 +83,11 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 // New creates and configures the HTTP server with all routes and middleware.
 // The mailer parameter allows callers to inject any mail.Sender implementation
 // (e.g. a real SMTP sender in production, or an in-memory stub in tests).
-// The redisClient parameter is explicit: when non-nil, rate limiters use Redis
-// as a shared backend wrapped in a fail-open layer; when nil, in-memory
-// limiters are used (suitable for tests and single-instance deployments).
+// The redisClient parameter is explicit: production startup passes a Redis
+// client so rate limiters use Redis as the shared backend wrapped in a fail-open
+// layer. A nil client is kept only for local/unit test wiring, where an
+// in-memory limiter preserves existing handler behavior without claiming
+// production-grade shared enforcement.
 // The returned cleanup function stops background goroutines (e.g. rate-limiter
 // eviction loops) and must be called during graceful shutdown.
 func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mail.Sender, redisClient *redis.Client) (*http.Server, func()) {
@@ -111,18 +113,14 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 		cfg.JWTAccessTokenTTL, cfg.JWTRefreshTokenTTL, logger,
 	)
 	authHandler := handler.NewAuthHandler(authService, logger)
-	subscriptionRepo := repository.NewPgxSubscriptionRepository()
-	subscriptionService := service.NewSubscriptionService(pool, subscriptionRepo, logger)
-	subscriptionHandler := handler.NewSubscriptionHandler(subscriptionService, logger)
 	syncRepo := repository.NewPgxSyncRepository()
-	syncService := service.NewSyncService(pool, syncRepo, logger)
-	syncHandler := handler.NewSyncHandler(syncService)
+	syncService := service.NewSyncService(pool, syncRepo, authRepo, logger)
+	syncHandler := handler.NewSyncHandlerWithLogger(syncService, logger)
 
-	// newLimiter creates a rate limiter with the given budget. When a Redis
-	// client is available, a RedisLimiter wrapped in FailOpenLimiter is
-	// returned so that multiple server instances share a single counter
-	// store and transient Redis failures degrade gracefully. Without Redis
-	// the limiter falls back to an in-memory implementation.
+	// newLimiter creates a rate limiter with the given budget. Production code
+	// uses the Redis-backed fail-open path so multiple server instances share a
+	// single limiter state. The nil-Redis branch is retained for tests that
+	// build server.New without external dependencies.
 	newLimiter := func(prefix string, rate int, window time.Duration) ratelimit.Limiter {
 		if redisClient != nil {
 			inner := ratelimit.NewRedisLimiter(redisClient, rate, window, ratelimit.WithPrefix("rl:"+prefix+":"))
@@ -131,14 +129,9 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 		return ratelimit.New(rate, window)
 	}
 
-	// Per-endpoint rate limiters — each auth endpoint class gets its own
-	// budget so that one noisy endpoint cannot starve another.
-	registerLimiter := newLimiter("register", cfg.RegisterRateLimit, cfg.RegisterRateWindow)
-	loginLimiter := newLimiter("login", cfg.LoginRateLimit, cfg.LoginRateWindow)
-	refreshLimiter := newLimiter("refresh", cfg.RefreshRateLimit, cfg.RefreshRateWindow)
-	forgotPwLimiter := newLimiter("forgot-password", cfg.ForgotPasswordRateLimit, cfg.ForgotPasswordRateWindow)
-	resetPwLimiter := newLimiter("reset-password", cfg.ResetPasswordRateLimit, cfg.ResetPasswordRateWindow)
+	authLimiter := newLimiter("auth", cfg.AuthRateLimit, cfg.AuthRateWindow)
 	verifyOTPLimiter := newLimiter("verify-otp", cfg.VerifyOTPRateLimit, cfg.VerifyOTPRateWindow)
+	generalAPILimiter := newLimiter("general-api", cfg.GeneralAPIRateLimit, cfg.GeneralAPIRateWindow)
 	syncLimiter := newLimiter("sync", cfg.SyncRateLimit, cfg.SyncRateWindow)
 
 	// --- /api/v1 routes -------------------------------------------------
@@ -146,23 +139,22 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 	// so that the JWT middleware applies only to protected endpoints. This
 	// avoids relying on chi route registration order for correctness.
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Route("/subscriptions", func(r chi.Router) {
-			r.Get("/plans", subscriptionHandler.ListPlans)
-		})
-
 		// Public auth routes (no JWT required).
 		r.Route("/auth", func(r chi.Router) {
-			r.With(authmw.RateLimit(registerLimiter, cfg.RegisterRateLimit, authmw.IPKey)).
+			r.With(authmw.RateLimit(authLimiter, cfg.AuthRateLimit, authmw.IPKey)).
 				Post("/register", authHandler.Register)
-			r.With(authmw.RateLimit(loginLimiter, cfg.LoginRateLimit, authmw.IPKey)).
+			r.With(authmw.RateLimit(authLimiter, cfg.AuthRateLimit, authmw.IPKey)).
 				Post("/login", authHandler.Login)
-			r.With(authmw.RateLimit(refreshLimiter, cfg.RefreshRateLimit, authmw.IPKey)).
+			r.With(authmw.RateLimit(authLimiter, cfg.AuthRateLimit, authmw.IPKey)).
 				Post("/refresh", authHandler.Refresh)
-			r.With(authmw.RateLimit(forgotPwLimiter, cfg.ForgotPasswordRateLimit, authmw.IPKey)).
+			r.With(authmw.RateLimit(authLimiter, cfg.AuthRateLimit, authmw.IPKey)).
 				Post("/forgot-password", authHandler.ForgotPassword)
-			r.With(authmw.RateLimit(resetPwLimiter, cfg.ResetPasswordRateLimit, authmw.IPKey)).
+			r.With(authmw.RateLimit(authLimiter, cfg.AuthRateLimit, authmw.IPKey)).
 				Post("/reset-password", authHandler.ResetPassword)
-			r.With(authmw.RateLimit(verifyOTPLimiter, cfg.VerifyOTPRateLimit, authmw.EmailKey)).
+			r.With(
+				authmw.RateLimit(authLimiter, cfg.AuthRateLimit, authmw.IPKey),
+				authmw.RateLimit(verifyOTPLimiter, cfg.VerifyOTPRateLimit, authmw.EmailKey),
+			).
 				Post("/verify-otp", authHandler.VerifyOTP)
 		})
 
@@ -173,21 +165,23 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 		r.Group(func(r chi.Router) {
 			r.Use(authmw.JWTAuth(cfg.JWTSecret, logger))
 
-			r.Get("/me", authHandler.GetMe)
-			r.Patch("/me", authHandler.UpdateMe)
-			r.Delete("/me", authHandler.DeleteMe)
-			r.Get("/me/username-available", authHandler.UsernameAvailable)
+			r.Group(func(r chi.Router) {
+				r.Use(authmw.RateLimit(generalAPILimiter, cfg.GeneralAPIRateLimit, authmw.UserIDKey))
+
+				r.Get("/me", authHandler.GetMe)
+				r.Patch("/me", authHandler.UpdateMe)
+				r.Delete("/me", authHandler.DeleteMe)
+				r.Get("/me/username-available", authHandler.UsernameAvailable)
+			})
+
 			r.With(authmw.RateLimit(syncLimiter, cfg.SyncRateLimit, authmw.UserIDKey)).Post("/sync", syncHandler.Sync)
 		})
 	})
 
 	cleanup := func() {
-		registerLimiter.Stop()
-		loginLimiter.Stop()
-		refreshLimiter.Stop()
-		forgotPwLimiter.Stop()
-		resetPwLimiter.Stop()
+		authLimiter.Stop()
 		verifyOTPLimiter.Stop()
+		generalAPILimiter.Stop()
 		syncLimiter.Stop()
 	}
 

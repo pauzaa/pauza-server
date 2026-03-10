@@ -47,33 +47,18 @@ type Config struct {
 	// Firebase
 	FirebaseServiceAccountJSON string `envconfig:"FIREBASE_SERVICE_ACCOUNT_JSON" required:"true"`
 
-	// Student verification
-	StudentVerificationProvider string `envconfig:"STUDENT_VERIFICATION_PROVIDER" required:"true"`
-	StudentVerificationAPIKey   string `envconfig:"STUDENT_VERIFICATION_API_KEY" required:"true"`
-
 	// Redis-backed shared rate limiting for the server runtime.
 	RedisURL string `envconfig:"REDIS_URL" required:"true"`
 
-	// Per-endpoint auth rate limiting (safe defaults per BACKEND_SPEC §10).
-	// Each endpoint class gets its own budget so that one noisy endpoint
-	// cannot starve another.
-	RegisterRateLimit  int           `envconfig:"REGISTER_RATE_LIMIT" default:"5"`
-	RegisterRateWindow time.Duration `envconfig:"REGISTER_RATE_WINDOW" default:"1m"`
-
-	LoginRateLimit  int           `envconfig:"LOGIN_RATE_LIMIT" default:"5"`
-	LoginRateWindow time.Duration `envconfig:"LOGIN_RATE_WINDOW" default:"1m"`
-
-	RefreshRateLimit  int           `envconfig:"REFRESH_RATE_LIMIT" default:"10"`
-	RefreshRateWindow time.Duration `envconfig:"REFRESH_RATE_WINDOW" default:"1m"`
-
-	ForgotPasswordRateLimit  int           `envconfig:"FORGOT_PASSWORD_RATE_LIMIT" default:"3"`
-	ForgotPasswordRateWindow time.Duration `envconfig:"FORGOT_PASSWORD_RATE_WINDOW" default:"1m"`
-
-	ResetPasswordRateLimit  int           `envconfig:"RESET_PASSWORD_RATE_LIMIT" default:"3"`
-	ResetPasswordRateWindow time.Duration `envconfig:"RESET_PASSWORD_RATE_WINDOW" default:"1m"`
+	// Rate limiting groups (safe defaults per BACKEND_SPEC §10).
+	AuthRateLimit  int           `envconfig:"AUTH_RATE_LIMIT" default:"5"`
+	AuthRateWindow time.Duration `envconfig:"AUTH_RATE_WINDOW" default:"1m"`
 
 	VerifyOTPRateLimit  int           `envconfig:"VERIFY_OTP_RATE_LIMIT" default:"3"`
 	VerifyOTPRateWindow time.Duration `envconfig:"VERIFY_OTP_RATE_WINDOW" default:"1m"`
+
+	GeneralAPIRateLimit  int           `envconfig:"GENERAL_API_RATE_LIMIT" default:"60"`
+	GeneralAPIRateWindow time.Duration `envconfig:"GENERAL_API_RATE_WINDOW" default:"1m"`
 
 	SyncRateLimit  int           `envconfig:"SYNC_RATE_LIMIT" default:"30"`
 	SyncRateWindow time.Duration `envconfig:"SYNC_RATE_WINDOW" default:"1m"`
@@ -81,9 +66,9 @@ type Config struct {
 	// Cleanup job
 	CleanupInterval    time.Duration `envconfig:"CLEANUP_INTERVAL" default:"1h"`
 	OTPRetentionPeriod time.Duration `envconfig:"OTP_RETENTION_PERIOD" default:"24h"`
-	// RefreshTokenRevokedRetention controls how long expired and revoked
-	// refresh tokens are kept before the cleanup job deletes them. It is
-	// mapped to CleanupConfig.RefreshTokenMaxAge.
+	// RefreshTokenRevokedRetention uses a legacy name but controls how long
+	// expired non-revoked and revoked refresh tokens are kept before the
+	// cleanup job deletes them. It is mapped to CleanupConfig.RefreshTokenMaxAge.
 	RefreshTokenRevokedRetention time.Duration `envconfig:"REFRESH_TOKEN_REVOKED_RETENTION" default:"168h"`
 }
 
@@ -100,12 +85,6 @@ var validSMTPTLSPolicies = map[string]bool{
 	"mandatory":     true,
 	"opportunistic": true,
 	"none":          true,
-}
-
-// validStudentVerificationProviders enumerates known provider names.
-var validStudentVerificationProviders = map[string]bool{
-	"sheerid": true,
-	"unidays": true,
 }
 
 // minJWTSecretLen is the minimum accepted length for the JWT signing secret.
@@ -166,11 +145,6 @@ func (c *Config) validate() error {
 		return fmt.Errorf("SMTP_TLS_POLICY must be one of mandatory, opportunistic, none; got %q", c.SMTPTLSPolicy)
 	}
 
-	// Student verification provider
-	if !validStudentVerificationProviders[strings.ToLower(c.StudentVerificationProvider)] {
-		return fmt.Errorf("STUDENT_VERIFICATION_PROVIDER must be one of sheerid, unidays; got %q", c.StudentVerificationProvider)
-	}
-
 	// Trusted proxies — validate that every entry is a valid IP or CIDR
 	if c.TrustedProxies != "" {
 		for _, entry := range strings.Split(c.TrustedProxies, ",") {
@@ -191,41 +165,23 @@ func (c *Config) validate() error {
 	}
 
 	// Rate limit values must be positive
-	if c.RegisterRateLimit <= 0 {
-		return fmt.Errorf("REGISTER_RATE_LIMIT must be positive, got %d", c.RegisterRateLimit)
+	if c.AuthRateLimit <= 0 {
+		return fmt.Errorf("AUTH_RATE_LIMIT must be positive, got %d", c.AuthRateLimit)
 	}
-	if c.RegisterRateWindow <= 0 {
-		return fmt.Errorf("REGISTER_RATE_WINDOW must be positive, got %s", c.RegisterRateWindow)
-	}
-	if c.LoginRateLimit <= 0 {
-		return fmt.Errorf("LOGIN_RATE_LIMIT must be positive, got %d", c.LoginRateLimit)
-	}
-	if c.LoginRateWindow <= 0 {
-		return fmt.Errorf("LOGIN_RATE_WINDOW must be positive, got %s", c.LoginRateWindow)
-	}
-	if c.RefreshRateLimit <= 0 {
-		return fmt.Errorf("REFRESH_RATE_LIMIT must be positive, got %d", c.RefreshRateLimit)
-	}
-	if c.RefreshRateWindow <= 0 {
-		return fmt.Errorf("REFRESH_RATE_WINDOW must be positive, got %s", c.RefreshRateWindow)
-	}
-	if c.ForgotPasswordRateLimit <= 0 {
-		return fmt.Errorf("FORGOT_PASSWORD_RATE_LIMIT must be positive, got %d", c.ForgotPasswordRateLimit)
-	}
-	if c.ForgotPasswordRateWindow <= 0 {
-		return fmt.Errorf("FORGOT_PASSWORD_RATE_WINDOW must be positive, got %s", c.ForgotPasswordRateWindow)
-	}
-	if c.ResetPasswordRateLimit <= 0 {
-		return fmt.Errorf("RESET_PASSWORD_RATE_LIMIT must be positive, got %d", c.ResetPasswordRateLimit)
-	}
-	if c.ResetPasswordRateWindow <= 0 {
-		return fmt.Errorf("RESET_PASSWORD_RATE_WINDOW must be positive, got %s", c.ResetPasswordRateWindow)
+	if c.AuthRateWindow <= 0 {
+		return fmt.Errorf("AUTH_RATE_WINDOW must be positive, got %s", c.AuthRateWindow)
 	}
 	if c.VerifyOTPRateLimit <= 0 {
 		return fmt.Errorf("VERIFY_OTP_RATE_LIMIT must be positive, got %d", c.VerifyOTPRateLimit)
 	}
 	if c.VerifyOTPRateWindow <= 0 {
 		return fmt.Errorf("VERIFY_OTP_RATE_WINDOW must be positive, got %s", c.VerifyOTPRateWindow)
+	}
+	if c.GeneralAPIRateLimit <= 0 {
+		return fmt.Errorf("GENERAL_API_RATE_LIMIT must be positive, got %d", c.GeneralAPIRateLimit)
+	}
+	if c.GeneralAPIRateWindow <= 0 {
+		return fmt.Errorf("GENERAL_API_RATE_WINDOW must be positive, got %s", c.GeneralAPIRateWindow)
 	}
 	if c.SyncRateLimit <= 0 {
 		return fmt.Errorf("SYNC_RATE_LIMIT must be positive, got %d", c.SyncRateLimit)

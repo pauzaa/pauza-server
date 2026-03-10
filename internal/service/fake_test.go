@@ -72,12 +72,19 @@ func (fakeTx) Conn() *pgx.Conn {
 // methods like GetVerifiedUserByEmail which pass the pool as a DBTX.
 // Because those calls are intercepted by the fake repo, Exec/QueryRow are
 // never reached.
-type fakePool struct{}
+type fakePool struct {
+	beginFn func(ctx context.Context) (pgx.Tx, error)
+}
 
 // Compile-time check: fakePool satisfies repository.Pool.
 var _ repository.Pool = (*fakePool)(nil)
 
-func (fakePool) Begin(context.Context) (pgx.Tx, error) { return &fakeTx{}, nil }
+func (f *fakePool) Begin(ctx context.Context) (pgx.Tx, error) {
+	if f != nil && f.beginFn != nil {
+		return f.beginFn(ctx)
+	}
+	return &fakeTx{}, nil
+}
 
 func (fakePool) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
 	panic("fakePool.Exec: unexpected call — repo fake should intercept all queries")
@@ -102,26 +109,31 @@ func (fakePool) Query(context.Context, string, ...any) (pgx.Rows, error) {
 // setup is caught immediately.
 type fakeAuthRepo struct {
 	// --- users ---
-	getUserByEmailFn          func(ctx context.Context, db repository.DBTX, email string) (repository.UserRow, error)
-	getUserByEmailForUpdateFn func(ctx context.Context, db repository.DBTX, email string) (repository.UserRow, error)
-	getVerifiedUserByEmailFn  func(ctx context.Context, db repository.DBTX, email string) (repository.UserRow, error)
-	getVerifiedUserByIDFn     func(ctx context.Context, db repository.DBTX, userID string) (repository.UserRow, error)
-	getUserByIDFn             func(ctx context.Context, db repository.DBTX, userID string) (repository.UserRow, error)
-	insertUserFn              func(ctx context.Context, db repository.DBTX, email, passwordHash, username string) (string, error)
-	setEmailVerifiedFn        func(ctx context.Context, db repository.DBTX, userID string) error
-	updatePasswordFn          func(ctx context.Context, db repository.DBTX, userID, passwordHash string) (int64, error)
-	deleteUnverifiedUserFn    func(ctx context.Context, db repository.DBTX, userID string) (int64, error)
-	updateUserFn              func(ctx context.Context, db repository.DBTX, userID string, name *string, username *string, leaderboardVisible *bool) (repository.UserRow, error)
-	isUsernameTakenFn         func(ctx context.Context, db repository.DBTX, username string, excludeUserID string) (bool, error)
-	deleteUserFn              func(ctx context.Context, db repository.DBTX, userID string) error
+	getUserByEmailFn               func(ctx context.Context, db repository.DBTX, email string) (repository.UserRow, error)
+	getUserByEmailForUpdateFn      func(ctx context.Context, db repository.DBTX, email string) (repository.UserRow, error)
+	getVerifiedUserByEmailFn       func(ctx context.Context, db repository.DBTX, email string) (repository.UserRow, error)
+	getVerifiedUserByIDFn          func(ctx context.Context, db repository.DBTX, userID string) (repository.UserRow, error)
+	getVerifiedUserByIDForUpdateFn func(ctx context.Context, db repository.DBTX, userID string) (repository.UserRow, error)
+	getUserByIDFn                  func(ctx context.Context, db repository.DBTX, userID string) (repository.UserRow, error)
+	insertUserFn                   func(ctx context.Context, db repository.DBTX, email, passwordHash, username string) (string, error)
+	setEmailVerifiedFn             func(ctx context.Context, db repository.DBTX, userID string) error
+	updatePasswordFn               func(ctx context.Context, db repository.DBTX, userID, passwordHash string) (int64, error)
+	deleteUnverifiedUserFn         func(ctx context.Context, db repository.DBTX, userID string) (int64, error)
+	updateUserFn                   func(ctx context.Context, db repository.DBTX, userID string, name *string, username *string, leaderboardVisible *bool) (repository.UserRow, error)
+	isUsernameTakenFn              func(ctx context.Context, db repository.DBTX, username string, excludeUserID string) (bool, error)
+	deleteUserFn                   func(ctx context.Context, db repository.DBTX, userID string) error
 
 	// --- otp_codes ---
-	insertOTPFn                  func(ctx context.Context, db repository.DBTX, userID, codeHash, purpose string, expiresAt time.Time) (string, error)
-	getActiveOTPForUpdateFn      func(ctx context.Context, db repository.DBTX, userID, purpose string) (repository.OTPRow, error)
-	incrementOTPAttemptsFn       func(ctx context.Context, db repository.DBTX, otpID string) error
-	markOTPUsedFn                func(ctx context.Context, db repository.DBTX, otpID string) error
-	deleteOTPsByUserAndPurposeFn func(ctx context.Context, db repository.DBTX, userID, purpose string) error
-	deleteOTPByIDFn              func(ctx context.Context, db repository.DBTX, otpID string) error
+	insertOTPFn                               func(ctx context.Context, db repository.DBTX, userID, codeHash, purpose string, expiresAt time.Time) (string, error)
+	getActiveOTPForUpdateFn                   func(ctx context.Context, db repository.DBTX, userID, purpose string) (repository.OTPRow, error)
+	countFailedOTPAttemptsSinceForUpdateFn    func(ctx context.Context, db repository.DBTX, userID, purpose string, since time.Time) (int, error)
+	getOldestFailedOTPAttemptSinceForUpdateFn func(ctx context.Context, db repository.DBTX, userID, purpose string, since time.Time) (time.Time, error)
+	insertFailedOTPAttemptFn                  func(ctx context.Context, db repository.DBTX, userID, purpose string, attemptedAt time.Time) error
+	sumOTPAttemptsSinceForUpdateFn            func(ctx context.Context, db repository.DBTX, userID, purpose string, since time.Time) (int, error)
+	incrementOTPAttemptsFn                    func(ctx context.Context, db repository.DBTX, otpID string) error
+	markOTPUsedFn                             func(ctx context.Context, db repository.DBTX, otpID string) error
+	deleteOTPsByUserAndPurposeFn              func(ctx context.Context, db repository.DBTX, userID, purpose string) error
+	deleteOTPByIDFn                           func(ctx context.Context, db repository.DBTX, otpID string) error
 
 	// --- refresh_tokens ---
 	insertRefreshTokenFn             func(ctx context.Context, db repository.DBTX, userID, tokenHash string, expiresAt time.Time) error
@@ -130,32 +142,12 @@ type fakeAuthRepo struct {
 	revokeAllRefreshTokensFn         func(ctx context.Context, db repository.DBTX, userID string) error
 	getUserEmailByIDFn               func(ctx context.Context, db repository.DBTX, userID string) (string, error)
 
-	// --- subscriptions ---
-	getActiveSubscriptionFn func(ctx context.Context, db repository.DBTX, userID string) (repository.SubscriptionRow, error)
+	// --- entitlement snapshots ---
+	getEntitlementSnapshotFn func(ctx context.Context, db repository.DBTX, userID string) (repository.EntitlementRow, error)
 }
 
 // Compile-time check: fakeAuthRepo satisfies repository.AuthRepository.
 var _ repository.AuthRepository = (*fakeAuthRepo)(nil)
-
-// ---------------------------------------------------------------------------
-// Fake subscription repository (satisfies repository.SubscriptionRepository)
-// ---------------------------------------------------------------------------
-
-// fakeSubscriptionRepo is a configurable in-memory implementation of
-// repository.SubscriptionRepository for service-layer unit tests.
-type fakeSubscriptionRepo struct {
-	listActivePlansFn func(ctx context.Context, db repository.DBTX) ([]repository.PlanRow, error)
-}
-
-// Compile-time check: fakeSubscriptionRepo satisfies repository.SubscriptionRepository.
-var _ repository.SubscriptionRepository = (*fakeSubscriptionRepo)(nil)
-
-func (f *fakeSubscriptionRepo) ListActivePlans(ctx context.Context, db repository.DBTX) ([]repository.PlanRow, error) {
-	if f.listActivePlansFn == nil {
-		panic("fakeSubscriptionRepo.ListActivePlans: not configured")
-	}
-	return f.listActivePlansFn(ctx, db)
-}
 
 func (f *fakeAuthRepo) GetUserByEmail(ctx context.Context, db repository.DBTX, email string) (repository.UserRow, error) {
 	if f.getUserByEmailFn == nil {
@@ -183,6 +175,13 @@ func (f *fakeAuthRepo) GetVerifiedUserByID(ctx context.Context, db repository.DB
 		panic("fakeAuthRepo.GetVerifiedUserByID: not configured")
 	}
 	return f.getVerifiedUserByIDFn(ctx, db, userID)
+}
+
+func (f *fakeAuthRepo) GetVerifiedUserByIDForUpdate(ctx context.Context, db repository.DBTX, userID string) (repository.UserRow, error) {
+	if f.getVerifiedUserByIDForUpdateFn == nil {
+		panic("fakeAuthRepo.GetVerifiedUserByIDForUpdate: not configured")
+	}
+	return f.getVerifiedUserByIDForUpdateFn(ctx, db, userID)
 }
 
 func (f *fakeAuthRepo) GetUserByID(ctx context.Context, db repository.DBTX, userID string) (repository.UserRow, error) {
@@ -232,6 +231,34 @@ func (f *fakeAuthRepo) GetActiveOTPForUpdate(ctx context.Context, db repository.
 		panic("fakeAuthRepo.GetActiveOTPForUpdate: not configured")
 	}
 	return f.getActiveOTPForUpdateFn(ctx, db, userID, purpose)
+}
+
+func (f *fakeAuthRepo) CountFailedOTPAttemptsSinceForUpdate(ctx context.Context, db repository.DBTX, userID, purpose string, since time.Time) (int, error) {
+	if f.countFailedOTPAttemptsSinceForUpdateFn == nil {
+		panic("fakeAuthRepo.CountFailedOTPAttemptsSinceForUpdate: not configured")
+	}
+	return f.countFailedOTPAttemptsSinceForUpdateFn(ctx, db, userID, purpose, since)
+}
+
+func (f *fakeAuthRepo) GetOldestFailedOTPAttemptSinceForUpdate(ctx context.Context, db repository.DBTX, userID, purpose string, since time.Time) (time.Time, error) {
+	if f.getOldestFailedOTPAttemptSinceForUpdateFn == nil {
+		panic("fakeAuthRepo.GetOldestFailedOTPAttemptSinceForUpdate: not configured")
+	}
+	return f.getOldestFailedOTPAttemptSinceForUpdateFn(ctx, db, userID, purpose, since)
+}
+
+func (f *fakeAuthRepo) InsertFailedOTPAttempt(ctx context.Context, db repository.DBTX, userID, purpose string, attemptedAt time.Time) error {
+	if f.insertFailedOTPAttemptFn == nil {
+		panic("fakeAuthRepo.InsertFailedOTPAttempt: not configured")
+	}
+	return f.insertFailedOTPAttemptFn(ctx, db, userID, purpose, attemptedAt)
+}
+
+func (f *fakeAuthRepo) SumOTPAttemptsSinceForUpdate(ctx context.Context, db repository.DBTX, userID, purpose string, since time.Time) (int, error) {
+	if f.sumOTPAttemptsSinceForUpdateFn == nil {
+		panic("fakeAuthRepo.SumOTPAttemptsSinceForUpdate: not configured")
+	}
+	return f.sumOTPAttemptsSinceForUpdateFn(ctx, db, userID, purpose, since)
 }
 
 func (f *fakeAuthRepo) IncrementOTPAttempts(ctx context.Context, db repository.DBTX, otpID string) error {
@@ -297,11 +324,11 @@ func (f *fakeAuthRepo) GetUserEmailByID(ctx context.Context, db repository.DBTX,
 	return f.getUserEmailByIDFn(ctx, db, userID)
 }
 
-func (f *fakeAuthRepo) GetActiveSubscription(ctx context.Context, db repository.DBTX, userID string) (repository.SubscriptionRow, error) {
-	if f.getActiveSubscriptionFn == nil {
-		panic("fakeAuthRepo.GetActiveSubscription: not configured")
+func (f *fakeAuthRepo) GetEntitlementSnapshot(ctx context.Context, db repository.DBTX, userID string) (repository.EntitlementRow, error) {
+	if f.getEntitlementSnapshotFn == nil {
+		panic("fakeAuthRepo.GetEntitlementSnapshot: not configured")
 	}
-	return f.getActiveSubscriptionFn(ctx, db, userID)
+	return f.getEntitlementSnapshotFn(ctx, db, userID)
 }
 
 func (f *fakeAuthRepo) UpdateUser(ctx context.Context, db repository.DBTX, userID string, name *string, username *string, leaderboardVisible *bool) (repository.UserRow, error) {
@@ -333,9 +360,11 @@ func (f *fakeAuthRepo) DeleteUser(ctx context.Context, db repository.DBTX, userI
 // assertion. If sendOTPFn is set it is called; otherwise SendOTP succeeds
 // with nil and the call is recorded.
 type fakeSender struct {
-	mu        sync.Mutex
-	calls     []fakeSendOTPCall
-	sendOTPFn func(ctx context.Context, to, otp, purpose string) error
+	mu         sync.Mutex
+	calls      []fakeSendOTPCall
+	probeCalls int
+	probeFn    func(ctx context.Context) error
+	sendOTPFn  func(ctx context.Context, to, otp, purpose string) error
 }
 
 // fakeSendOTPCall records the arguments of a single SendOTP invocation.
@@ -347,6 +376,17 @@ type fakeSendOTPCall struct {
 
 // Compile-time check: fakeSender satisfies mail.Sender.
 var _ mail.Sender = (*fakeSender)(nil)
+
+func (f *fakeSender) Probe(ctx context.Context) error {
+	f.mu.Lock()
+	f.probeCalls++
+	f.mu.Unlock()
+
+	if f.probeFn != nil {
+		return f.probeFn(ctx)
+	}
+	return nil
+}
 
 func (f *fakeSender) SendOTP(ctx context.Context, to, otp, purpose string) error {
 	f.mu.Lock()
@@ -366,4 +406,11 @@ func (f *fakeSender) sendOTPCalls() []fakeSendOTPCall {
 	out := make([]fakeSendOTPCall, len(f.calls))
 	copy(out, f.calls)
 	return out
+}
+
+// probeCallCount returns how many times Probe was invoked.
+func (f *fakeSender) probeCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.probeCalls
 }

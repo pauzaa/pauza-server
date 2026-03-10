@@ -156,6 +156,54 @@ func TestCleanup_OTP_PreservesUnexpired(t *testing.T) {
 	}
 }
 
+func TestCleanup_OTPFailedAttempts_DeletesOlderThanRetention(t *testing.T) {
+	pool := setupCleanupPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), testQueryTimeout)
+	defer cancel()
+
+	userID := insertCleanupUser(t, ctx, pool, "cleanup-otp-failed-old@example.com", "user_cleanup_otp_failed1")
+
+	_, err := pool.Exec(ctx,
+		`INSERT INTO otp_failed_attempts (user_id, purpose, attempted_at)
+		 VALUES ($1, 'password_reset', now() - interval '48 hours')`,
+		userID)
+	if err != nil {
+		t.Fatalf("inserting old otp_failed_attempts row: %v", err)
+	}
+
+	deleted, err := cleanupOTPFailedAttempts(ctx, pool, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("cleanupOTPFailedAttempts: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("expected 1 otp_failed_attempts row deleted, got %d", deleted)
+	}
+}
+
+func TestCleanup_OTPFailedAttempts_PreservesRecentRows(t *testing.T) {
+	pool := setupCleanupPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), testQueryTimeout)
+	defer cancel()
+
+	userID := insertCleanupUser(t, ctx, pool, "cleanup-otp-failed-recent@example.com", "user_cleanup_otp_failed2")
+
+	_, err := pool.Exec(ctx,
+		`INSERT INTO otp_failed_attempts (user_id, purpose, attempted_at)
+		 VALUES ($1, 'password_reset', now() - interval '1 hour')`,
+		userID)
+	if err != nil {
+		t.Fatalf("inserting recent otp_failed_attempts row: %v", err)
+	}
+
+	deleted, err := cleanupOTPFailedAttempts(ctx, pool, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("cleanupOTPFailedAttempts: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("expected 0 otp_failed_attempts rows deleted, got %d", deleted)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Expired refresh-token cleanup predicate tests
 // ---------------------------------------------------------------------------
@@ -249,16 +297,16 @@ func TestCleanup_RevokedRefreshToken_DeletesOldRevoked(t *testing.T) {
 
 	userID := insertCleanupUser(t, ctx, pool, "cleanup-revoked-old@example.com", "user_cleanup_rev1")
 
-	// Insert a revoked token with created_at 10 days ago.
+	// Insert a revoked token with revoked_at 10 days ago.
 	_, err := pool.Exec(ctx,
-		`INSERT INTO refresh_tokens (user_id, token_hash, expires_at, revoked, created_at)
+		`INSERT INTO refresh_tokens (user_id, token_hash, expires_at, revoked, revoked_at)
 		 VALUES ($1, 'hash-revoked-old', now() + interval '30 days', true, now() - interval '10 days')`,
 		userID)
 	if err != nil {
 		t.Fatalf("inserting old revoked refresh token: %v", err)
 	}
 
-	// Max age of 7 days — token was created 10 days ago and revoked, should be deleted.
+	// Max age of 7 days — token was revoked 10 days ago, so it should be deleted.
 	deleted, err := cleanupRevokedRefreshTokens(ctx, pool, 7*24*time.Hour)
 	if err != nil {
 		t.Fatalf("cleanupRevokedRefreshTokens: %v", err)
@@ -275,16 +323,16 @@ func TestCleanup_RevokedRefreshToken_PreservesRecentlyRevoked(t *testing.T) {
 
 	userID := insertCleanupUser(t, ctx, pool, "cleanup-revoked-recent@example.com", "user_cleanup_rev2")
 
-	// Insert a revoked token created 2 days ago.
+	// Insert a revoked token revoked 2 days ago.
 	_, err := pool.Exec(ctx,
-		`INSERT INTO refresh_tokens (user_id, token_hash, expires_at, revoked, created_at)
+		`INSERT INTO refresh_tokens (user_id, token_hash, expires_at, revoked, revoked_at)
 		 VALUES ($1, 'hash-revoked-recent', now() + interval '30 days', true, now() - interval '2 days')`,
 		userID)
 	if err != nil {
 		t.Fatalf("inserting recently revoked refresh token: %v", err)
 	}
 
-	// Max age of 7 days — token was created only 2 days ago, within retention.
+	// Max age of 7 days — token was revoked only 2 days ago, within retention.
 	deleted, err := cleanupRevokedRefreshTokens(ctx, pool, 7*24*time.Hour)
 	if err != nil {
 		t.Fatalf("cleanupRevokedRefreshTokens: %v", err)
@@ -318,6 +366,92 @@ func TestCleanup_RevokedRefreshToken_PreservesNonRevoked(t *testing.T) {
 	}
 	if deleted != 0 {
 		t.Errorf("expected 0 tokens deleted (not revoked), got %d", deleted)
+	}
+}
+
+func TestCleanup_RevokedRefreshToken_PreservesOldRecentlyRevoked(t *testing.T) {
+	pool := setupCleanupPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), testQueryTimeout)
+	defer cancel()
+
+	userID := insertCleanupUser(t, ctx, pool, "cleanup-revoked-old-created-recently-revoked@example.com", "user_cleanup_rev4")
+
+	// This token is old by creation time but was revoked only recently.
+	_, err := pool.Exec(ctx,
+		`INSERT INTO refresh_tokens (user_id, token_hash, expires_at, revoked, created_at, revoked_at)
+		 VALUES ($1, 'hash-revoked-old-created-recently-revoked', now() + interval '30 days', true, now() - interval '60 days', now() - interval '2 days')`,
+		userID)
+	if err != nil {
+		t.Fatalf("inserting old-but-recently-revoked refresh token: %v", err)
+	}
+
+	deleted, err := cleanupRevokedRefreshTokens(ctx, pool, 7*24*time.Hour)
+	if err != nil {
+		t.Fatalf("cleanupRevokedRefreshTokens: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("expected 0 revoked refresh tokens deleted (revoked within retention), got %d", deleted)
+	}
+
+	var remaining int
+	err = pool.QueryRow(ctx, `SELECT count(*) FROM refresh_tokens WHERE user_id = $1 AND token_hash = 'hash-revoked-old-created-recently-revoked'`, userID).Scan(&remaining)
+	if err != nil {
+		t.Fatalf("counting retained revoked refresh token: %v", err)
+	}
+	if remaining != 1 {
+		t.Fatalf("remaining rows = %d, want 1", remaining)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Sync tombstone cleanup predicate tests
+// ---------------------------------------------------------------------------
+
+func TestCleanup_SyncTombstones_DeletesOlderThanNinetyDays(t *testing.T) {
+	pool := setupCleanupPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), testQueryTimeout)
+	defer cancel()
+
+	userID := insertCleanupUser(t, ctx, pool, "cleanup-sync-old@example.com", "user_cleanup_sync1")
+
+	_, err := pool.Exec(ctx,
+		`INSERT INTO sync_tombstones (user_id, table_name, record_id, deleted_at)
+		 VALUES ($1, 'modes', 'mode-old', now() - interval '91 days')`,
+		userID)
+	if err != nil {
+		t.Fatalf("inserting old sync_tombstone row: %v", err)
+	}
+
+	deleted, err := cleanupSyncTombstones(ctx, pool, 90*24*time.Hour)
+	if err != nil {
+		t.Fatalf("cleanupSyncTombstones: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("expected 1 sync_tombstone row deleted, got %d", deleted)
+	}
+}
+
+func TestCleanup_SyncTombstones_PreservesRecentRows(t *testing.T) {
+	pool := setupCleanupPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), testQueryTimeout)
+	defer cancel()
+
+	userID := insertCleanupUser(t, ctx, pool, "cleanup-sync-recent@example.com", "user_cleanup_sync2")
+
+	_, err := pool.Exec(ctx,
+		`INSERT INTO sync_tombstones (user_id, table_name, record_id, deleted_at)
+		 VALUES ($1, 'modes', 'mode-recent', now() - interval '30 days')`,
+		userID)
+	if err != nil {
+		t.Fatalf("inserting recent sync_tombstone row: %v", err)
+	}
+
+	deleted, err := cleanupSyncTombstones(ctx, pool, 90*24*time.Hour)
+	if err != nil {
+		t.Fatalf("cleanupSyncTombstones: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("expected 0 sync_tombstone rows deleted, got %d", deleted)
 	}
 }
 
@@ -370,6 +504,24 @@ func TestCleanup_FullPass_MixedRows(t *testing.T) {
 		t.Fatalf("inserting fresh OTP: %v", err)
 	}
 
+	// OTP failed attempt: old (should be cleaned with 24h retention).
+	_, err = pool.Exec(ctx,
+		`INSERT INTO otp_failed_attempts (user_id, purpose, attempted_at)
+		 VALUES ($1, 'password_reset', now() - interval '48 hours')`,
+		userID)
+	if err != nil {
+		t.Fatalf("inserting old otp_failed_attempts row: %v", err)
+	}
+
+	// OTP failed attempt: recent (should survive 24h retention).
+	_, err = pool.Exec(ctx,
+		`INSERT INTO otp_failed_attempts (user_id, purpose, attempted_at)
+		 VALUES ($1, 'password_reset', now() - interval '1 hour')`,
+		userID)
+	if err != nil {
+		t.Fatalf("inserting recent otp_failed_attempts row: %v", err)
+	}
+
 	// Refresh: expired 10 days ago (should be cleaned with 7d max age).
 	_, err = pool.Exec(ctx,
 		`INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
@@ -388,22 +540,40 @@ func TestCleanup_FullPass_MixedRows(t *testing.T) {
 		t.Fatalf("inserting active token: %v", err)
 	}
 
-	// Refresh: revoked, created 10 days ago (should be cleaned).
+	// Refresh: revoked 10 days ago (should be cleaned).
 	_, err = pool.Exec(ctx,
-		`INSERT INTO refresh_tokens (user_id, token_hash, expires_at, revoked, created_at)
+		`INSERT INTO refresh_tokens (user_id, token_hash, expires_at, revoked, revoked_at)
 		 VALUES ($1, 'hash-full-revoked-old', now() + interval '30 days', true, now() - interval '10 days')`,
 		userID)
 	if err != nil {
 		t.Fatalf("inserting old revoked token: %v", err)
 	}
 
-	// Refresh: revoked, created 2 days ago (should survive).
+	// Refresh: revoked recently despite being created long ago (should survive).
 	_, err = pool.Exec(ctx,
-		`INSERT INTO refresh_tokens (user_id, token_hash, expires_at, revoked, created_at)
-		 VALUES ($1, 'hash-full-revoked-recent', now() + interval '30 days', true, now() - interval '2 days')`,
+		`INSERT INTO refresh_tokens (user_id, token_hash, expires_at, revoked, created_at, revoked_at)
+		 VALUES ($1, 'hash-full-revoked-recent', now() + interval '30 days', true, now() - interval '60 days', now() - interval '2 days')`,
 		userID)
 	if err != nil {
 		t.Fatalf("inserting recent revoked token: %v", err)
+	}
+
+	// Sync tombstone: old (should be cleaned at 90-day retention).
+	_, err = pool.Exec(ctx,
+		`INSERT INTO sync_tombstones (user_id, table_name, record_id, deleted_at)
+		 VALUES ($1, 'modes', 'mode-old', now() - interval '91 days')`,
+		userID)
+	if err != nil {
+		t.Fatalf("inserting old sync tombstone: %v", err)
+	}
+
+	// Sync tombstone: recent (should survive).
+	_, err = pool.Exec(ctx,
+		`INSERT INTO sync_tombstones (user_id, table_name, record_id, deleted_at)
+		 VALUES ($1, 'modes', 'mode-recent', now() - interval '30 days')`,
+		userID)
+	if err != nil {
+		t.Fatalf("inserting recent sync tombstone: %v", err)
 	}
 
 	// --- Run full cleanup pass ---
@@ -426,6 +596,16 @@ func TestCleanup_FullPass_MixedRows(t *testing.T) {
 		t.Errorf("expected 2 OTPs remaining, got %d", otpCount)
 	}
 
+	// Failed OTP attempts: 1 should survive (recent only).
+	var otpFailedAttemptCount int
+	err = pool.QueryRow(ctx, `SELECT count(*) FROM otp_failed_attempts WHERE user_id = $1`, userID).Scan(&otpFailedAttemptCount)
+	if err != nil {
+		t.Fatalf("counting remaining OTP failed attempts: %v", err)
+	}
+	if otpFailedAttemptCount != 1 {
+		t.Errorf("expected 1 otp_failed_attempts row remaining, got %d", otpFailedAttemptCount)
+	}
+
 	// Refresh tokens: 2 should survive (active + recently revoked).
 	var rtCount int
 	err = pool.QueryRow(ctx, `SELECT count(*) FROM refresh_tokens WHERE user_id = $1`, userID).Scan(&rtCount)
@@ -434,5 +614,15 @@ func TestCleanup_FullPass_MixedRows(t *testing.T) {
 	}
 	if rtCount != 2 {
 		t.Errorf("expected 2 refresh tokens remaining, got %d", rtCount)
+	}
+
+	// Sync tombstones: 1 should survive (recent only).
+	var tombstoneCount int
+	err = pool.QueryRow(ctx, `SELECT count(*) FROM sync_tombstones WHERE user_id = $1`, userID).Scan(&tombstoneCount)
+	if err != nil {
+		t.Fatalf("counting remaining sync tombstones: %v", err)
+	}
+	if tombstoneCount != 1 {
+		t.Errorf("expected 1 sync_tombstone row remaining, got %d", tombstoneCount)
 	}
 }

@@ -2,6 +2,7 @@ package service
 
 import (
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -111,16 +112,15 @@ func TestServiceMessage(t *testing.T) {
 	}
 }
 
-// TestSubscriptionInfo_Features_MapType verifies that SubscriptionInfo.Features
-// is map[string]any (finding #6 verification).
-func TestSubscriptionInfo_Features_MapType(t *testing.T) {
+// TestEntitlementInfo_CurrentPeriodEnd_PointerType verifies that
+// EntitlementInfo.CurrentPeriodEnd accepts a *time.Time value.
+func TestEntitlementInfo_CurrentPeriodEnd_PointerType(t *testing.T) {
 	t.Parallel()
 
-	info := SubscriptionInfo{}
-	// Assign map[string]any — this is a compile-time check that the field
-	// type is map[string]any rather than map[string]interface{}.
-	info.Features = map[string]any{"key": "value"}
-	if info.Features["key"] != "value" {
-		t.Error("expected Features to hold the assigned value")
+	now := time.Now().UTC()
+	info := EntitlementInfo{}
+	info.CurrentPeriodEnd = &now
+	if info.CurrentPeriodEnd == nil || !info.CurrentPeriodEnd.Equal(now) {
+		t.Error("expected CurrentPeriodEnd to hold the assigned time")
 	}
 }

@@ -132,6 +132,75 @@ func TestSendOTP_CancelledContext(t *testing.T) {
 	}
 }
 
+func TestProbe_CancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	s := newTestSender()
+	err := s.Probe(ctx)
+	if err == nil {
+		t.Fatal("expected error for cancelled context")
+	}
+	if !strings.Contains(err.Error(), "probing smtp transport") {
+		t.Errorf("error = %q, want it to contain %q", err, "probing smtp transport")
+	}
+	if !strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("error = %q, want it to contain %q", err, "context canceled")
+	}
+}
+
+func TestProbe_Success(t *testing.T) {
+	ln, addr := fakeSMTPServer(t, "unused@example.com")
+	defer ln.Close()
+
+	host, port := splitHostPort(t, addr)
+	s := NewSMTPSender(SMTPConfig{
+		Host:             host,
+		Port:             port,
+		Username:         "user",
+		Password:         "pass",
+		From:             "noreply@example.com",
+		OTPExpiryMinutes: 10,
+		Timeout:          30 * time.Second,
+		TLSPolicy:        "none",
+		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+
+	if err := s.Probe(context.Background()); err != nil {
+		t.Fatalf("Probe() unexpected error: %v", err)
+	}
+}
+
+func TestProbe_DialFailureHasProbePrefix(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	host, port := splitHostPort(t, addr)
+	s := NewSMTPSender(SMTPConfig{
+		Host:             host,
+		Port:             port,
+		Username:         "user",
+		Password:         "pass",
+		From:             "noreply@example.com",
+		OTPExpiryMinutes: 10,
+		Timeout:          30 * time.Second,
+		TLSPolicy:        "none",
+		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+
+	err = s.Probe(context.Background())
+	if err == nil {
+		t.Fatal("expected probe error, got nil")
+	}
+	if !strings.Contains(err.Error(), "probing smtp transport") {
+		t.Errorf("error = %q, want it to contain %q", err, "probing smtp transport")
+	}
+}
+
 func TestSendOTP_HeaderInjection(t *testing.T) {
 	s := newTestSender()
 

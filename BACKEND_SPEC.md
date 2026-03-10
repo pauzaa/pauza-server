@@ -24,13 +24,15 @@
 
 The Pauza backend provides server-side infrastructure for the Pauza digital wellbeing mobile application. Its primary responsibilities are:
 
+This specification is a target design document. Some sections describe functionality that is already implemented, while others describe planned functionality that is not implemented yet. Status labels used throughout: `✅ Implemented` and `🔲 Planned`.
+
 - **User authentication** (registration, login, password reset)
 - **Bidirectional data sync** between the client's local SQLite database and the server's PostgreSQL database
-- **Subscription management** (plan definitions, RevenueCat webhook processing, entitlement enforcement)
+- **Subscription management** (RevenueCat webhook ingestion, entitlement enforcement)
 - **Social features** (friendships, shared stats)
 - **Leaderboards** (streak-based and focus-time-based rankings)
 - **Push notifications** via Firebase Cloud Messaging
-- **Admin panel API** for user management, subscription plan configuration, and platform analytics
+- **Admin panel API** for user management and platform analytics
 
 ### 1.2 Tech Stack
 
@@ -41,7 +43,6 @@ The Pauza backend provides server-side infrastructure for the Pauza digital well
 | Authentication | JWT (access + refresh tokens) |
 | In-App Purchases | RevenueCat (webhook + API verification) |
 | Push Notifications | Firebase Cloud Messaging (Admin SDK) |
-| Student Verification | Third-party service (SheerID / UNiDAYS) |
 | Containerization | Docker / Docker Compose |
 | DB Migrations | golang-migrate |
 
@@ -49,8 +50,8 @@ The Pauza backend provides server-side infrastructure for the Pauza digital well
 
 - **Offline-first**: The mobile client's local SQLite database is the source of truth. The backend serves as a synchronized replica for backup, restore, and social/leaderboard features.
 - **Bidirectional sync**: Data flows both ways. The client pushes local changes to the server, and pulls server-side changes back (e.g., after restoring on a new device).
-- **Timestamp-based sync with last-write-wins**: Each record has an `updated_at` timestamp. During sync, the most recently updated version of a record wins.
-- **Single-device model**: One account is expected to be active on one device at a time. Sync is not designed for concurrent multi-device editing.
+- **Timestamp-based sync with last-write-wins**: Each record has an `updated_at` timestamp. During sync, the most recently updated version of a record wins. This conflict model is only acceptable under the single-device assumption; concurrent edits from multiple devices can silently overwrite older writes.
+- **Single-device model**: One account is expected to be active on one device at a time. Sync is not designed for concurrent multi-device editing, and concurrent multi-device use can silently lose writes under the last-write-wins model.
 - **Subscription enforcement on both client and server**: The client hides premium UI features, and the server rejects requests to premium-only endpoints for non-subscribers.
 
 ---
@@ -142,7 +143,7 @@ Client                          Server
 - Refresh tokens are stored as **hashed values** (SHA-256) in the database.
 - On each refresh, the old token is revoked and a new pair is issued (token rotation).
 - If a revoked refresh token is reused, **all refresh tokens for that user are revoked** (indicates token theft).
-- Refresh-token rows will grow over time; cleanup is a later operational concern. A periodic cleanup job should eventually delete expired and long-revoked rows.
+- Refresh-token rows will grow over time; cleanup is a later operational concern. A periodic cleanup job should eventually delete expired rows and revoked rows based on revocation time.
 
 ### 2.4 Password Reset Flow
 
@@ -153,7 +154,8 @@ Client                          Server
   |  { email }                    |
   |------------------------------>|
   |                               |  If email exists: generate OTP, send email
-  |  200 { message }              |  Always return 200 (prevent enumeration)
+  |  200 { message }              |  Return 200 for success or unknown email
+  |  5xx { error }                |  Return 5xx for infrastructure/delivery failure
   |<------------------------------|
   |                               |
   |  POST /auth/reset-password    |
@@ -224,13 +226,14 @@ CREATE TABLE refresh_tokens (
   token_hash TEXT NOT NULL UNIQUE,
   expires_at TIMESTAMPTZ NOT NULL,
   revoked    BOOLEAN NOT NULL DEFAULT FALSE,
+  revoked_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_refresh_tokens_user ON refresh_tokens (user_id, revoked);
 CREATE INDEX idx_refresh_tokens_expires_at ON refresh_tokens (expires_at);
-CREATE INDEX idx_refresh_tokens_revoked_created
-    ON refresh_tokens (created_at) WHERE revoked = true;
+CREATE INDEX idx_refresh_tokens_revoked_at
+    ON refresh_tokens (revoked_at) WHERE revoked = true;
 ```
 
 #### `admin_credentials`
@@ -244,70 +247,32 @@ CREATE TABLE admin_credentials (
 );
 ```
 
-#### `subscription_plans`
+#### `user_entitlements`
 
 ```sql
-CREATE TABLE subscription_plans (
-  id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name                     TEXT NOT NULL,
-  duration_type            TEXT NOT NULL CHECK (duration_type IN ('monthly', 'yearly', 'lifetime')),
-  price_cents              INTEGER NOT NULL CHECK (price_cents >= 0),
-  currency                 TEXT NOT NULL DEFAULT 'USD',
-  features_json            JSONB NOT NULL DEFAULT '{}',
-  is_active                BOOLEAN NOT NULL DEFAULT TRUE,
-  student_discount_percent INTEGER NOT NULL DEFAULT 0 CHECK (student_discount_percent BETWEEN 0 AND 100),
-  created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-```
+CREATE TABLE user_entitlements (
+  id                              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id                         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  entitlement                     TEXT NOT NULL,
+  is_active                       BOOLEAN NOT NULL DEFAULT FALSE,
+  revenuecat_app_user_id          TEXT,
+  revenuecat_original_app_user_id TEXT,
+  current_period_end              TIMESTAMPTZ,
+  last_webhook_event_at           TIMESTAMPTZ,
+  created_at                      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at                      TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-`features_json` stores a JSON object describing which premium features this plan unlocks. Example:
-
-```json
-{
-  "friendships": true,
-  "advanced_stats": true,
-  "unlimited_modes": true
-}
-```
-
-#### `subscription_plan_discounts`
-
-```sql
-CREATE TABLE subscription_plan_discounts (
-  id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  plan_id          UUID NOT NULL REFERENCES subscription_plans(id) ON DELETE CASCADE,
-  discount_percent INTEGER NOT NULL CHECK (discount_percent BETWEEN 1 AND 100),
-  starts_at        TIMESTAMPTZ NOT NULL,
-  ends_at          TIMESTAMPTZ NOT NULL,
-  description      TEXT NOT NULL DEFAULT '',
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-
-  CHECK (ends_at > starts_at)
+  CHECK (length(trim(entitlement)) > 0),
+  UNIQUE (user_id, entitlement)
 );
 
-CREATE INDEX idx_plan_discounts_plan ON subscription_plan_discounts (plan_id, starts_at, ends_at);
+CREATE INDEX idx_user_entitlements_user_active ON user_entitlements (user_id, is_active);
+CREATE INDEX idx_user_entitlements_entitlement_active ON user_entitlements (entitlement, is_active);
+CREATE INDEX idx_user_entitlements_rc_app_user_id ON user_entitlements (revenuecat_app_user_id);
+CREATE INDEX idx_user_entitlements_rc_original_app_user_id ON user_entitlements (revenuecat_original_app_user_id);
 ```
 
-#### `user_subscriptions`
-
-```sql
-CREATE TABLE user_subscriptions (
-  id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id                  UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  plan_id                  UUID NOT NULL REFERENCES subscription_plans(id),
-  revenuecat_subscription_id TEXT,
-  status                   TEXT NOT NULL CHECK (status IN ('active', 'expired', 'cancelled', 'trial')),
-  current_period_start     TIMESTAMPTZ,
-  current_period_end       TIMESTAMPTZ,
-  is_student               BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX idx_user_subscriptions_user ON user_subscriptions (user_id, status);
-CREATE INDEX idx_user_subscriptions_revenuecat ON user_subscriptions (revenuecat_subscription_id);
-```
+This table stores the backend's derived entitlement snapshot for authorization. The current product model uses a single entitlement value, `premium`, but the schema permits one row per user + entitlement if additional entitlements are introduced later. When RevenueCat-backed entitlements are reconciled, `revenuecat_app_user_id` and `revenuecat_original_app_user_id` store the canonical identifiers returned for the current customer record at the time of reconciliation. They are not intended to preserve every historical alias or transfer path; alias resolution happens during reconciliation against RevenueCat's current customer state.
 
 #### `friendships`
 
@@ -546,6 +511,8 @@ CREATE INDEX idx_streak_aggregates_qualified ON streak_daily_aggregates (user_id
 
 The sync protocol uses a single endpoint (`POST /api/v1/sync`) to exchange data bidirectionally between client and server. It is designed for an offline-first, single-device architecture.
 
+> **Important:** This protocol assumes one active device per account. Its timestamp-based last-write-wins behavior can silently lose data if the same account is edited concurrently on multiple devices. Supporting true multi-device concurrency would require a different conflict-resolution model in a future revision.
+
 ### 4.2 Sync Request
 
 The client sends:
@@ -685,7 +652,7 @@ All endpoints are prefixed with `/api/v1` unless otherwise noted.
 | `Content-Type` | `application/json` | All requests with a body |
 | `Authorization` | `Bearer <access_token>` | All authenticated endpoints |
 
-### 5.1 Authentication
+### 5.1 Authentication ✅ Implemented
 
 #### `POST /api/v1/auth/register`
 
@@ -818,7 +785,7 @@ Reset password using OTP.
 | `401` | `{ "error": { "code": "UNAUTHORIZED", ... } }` | Invalid/expired OTP |
 | `422` | `{ "error": { "code": "VALIDATION_ERROR", ... } }` | Password too weak |
 
-### 5.2 Sync
+### 5.2 Sync ✅ Implemented
 
 #### `POST /api/v1/sync`
 
@@ -836,7 +803,7 @@ Bidirectional data synchronization. See [Section 4](#4-sync-protocol) for full p
 | `401` | Error | Unauthorized |
 | `422` | Error | Malformed sync payload |
 
-### 5.3 Profile
+### 5.3 Profile ✅ Implemented
 
 #### `GET /api/v1/me`
 
@@ -856,21 +823,14 @@ Returns the authenticated user's profile and current subscription status.
   "leaderboard_visible": true,
   "created_at": "2024-01-15T10:30:00Z",
   "subscription": {
-    "plan_id": "uuid",
-    "plan_name": "Premium",
-    "status": "active",
-    "is_student": false,
-    "current_period_end": "2024-02-15T10:30:00Z",
-    "features": {
-      "friendships": true,
-      "advanced_stats": true,
-      "unlimited_modes": true
-    }
+    "entitlement": "premium",
+    "is_active": true,
+    "current_period_end": "2024-02-15T10:30:00Z"
   }
 }
 ```
 
-If the user has no active subscription, `subscription` is `null`.
+If the user has no stored premium entitlement snapshot, `subscription` is `null`.
 
 #### `PATCH /api/v1/me`
 
@@ -904,7 +864,7 @@ All fields are optional. Only provided fields are updated.
 | `409` | Error with code `CONFLICT` | Username already taken |
 | `422` | Error with code `VALIDATION_ERROR` | Invalid input |
 
-#### `POST /api/v1/me/photo`
+#### `POST /api/v1/me/photo` 🔲 Planned
 
 Upload a profile photo.
 
@@ -957,7 +917,7 @@ Permanently delete the user account and all associated data.
 | `200` | `{ "message": "Account deleted" }` | Success |
 | `401` | Error | Wrong password |
 
-### 5.4 Friendships
+### 5.4 Friendships 🔲 Planned
 
 All friendship endpoints require an active premium subscription. Returns `403` with error code `SUBSCRIPTION_REQUIRED` if the user is on the free tier.
 
@@ -1003,11 +963,11 @@ Send a friendship request.
 
 ```json
 {
-  "query": "janedoe"
+  "username": "janedoe"
 }
 ```
 
-The `query` field is matched against both username (exact, case-insensitive) and email (exact, case-insensitive). The server determines which field it matches.
+The `username` field is matched against username only (exact, case-insensitive).
 
 **Responses:**
 
@@ -1154,7 +1114,7 @@ Search for users to add as friends.
 
 **Query parameters:** `q` (required, min 3 characters).
 
-Searches by username (prefix match, case-insensitive) and email (exact match, case-insensitive). Does not return the current user. Does not reveal whether a result is from username or email match.
+Searches by username only (prefix match, case-insensitive). Does not return the current user.
 
 **Response (`200`):**
 
@@ -1173,7 +1133,7 @@ Searches by username (prefix match, case-insensitive) and email (exact match, ca
 
 Results are capped at 20 entries.
 
-### 5.5 Leaderboard
+### 5.5 Leaderboard 🔲 Planned
 
 #### `GET /api/v1/leaderboard/streaks`
 
@@ -1249,69 +1209,11 @@ Leaderboard ranked by total cumulative focus time.
 }
 ```
 
-### 5.6 Subscriptions (Client-Facing)
+### 5.6 Subscriptions (Client-Facing) 🔲 Planned
 
-#### `GET /api/v1/subscriptions/plans`
+Client-facing purchase flows are handled through the RevenueCat SDK in the mobile app. The backend's role is limited to storing a reconciled entitlement snapshot for authorization and account-state display.
 
-List all active subscription plans with any currently running discounts.
-
-**Auth:** Not required.
-
-**Response (`200`):**
-
-```json
-{
-  "plans": [
-    {
-      "id": "uuid",
-      "name": "Premium Monthly",
-      "duration_type": "monthly",
-      "price_cents": 499,
-      "currency": "USD",
-      "student_discount_percent": 50,
-      "features": {
-        "friendships": true,
-        "advanced_stats": true,
-        "unlimited_modes": true
-      },
-      "active_discount": {
-        "discount_percent": 20,
-        "ends_at": "2024-02-01T00:00:00Z",
-        "description": "New Year Sale"
-      }
-    }
-  ]
-}
-```
-
-`active_discount` is `null` if no time-limited discount is currently running for that plan. Only plans where `is_active = true` are returned.
-
-#### `POST /api/v1/subscriptions/verify-student`
-
-Initiate third-party student verification.
-
-**Auth:** Required (JWT).
-
-**Request:**
-
-```json
-{
-  "verification_provider": "sheerid"
-}
-```
-
-**Response (`200`):**
-
-```json
-{
-  "verification_url": "https://verify.sheerid.com/...",
-  "expires_at": "2024-01-21T10:30:00Z"
-}
-```
-
-The client opens the verification URL in a webview. Upon successful verification, the third-party service calls a webhook (or the client polls) to confirm student status. The backend then sets `is_student = true` on the user's subscription.
-
-### 5.7 Push Notification Device Registration
+### 5.7 Push Notification Device Registration 🔲 Planned
 
 #### `POST /api/v1/devices`
 
@@ -1341,11 +1243,19 @@ If the token already exists for this user, its `updated_at` is refreshed. If the
 |---|---|---|
 | `200` | `{ "message": "Device registered" }` | Success |
 
-#### `DELETE /api/v1/devices/:token`
+#### `POST /api/v1/devices/unregister`
 
-Unregister an FCM device token (e.g., on logout).
+Unregister an FCM device token (e.g., on logout) without placing the raw token in the URL.
 
 **Auth:** Required (JWT).
+
+**Request:**
+
+```json
+{
+  "fcm_token": "firebase-device-token-string"
+}
+```
 
 **Response:**
 
@@ -1353,32 +1263,34 @@ Unregister an FCM device token (e.g., on logout).
 |---|---|---|
 | `200` | `{ "message": "Device unregistered" }` | Success (also returned if token not found, for idempotency) |
 
-### 5.8 RevenueCat Webhook
+### 5.8 RevenueCat Webhook 🔲 Planned
 
 #### `POST /api/v1/webhooks/revenuecat`
 
-Receives subscription lifecycle events from RevenueCat.
+Receives RevenueCat lifecycle notifications that trigger entitlement reconciliation.
 
-**Auth:** Verified via a shared webhook secret in the `Authorization` header (configured in RevenueCat dashboard and the backend's environment variables).
+**Auth:** Verified via a shared webhook secret in the `Authorization` header using the format `Authorization: Bearer <revenuecat_webhook_secret>` (configured in RevenueCat dashboard and the backend's environment variables).
 
-**Handled event types:**
+Webhook handling requirements:
 
-| RevenueCat Event | Backend Action |
-|---|---|
-| `INITIAL_PURCHASE` | Create `user_subscriptions` row with status `active` |
-| `RENEWAL` | Update `current_period_start`/`current_period_end`, set status `active` |
-| `CANCELLATION` | Set status `cancelled` |
-| `EXPIRATION` | Set status `expired` |
-| `PRODUCT_CHANGE` | Update `plan_id` to the new product |
-| `BILLING_ISSUE` | Optionally flag the subscription for follow-up |
+1. The webhook payload is treated as a **signal to reconcile**, not as the source of truth for entitlement state.
+2. Handling must be **idempotent**. RevenueCat may deliver the same webhook more than once, and replayed deliveries must converge on the same final `user_entitlements` state.
+3. Unknown event types, additional fields, and forward-compatible payload changes must be tolerated without failing the webhook.
+4. After receiving a valid webhook, the backend fetches the current subscriber/customer state from the RevenueCat API and derives entitlement state from the customer's current entitlements rather than directly applying the raw event payload.
+5. The backend should capture and reconcile both `app_user_id` and `original_app_user_id` when present. RevenueCat aliases, restores, and transfer scenarios can cause the active entitlement to move between identifiers, so reconciliation must consider the current canonical customer state rather than assuming a one-event/one-user mapping.
+6. The backend persists the reconciled identifiers and entitlement snapshot in `user_entitlements`, including `revenuecat_app_user_id`, `revenuecat_original_app_user_id`, `is_active`, `current_period_end`, and `last_webhook_event_at`. Those identifier columns reflect the canonical customer identifiers from the latest successful reconciliation, not a full alias history.
 
-The backend maps the RevenueCat `app_user_id` to the internal `user_id`.
+Operational notes:
+
+- Authenticated, well-formed webhook deliveries should be acknowledged with `200` as soon as they are accepted for reconciliation so RevenueCat does not keep retrying unnecessarily.
+- Duplicate deliveries should still return `200`.
+- Invalid or missing webhook authorization should return `401`.
 
 **Response:**
 
-Always returns `200` to acknowledge receipt. RevenueCat retries on non-2xx responses.
+Returns `200` for accepted webhook deliveries. RevenueCat retries on non-2xx responses.
 
-### 5.9 Admin Endpoints
+### 5.9 Admin Endpoints 🔲 Planned
 
 All admin endpoints are prefixed with `/api/v1/admin` and require admin authentication via a separate admin JWT obtained from the admin login endpoint.
 
@@ -1420,7 +1332,7 @@ List users with search and pagination.
       "name": "John Doe",
       "username": "johndoe",
       "profile_picture_url": "https://...",
-      "subscription_status": "active",
+      "premium_entitlement_active": true,
       "created_at": "2024-01-15T10:30:00Z"
     }
   ],
@@ -1430,7 +1342,7 @@ List users with search and pagination.
 
 #### `GET /api/v1/admin/users/:id`
 
-Get detailed user info including subscription history, friend count, sync activity.
+Get detailed user info including entitlement state, friend count, and sync activity.
 
 #### `GET /api/v1/admin/stats`
 
@@ -1442,80 +1354,35 @@ Aggregate platform statistics.
 {
   "total_users": 1500,
   "active_users_30d": 800,
-  "total_subscribers": 200,
-  "active_subscriptions": {
-    "monthly": 120,
-    "yearly": 60,
-    "lifetime": 20
-  },
-  "student_subscribers": 45,
+  "users_with_premium_entitlement": 200,
+  "active_premium_entitlements": 180,
   "total_friendships": 350,
   "avg_streak_days": 8.5,
   "avg_daily_focus_time_ms": 5400000
 }
 ```
 
-#### Subscription Plan CRUD
+#### Manual Entitlement Management
 
-**`GET /api/v1/admin/subscription-plans`** — List all plans (including inactive).
-
-**`POST /api/v1/admin/subscription-plans`** — Create a new plan.
-
-```json
-{
-  "name": "Premium Monthly",
-  "duration_type": "monthly",
-  "price_cents": 499,
-  "currency": "USD",
-  "features_json": { "friendships": true, "advanced_stats": true, "unlimited_modes": true },
-  "is_active": true,
-  "student_discount_percent": 50
-}
-```
-
-**`GET /api/v1/admin/subscription-plans/:id`** — Get plan details with active discount info.
-
-**`PUT /api/v1/admin/subscription-plans/:id`** — Update a plan. Accepts the same body as POST (all fields optional).
-
-**`DELETE /api/v1/admin/subscription-plans/:id`** — Deactivate a plan (sets `is_active = false`). Plans with active subscribers cannot be hard-deleted.
-
-#### Discount Management
-
-**`POST /api/v1/admin/subscription-plans/:id/discounts`** — Create a time-limited discount for a plan.
-
-```json
-{
-  "discount_percent": 20,
-  "starts_at": "2024-02-01T00:00:00Z",
-  "ends_at": "2024-02-14T23:59:59Z",
-  "description": "Valentine's Day Sale"
-}
-```
-
-**`PUT /api/v1/admin/discounts/:id`** — Update a discount.
-
-**`DELETE /api/v1/admin/discounts/:id`** — Delete a discount.
-
-#### Manual Subscription Management
-
-**`POST /api/v1/admin/users/:id/subscription`** — Manually grant or revoke a subscription.
+**`POST /api/v1/admin/users/:id/entitlements`** — Manually grant or revoke an entitlement.
 
 ```json
 {
   "action": "grant",
-  "plan_id": "uuid",
-  "expires_at": "2024-12-31T23:59:59Z",
-  "is_student": false
+  "entitlement": "premium",
+  "expires_at": "2024-12-31T23:59:59Z"
 }
 ```
 
-`action` must be `"grant"` or `"revoke"`.
+`action` must be `"grant"` or `"revoke"`. `expires_at` is optional and can be used for temporary grants. Admin grant/revoke actions are durable overrides of the stored entitlement snapshot for authorization: they remain in effect until an admin changes them again or a grant expires, and they are not automatically overwritten by the next RevenueCat webhook reconciliation.
 
-**`GET /api/v1/admin/subscriptions`** — List all subscriptions with filters.
+**`GET /api/v1/admin/entitlements`** — List entitlement records with filters.
 
-**Query parameters:** `status` (active/expired/cancelled/trial), `page`, `limit`.
+**Query parameters:** `entitlement`, `is_active`, `page`, `limit`.
 
-### 5.10 Health Probes
+This listing is oriented around stored entitlement state (for example, filtering active `premium` entitlements), not plan type.
+
+### 5.10 Health Probes ✅ Implemented
 
 Two health-check endpoints exist at the root level (not under `/api/v1`). They
 share the same JSON response shape but serve different purposes in container
@@ -1564,7 +1431,7 @@ When the database is unreachable:
 
 ---
 
-## 6. Subscription System
+## 6. Subscription System 🔲 Planned
 
 ### 6.1 Architecture
 
@@ -1572,34 +1439,32 @@ When the database is unreachable:
 App Store / Google Play
         |
         v
-    RevenueCat  ----webhook---->  Pauza Backend
+    RevenueCat  ----webhook---->  Pauza Backend  ----API----> RevenueCat
         |                              |
         v                              v
-  Client SDK                   user_subscriptions table
-  (purchase flow)              (source of truth for
-                                entitlement checks)
+  Client SDK                   user_entitlements table
+  (purchase flow +             (backend entitlement snapshot
+   customer info)               for authorization)
 ```
 
-1. **Plan definitions** are managed in the Pauza backend via the admin panel. The admin creates/edits subscription plans with pricing, features, and discount configurations.
-2. **Payment processing** is handled by RevenueCat. The Flutter app uses the RevenueCat SDK to present purchase UI and process payments through App Store / Google Play.
-3. **Entitlement sync**: RevenueCat sends webhook events to `POST /api/v1/webhooks/revenuecat` on subscription lifecycle changes. The backend updates `user_subscriptions` accordingly.
-4. **Entitlement verification**: The backend can also verify entitlements by calling the RevenueCat REST API as a fallback (e.g., if a webhook is missed).
+1. **Products, pricing, offerings, and discounts** are owned by RevenueCat and the underlying app stores, not by the Pauza backend.
+2. **Payment processing** is handled by RevenueCat. The Flutter app uses the RevenueCat SDK to present purchase UI and read current customer info.
+3. **Webhook-driven reconciliation**: RevenueCat sends lifecycle notifications to `POST /api/v1/webhooks/revenuecat`. The backend treats those notifications as triggers to fetch current subscriber state and reconcile `user_entitlements`.
+4. **Backend authorization snapshot**: The backend stores the derived entitlement state it needs for server-side access control and may reconcile through the RevenueCat API if a webhook is missed or a state mismatch is detected.
 
 ### 6.2 Subscription Tiers
 
 | Tier | Cost | Access |
 |---|---|---|
 | **Free** | $0 | Core features: modes (limited count), basic stats, basic streaks |
-| **Premium** | Defined per plan (monthly/yearly/lifetime) | All features: friendships, advanced stats, unlimited modes, leaderboard participation, and any future premium features |
-
-The specific feature gates are defined in the plan's `features_json` and returned in the `GET /api/v1/me` response.
+| **Premium** | Determined by the current RevenueCat offering and store pricing | All premium-gated features, represented server-side by the `premium` entitlement |
 
 ### 6.3 Enforcement
 
 Subscription status is enforced on **both** client and server:
 
-- **Client-side**: The Flutter app reads the `subscription` field from `GET /api/v1/me` and hides/disables premium UI features for free-tier users.
-- **Server-side**: Endpoints that require a premium subscription (e.g., all `/friends/*` endpoints) check the user's subscription status. If the user does not have an active subscription, the server returns:
+- **Client-side**: The Flutter app uses RevenueCat SDK customer info for purchase UX and may also read the backend `subscription` snapshot from `GET /api/v1/me` for account state display.
+- **Server-side**: Endpoints that require premium access (e.g., all `/friends/*` endpoints) check whether the user has an active `premium` entitlement. If not, the server returns:
 
 ```json
 {
@@ -1614,18 +1479,9 @@ HTTP status: `403 Forbidden`.
 
 Premium-gated endpoints are marked in their documentation with **Subscription: Premium**.
 
-### 6.4 Student Discounts
-
-1. User initiates verification via `POST /api/v1/subscriptions/verify-student`.
-2. Backend generates a verification session with the third-party provider (SheerID / UNiDAYS) and returns a `verification_url`.
-3. User completes verification in a webview.
-4. Third-party provider confirms student status via a callback/webhook to the backend.
-5. Backend sets `is_student = true` on the user's subscription record.
-6. The discounted price is applied on the next renewal (managed via RevenueCat promotional offers or introductory pricing).
-
 ---
 
-## 7. Friendships
+## 7. Friendships 🔲 Planned
 
 ### 7.1 Overview
 
@@ -1664,7 +1520,7 @@ Friendships allow premium users to connect with each other and view detailed sta
 
 ---
 
-## 8. Leaderboard
+## 8. Leaderboard 🔲 Planned
 
 ### 8.1 Overview
 
@@ -1705,7 +1561,7 @@ WITH recent_days AS (
 
 ---
 
-## 9. Push Notifications
+## 9. Push Notifications 🔲 Planned
 
 ### 9.1 Architecture
 
@@ -1743,7 +1599,7 @@ To avoid duplicate reminders, the backend tracks sent reminders in memory or in 
 ### 9.4 Token Lifecycle
 
 - Tokens are registered via `POST /api/v1/devices`.
-- Tokens are unregistered via `DELETE /api/v1/devices/:token` (e.g., on user logout).
+- Tokens are unregistered via `POST /api/v1/devices/unregister` with the `fcm_token` in the request body (e.g., on user logout).
 - If Firebase returns a `messaging/registration-token-not-registered` error when sending a notification, the token is automatically deleted from `device_tokens`.
 - A user may have multiple tokens (e.g., after app reinstall before old token is cleaned up). All valid tokens are targeted when sending a notification.
 
@@ -1762,10 +1618,12 @@ Rate limits are enforced per the following rules. Responses that exceed the limi
 | Admin endpoints (`/admin/*`) | 30 requests / minute | Per admin |
 | Webhooks (`/webhooks/*`) | 100 requests / minute | Per IP address |
 
+`/auth/verify-otp` is subject to both limits above: the shared auth-endpoint per-IP limit and the endpoint-specific per-email OTP verification limit.
+
 **Implementation notes:**
 
 - Use a sliding window or token bucket algorithm.
-- Rate limit state can be stored in-memory (for single-instance deployments) or in Redis (for multi-instance).
+- Rate limit state is stored in Redis.
 - Rate limit headers should be included in all responses: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`.
 
 ---
@@ -1852,8 +1710,6 @@ services:
       - SMTP_FROM=noreply@pauza.app
       - ADMIN_SEED_USERNAME=admin
       - ADMIN_SEED_PASSWORD=<password>
-      - STUDENT_VERIFICATION_PROVIDER=sheerid
-      - STUDENT_VERIFICATION_API_KEY=<key>
     depends_on:
       db:
         condition: service_healthy
@@ -1899,8 +1755,6 @@ volumes:
 | `SMTP_FROM` | Email sender address | Yes |
 | `ADMIN_SEED_USERNAME` | Initial admin username (used by `cmd/seed-admin`) | For seed command |
 | `ADMIN_SEED_PASSWORD` | Initial admin password (used by `cmd/seed-admin`) | For seed command |
-| `STUDENT_VERIFICATION_PROVIDER` | Third-party student verification provider (`sheerid` or `unidays`) | Yes |
-| `STUDENT_VERIFICATION_API_KEY` | API key for student verification provider | Yes |
 | `PORT` | Server listen port (default `8080`) | No |
 | `LOG_LEVEL` | Logging level: `debug`, `info`, `warn`, `error` (default `info`) | No |
 
@@ -1924,9 +1778,17 @@ The following items are intentionally excluded from this specification:
 |---|---|
 | **Usage stats collection** | Device usage data comes from OS APIs (Android UsageStatsManager, iOS Screen Time). This data is collected natively on the device and is not sent to or processed by the backend. |
 | **App blocking enforcement** | Blocking is enforced natively on the device via platform-specific APIs. The backend has no role in enforcement. |
-| **Specific premium feature definitions** | Which exact features are paywalled is a product decision. The backend provides the `features_json` mechanism on subscription plans; the specific keys and their meanings are defined at the product level. |
+| **Specific premium feature definitions** | Which exact product capabilities are included in free vs premium is a product decision outside this backend contract. This spec only defines entitlement enforcement boundaries. |
 | **User blocking** | The ability to block other users (preventing friend requests, hiding from search) is deferred to a future iteration. |
 | **Contact-based friend discovery** | Syncing phone contacts to find existing Pauza users is deferred to a future iteration. |
 | **Push notification preferences** | Per-notification-type opt-in/opt-out settings are deferred. All notification types are sent to all users initially. |
 | **File/photo storage infrastructure** | The spec assumes profile photos are stored in an external object storage service (e.g., AWS S3, Google Cloud Storage). The specific storage provider and configuration are deployment decisions. |
 | **Web frontend for admin panel** | This spec covers the admin REST API only. The admin web UI is a separate project that consumes these endpoints. |
+
+### 13.1 Possible Future Features
+
+The following ideas may be revisited later, but they are not part of the current backend contract:
+
+- Student verification and student-priced offers
+- Additional entitlement tiers beyond `premium`
+- More granular premium feature gating beyond the single `premium` entitlement

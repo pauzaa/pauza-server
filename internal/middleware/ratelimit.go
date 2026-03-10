@@ -39,10 +39,15 @@ func RateLimit(lim ratelimit.Limiter, limit int, keyFunc func(*http.Request) str
 				return
 			}
 
-			// Always emit rate-limit informational headers.
-			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(limit))
-			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(res.Remaining))
-			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(res.ResetAt.Unix(), 10))
+			// Emit rate-limit informational headers only when the limiter
+			// returned a real budget. Fail-open limiters use a negative
+			// Remaining sentinel for degraded-but-allowed responses so we do
+			// not advertise fabricated enforcement data.
+			if res.Remaining >= 0 {
+				w.Header().Set("X-RateLimit-Limit", strconv.Itoa(limit))
+				w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(res.Remaining))
+				w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(res.ResetAt.Unix(), 10))
+			}
 
 			if !res.Allowed {
 				retryAfter := int(time.Until(res.ResetAt).Seconds()) + 1

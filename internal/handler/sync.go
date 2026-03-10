@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,11 +21,16 @@ type SyncServicer interface {
 var _ SyncServicer = (*service.SyncService)(nil)
 
 type SyncHandler struct {
-	svc SyncServicer
+	svc    SyncServicer
+	logger *slog.Logger
 }
 
 func NewSyncHandler(svc SyncServicer) *SyncHandler {
-	return &SyncHandler{svc: svc}
+	return &SyncHandler{svc: svc, logger: slog.Default()}
+}
+
+func NewSyncHandlerWithLogger(svc SyncServicer, logger *slog.Logger) *SyncHandler {
+	return &SyncHandler{svc: svc, logger: logger}
 }
 
 type syncTableRequest[T any, D any] struct {
@@ -230,7 +236,8 @@ func (h *SyncHandler) Sync(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(res); err != nil {
-		apperror.InternalError(w)
+		h.logger.Error("failed to encode sync response", "err", err)
+		return
 	}
 }
 

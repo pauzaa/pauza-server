@@ -137,23 +137,22 @@ func rowCount(t *testing.T, pool *pgxpool.Pool, table string) int {
 	return count
 }
 
-// coreTables returns every application table that the initial migration
-// (000001_initial_schema) is expected to create. Both migration and startup
-// integration tests use this to avoid maintaining duplicate table lists.
+// coreTables returns every application table expected after applying the full
+// migration set. Migration and startup integration tests use this to avoid
+// maintaining duplicate table lists.
 //
-// Keep this list in sync with migrations/000001_initial_schema.up.sql.
-// When adding a new migration that creates tables, add the names here and
-// update tests that iterate over this slice. The order follows the FK
-// dependency order used in the migration file.
+// Keep this list in sync with the latest schema produced by migrations/*.sql.
+// When adding a new migration that creates or removes tables, update this slice
+// and the tests that iterate over it. The order follows the FK dependency order
+// used in the migration files.
 func coreTables() []string {
 	return []string{
 		"users",
 		"otp_codes",
+		"otp_failed_attempts",
 		"refresh_tokens",
 		"admin_credentials",
-		"subscription_plans",
-		"subscription_plan_discounts",
-		"user_subscriptions",
+		"user_entitlements",
 		"friendships",
 		"device_tokens",
 		"sync_tombstones",

@@ -12,7 +12,7 @@
 | Seed admin | `internal/database/seed.go` | idempotent `admin_credentials` bootstrap |
 | Cleanup job | `internal/database/cleanup.go` | immediate pass + ticker-based retention cleanup |
 | Test helpers | `internal/database/testhelper_test.go` | `TEST_DATABASE_URL`, schema reset, `coreTables()` |
-| Schema | `migrations/000001_initial_schema.up.sql` | baseline SQL; next migration is `000002` |
+| Schema | `migrations/000001_initial_schema.up.sql` | flattened pre-release schema |
 
 ## CONVENTIONS
 - Run migrations via `cmd/migrate`; server startup does not apply schema changes.

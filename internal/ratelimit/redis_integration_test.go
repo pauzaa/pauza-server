@@ -108,6 +108,51 @@ func TestRedisLimiter_WindowReset(t *testing.T) {
 	}
 }
 
+func TestRedisLimiter_SlidingWindowExpiresOldestRequestFirst(t *testing.T) {
+	client := testRedisClient(t)
+	ctx := context.Background()
+	lim := ratelimit.NewRedisLimiter(client, 2, 250*time.Millisecond, ratelimit.WithPrefix(testRedisPrefix(t)))
+
+	res, err := lim.Allow(ctx, "verify:127.0.0.1")
+	if err != nil {
+		t.Fatalf("first allow: %v", err)
+	}
+	if !res.Allowed || res.Remaining != 1 {
+		t.Fatalf("first result = %+v, want allowed with remaining 1", res)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+
+	res, err = lim.Allow(ctx, "verify:127.0.0.1")
+	if err != nil {
+		t.Fatalf("second allow: %v", err)
+	}
+	if !res.Allowed || res.Remaining != 0 {
+		t.Fatalf("second result = %+v, want allowed with remaining 0", res)
+	}
+
+	res, err = lim.Allow(ctx, "verify:127.0.0.1")
+	if err != nil {
+		t.Fatalf("third allow: %v", err)
+	}
+	if res.Allowed {
+		t.Fatalf("third result = %+v, want denied", res)
+	}
+
+	time.Sleep(120 * time.Millisecond)
+
+	res, err = lim.Allow(ctx, "verify:127.0.0.1")
+	if err != nil {
+		t.Fatalf("post-oldest-expiry allow: %v", err)
+	}
+	if !res.Allowed {
+		t.Fatalf("post-oldest-expiry result = %+v, want allowed", res)
+	}
+	if res.Remaining != 0 {
+		t.Fatalf("post-oldest-expiry remaining = %d, want 0", res.Remaining)
+	}
+}
+
 func TestRedisLimiter_KeysAreIndependent(t *testing.T) {
 	client := testRedisClient(t)
 	ctx := context.Background()

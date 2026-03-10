@@ -3,40 +3,68 @@ package ratelimit
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
 
-// RedisLimiter is a fixed-window rate limiter backed by Redis. It uses a
+// RedisLimiter is a sliding-window rate limiter backed by Redis. It uses a
 // Lua script executed atomically so that concurrent requests from multiple
-// server instances share a single counter per key.
+// server instances share a single request log per key.
 type RedisLimiter struct {
 	client *redis.Client
 	rate   int
 	window time.Duration
 	prefix string
+	seq    atomic.Uint64
 }
 
-// redisScript is a Lua script that atomically increments a counter for the
-// given key and returns the current count and the TTL remaining (seconds).
-// If the key does not exist, it is created with an expiry equal to the
-// window duration. The script returns {count, ttl_seconds}.
+// redisScript is a Lua script that atomically applies a sliding-window check
+// for the given key and returns {allowed, remaining, reset_at_ms}. Request
+// timestamps are stored in a sorted set so the budget is shared across all
+// server instances.
 var redisScript = redis.NewScript(`
 local key = KEYS[1]
 local limit = tonumber(ARGV[1])
-local window = tonumber(ARGV[2])
+local window_ms = tonumber(ARGV[2])
+local now_ms = tonumber(ARGV[3])
+local member = ARGV[4]
 
-local current = redis.call("INCR", key)
-if current == 1 then
-    redis.call("EXPIRE", key, window)
+local cutoff = now_ms - window_ms
+redis.call("ZREMRANGEBYSCORE", key, "-inf", cutoff)
+
+local current = redis.call("ZCARD", key)
+if current >= limit then
+    local oldest = redis.call("ZRANGE", key, 0, 0, "WITHSCORES")
+    local reset_at_ms = now_ms + window_ms
+    if oldest[2] then
+        reset_at_ms = tonumber(oldest[2]) + window_ms
+    end
+    local ttl_ms = reset_at_ms - now_ms
+    if ttl_ms < 1 then
+        ttl_ms = 1
+    end
+    redis.call("PEXPIRE", key, ttl_ms)
+    return {0, 0, reset_at_ms}
 end
-local ttl = redis.call("TTL", key)
-if ttl < 0 then
-    redis.call("EXPIRE", key, window)
-    ttl = window
+
+redis.call("ZADD", key, now_ms, member)
+current = current + 1
+
+local oldest = redis.call("ZRANGE", key, 0, 0, "WITHSCORES")
+local reset_at_ms = now_ms + window_ms
+if oldest[2] then
+    reset_at_ms = tonumber(oldest[2]) + window_ms
 end
-return {current, ttl}
+
+local ttl_ms = reset_at_ms - now_ms
+if ttl_ms < 1 then
+    ttl_ms = 1
+end
+redis.call("PEXPIRE", key, ttl_ms)
+
+return {1, limit - current, reset_at_ms}
 `)
 
 // RedisOption configures optional parameters for NewRedisLimiter.
@@ -52,8 +80,8 @@ func WithPrefix(prefix string) RedisOption {
 }
 
 // NewRedisLimiter creates a RedisLimiter that allows rate requests per window
-// for each key. The caller owns the *redis.Client lifetime; Stop is a no-op
-// because the client is shared.
+// for each key using a sliding-window algorithm. The caller owns the
+// *redis.Client lifetime; Stop is a no-op because the client is shared.
 func NewRedisLimiter(client *redis.Client, rate int, window time.Duration, opts ...RedisOption) *RedisLimiter {
 	rl := &RedisLimiter{
 		client: client,
@@ -72,21 +100,23 @@ func NewRedisLimiter(client *redis.Client, rate int, window time.Duration, opts 
 // error is returned so the caller can decide the fail-open/closed policy.
 func (rl *RedisLimiter) Allow(ctx context.Context, key string) (Result, error) {
 	fullKey := rl.prefix + key
-	windowSec := int(rl.window.Seconds())
-	if windowSec < 1 {
-		windowSec = 1
+	windowMS := rl.window.Milliseconds()
+	if windowMS < 1 {
+		windowMS = 1
 	}
+	now := time.Now().UTC()
+	member := fmt.Sprintf("%d-%d", now.UnixNano(), rl.seq.Add(1))
 
-	vals, err := redisScript.Run(ctx, rl.client, []string{fullKey}, rl.rate, windowSec).Int64Slice()
+	vals, err := redisScript.Run(ctx, rl.client, []string{fullKey}, rl.rate, windowMS, now.UnixMilli(), member).Int64Slice()
 	if err != nil {
 		return Result{}, fmt.Errorf("redis rate limit script: %w", err)
 	}
 
-	count := int(vals[0])
-	ttl := time.Duration(vals[1]) * time.Second
-	resetAt := time.Now().UTC().Add(ttl)
+	allowed := vals[0] == 1
+	remaining := int(vals[1])
+	resetAt := time.UnixMilli(vals[2]).UTC()
 
-	if count > rl.rate {
+	if !allowed {
 		return Result{
 			Allowed:   false,
 			Remaining: 0,
@@ -96,7 +126,7 @@ func (rl *RedisLimiter) Allow(ctx context.Context, key string) (Result, error) {
 
 	return Result{
 		Allowed:   true,
-		Remaining: rl.rate - count,
+		Remaining: remaining,
 		ResetAt:   resetAt,
 	}, nil
 }

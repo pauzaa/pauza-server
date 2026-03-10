@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const degradedRemaining = -1
+
 // FailOpenLimiter wraps another Limiter and falls back to allowing requests
 // when the underlying implementation returns an error (e.g. Redis is
 // unreachable). Every backend failure is logged so operators can detect
@@ -34,7 +36,7 @@ func (f *FailOpenLimiter) Allow(ctx context.Context, key string) (Result, error)
 		)
 		return Result{
 			Allowed:   true,
-			Remaining: 0,
+			Remaining: degradedRemaining,
 			ResetAt:   time.Now().UTC().Add(time.Minute),
 		}, nil
 	}
