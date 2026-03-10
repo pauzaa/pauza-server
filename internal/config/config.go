@@ -71,6 +71,9 @@ type Config struct {
 	SyncRateLimit  int           `envconfig:"SYNC_RATE_LIMIT" default:"30"`
 	SyncRateWindow time.Duration `envconfig:"SYNC_RATE_WINDOW" default:"1m"`
 
+	WebhookRateLimit  int           `envconfig:"WEBHOOK_RATE_LIMIT" default:"100"`
+	WebhookRateWindow time.Duration `envconfig:"WEBHOOK_RATE_WINDOW" default:"1m"`
+
 	// Cleanup job
 	CleanupInterval    time.Duration `envconfig:"CLEANUP_INTERVAL" default:"1h"`
 	OTPRetentionPeriod time.Duration `envconfig:"OTP_RETENTION_PERIOD" default:"24h"`
@@ -196,6 +199,12 @@ func (c *Config) validate() error {
 	}
 	if c.SyncRateWindow <= 0 {
 		return fmt.Errorf("SYNC_RATE_WINDOW must be positive, got %s", c.SyncRateWindow)
+	}
+	if c.WebhookRateLimit <= 0 {
+		return fmt.Errorf("WEBHOOK_RATE_LIMIT must be positive, got %d", c.WebhookRateLimit)
+	}
+	if c.WebhookRateWindow <= 0 {
+		return fmt.Errorf("WEBHOOK_RATE_WINDOW must be positive, got %s", c.WebhookRateWindow)
 	}
 
 	// Cleanup durations must be positive

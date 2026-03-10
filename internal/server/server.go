@@ -20,6 +20,7 @@ import (
 	"github.com/IsorilovA/pauza-server/internal/push"
 	"github.com/IsorilovA/pauza-server/internal/ratelimit"
 	"github.com/IsorilovA/pauza-server/internal/repository"
+	"github.com/IsorilovA/pauza-server/internal/revenuecat"
 	"github.com/IsorilovA/pauza-server/internal/service"
 )
 
@@ -121,6 +122,12 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 	socialHandler := handler.NewSocialHandler(service.NewSocialService(pool, socialRepo, push.NewNoopSender(logger), logger))
 	photoStore := photostore.NewFileStore(cfg.PhotoStorageDir, cfg.PhotoPublicBaseURL)
 
+	// RevenueCat webhook dependencies.
+	rcClient := revenuecat.NewClient(cfg.RevenueCatAPIKey)
+	entitlementRepo := repository.NewPgxEntitlementRepository()
+	webhookService := service.NewWebhookService(pool, entitlementRepo, rcClient, authRepo, logger)
+	webhookHandler := handler.NewWebhookHandler(webhookService, cfg.RevenueCatWebhookSecret, logger)
+
 	// newLimiter creates a rate limiter with the given budget. Multi-instance
 	// deployments should provide Redis; single-instance deployments may fall back
 	// to the in-memory limiter.
@@ -136,6 +143,7 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 	verifyOTPLimiter := newLimiter("verify-otp", cfg.VerifyOTPRateLimit, cfg.VerifyOTPRateWindow)
 	generalAPILimiter := newLimiter("general-api", cfg.GeneralAPIRateLimit, cfg.GeneralAPIRateWindow)
 	syncLimiter := newLimiter("sync", cfg.SyncRateLimit, cfg.SyncRateWindow)
+	webhookLimiter := newLimiter("webhook", cfg.WebhookRateLimit, cfg.WebhookRateWindow)
 
 	// --- /api/v1 routes -------------------------------------------------
 	// Public and protected routes are mounted in separate chi.Route groups
@@ -154,6 +162,10 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 			).
 				Post("/verify", authHandler.VerifyOTP)
 		})
+
+		// RevenueCat webhook (Bearer-secret auth, not JWT).
+		r.With(authmw.RateLimit(webhookLimiter, cfg.WebhookRateLimit, authmw.IPKey)).
+			Post("/webhooks/revenuecat", webhookHandler.HandleRevenueCat)
 
 		// Protected routes — JWT required. All endpoints in this group
 		// require a valid access token; the middleware stores the
@@ -221,6 +233,7 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 		verifyOTPLimiter.Stop()
 		generalAPILimiter.Stop()
 		syncLimiter.Stop()
+		webhookLimiter.Stop()
 	}
 
 	return &http.Server{

@@ -32,6 +32,8 @@ func testConfig() *config.Config {
 		SMTPUsername:       "test",
 		SMTPPassword:       "test",
 		SMTPFrom:           "test@example.com",
+		// RevenueCat — deterministic test values for webhook auth.
+		RevenueCatWebhookSecret: "test-webhook-secret",
 		// Consolidated rate limits — use generous values so tests are not
 		// throttled. The window must also be positive (MemoryLimiter uses
 		// it for the eviction ticker).
@@ -43,6 +45,8 @@ func testConfig() *config.Config {
 		GeneralAPIRateWindow: time.Minute,
 		SyncRateLimit:        10000,
 		SyncRateWindow:       time.Minute,
+		WebhookRateLimit:     10000,
+		WebhookRateWindow:    time.Minute,
 	}
 }
 
@@ -974,6 +978,87 @@ func TestNew_VerifyOTPUsesSharedAuthIPRateLimit(t *testing.T) {
 	if secondRec.Code != http.StatusTooManyRequests {
 		t.Fatalf("second verify request from same IP: expected 429, got %d", secondRec.Code)
 	}
+}
+
+// TestNew_WebhookRevenueCatRouteExists verifies that POST /api/v1/webhooks/revenuecat
+// is registered and protected by Bearer-secret auth (not JWT). Missing or invalid
+// tokens must be rejected with 401; a valid Bearer secret must pass through to the
+// handler (which will fail downstream due to nil deps, returning 500).
+func TestNew_WebhookRevenueCatRouteExists(t *testing.T) {
+	cfg := testConfig()
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	defer cleanup()
+
+	t.Run("missing_auth_returns_401", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/revenuecat",
+			strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		srv.Handler.ServeHTTP(rec, req)
+
+		if rec.Code == http.StatusNotFound {
+			t.Fatal("expected POST /api/v1/webhooks/revenuecat to be wired (non-404), got 404")
+		}
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401 without Authorization header, got %d", rec.Code)
+		}
+
+		var errResp apperror.ErrorResponse
+		if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+			t.Fatalf("failed to decode JSON error body: %v", err)
+		}
+		if errResp.Error.Code != apperror.CodeUnauthorized {
+			t.Errorf("error.code = %q, want %q", errResp.Error.Code, apperror.CodeUnauthorized)
+		}
+	})
+
+	t.Run("invalid_bearer_returns_401", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/revenuecat",
+			strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer wrong-secret")
+		rec := httptest.NewRecorder()
+
+		srv.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401 with invalid Bearer token, got %d", rec.Code)
+		}
+
+		var errResp apperror.ErrorResponse
+		if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+			t.Fatalf("failed to decode JSON error body: %v", err)
+		}
+		if errResp.Error.Code != apperror.CodeUnauthorized {
+			t.Errorf("error.code = %q, want %q", errResp.Error.Code, apperror.CodeUnauthorized)
+		}
+	})
+
+	t.Run("valid_bearer_reaches_handler", func(t *testing.T) {
+		// A valid webhook event payload with the correct Bearer secret should
+		// pass auth and reach the handler. The nil DB pool causes a 500, which
+		// proves routing + auth middleware are working as intended.
+		body := `{"event":{"id":"evt_123","type":"INITIAL_PURCHASE","app_user_id":"user-1"}}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/revenuecat",
+			strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+cfg.RevenueCatWebhookSecret)
+		rec := httptest.NewRecorder()
+
+		srv.Handler.ServeHTTP(rec, req)
+
+		if rec.Code == http.StatusUnauthorized {
+			t.Fatal("expected valid Bearer secret to pass auth, got 401")
+		}
+		if rec.Code == http.StatusNotFound {
+			t.Fatal("expected route to be wired, got 404")
+		}
+		// The handler will fail due to nil DB pool; 500 confirms we reached it.
+		if rec.Code != http.StatusInternalServerError {
+			t.Errorf("expected 500 from nil pool after auth pass-through, got %d", rec.Code)
+		}
+	})
 }
 
 // TestNew_VerifyOTPUsesPerEmailRateLimitAcrossIPs proves that verify also

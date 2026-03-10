@@ -107,6 +107,8 @@ func testConfig() *config.Config {
 		GeneralAPIRateWindow: time.Minute,
 		SyncRateLimit:        10000,
 		SyncRateWindow:       time.Minute,
+		WebhookRateLimit:     10000,
+		WebhookRateWindow:    time.Minute,
 	}
 }
 
