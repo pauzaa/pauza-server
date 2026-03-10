@@ -1,0 +1,2725 @@
+openapi: 3.0.3
+info:
+  title: Pauza API
+  description: Backend HTTP API for the Pauza focus-timer application.
+  version: 0.1.0
+  contact:
+    name: Pauza Team
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+  - url: https://api.pauza.app
+    description: Production (placeholder)
+
+tags:
+  - name: Health
+    description: Liveness and readiness probes
+  - name: Auth
+    description: Passwordless authentication (start, verify, refresh)
+  - name: Profile
+    description: Current user profile management
+  - name: Social
+    description: Devices, friends, search, and leaderboards
+  - name: Sync
+    description: Bidirectional data synchronisation
+  - name: Webhook
+    description: RevenueCat subscription webhooks
+  - name: Admin
+    description: Admin dashboard endpoints
+
+# ---------------------------------------------------------------------------
+# Security schemes
+# ---------------------------------------------------------------------------
+components:
+  securitySchemes:
+    UserJWT:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: User access token issued by POST /api/v1/auth/verify or POST /api/v1/auth/refresh.
+    AdminJWT:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Admin access token issued by POST /api/v1/admin/login.
+    WebhookBearer:
+      type: http
+      scheme: bearer
+      description: Static secret shared with RevenueCat for webhook authentication.
+
+  headers:
+    XRequestId:
+      description: Request identifier echoed in every response.
+      schema:
+        type: string
+    XRateLimitLimit:
+      description: Maximum requests allowed in the current window when the limiter is enforcing a real budget.
+      schema:
+        type: integer
+    XRateLimitRemaining:
+      description: Remaining requests in the current window when the limiter is enforcing a real budget.
+      schema:
+        type: integer
+    XRateLimitReset:
+      description: UTC Unix timestamp when the current window resets, when the limiter is enforcing a real budget.
+      schema:
+        type: integer
+
+  # -------------------------------------------------------------------------
+  # Reusable schemas
+  # -------------------------------------------------------------------------
+  schemas:
+    # -- Error envelope -----------------------------------------------------
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorBody"
+
+    ErrorBody:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - VALIDATION_ERROR
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - NOT_FOUND
+            - CONFLICT
+            - RATE_LIMITED
+            - SUBSCRIPTION_REQUIRED
+            - INTERNAL_ERROR
+        message:
+          type: string
+        details:
+          description: Optional structured details (e.g. field-level validation errors).
+          nullable: true
+
+    ValidationDetails:
+      type: object
+      properties:
+        fields:
+          type: object
+          additionalProperties:
+            type: string
+
+    # -- Health -------------------------------------------------------------
+    HealthResponse:
+      type: object
+      required: [status, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        timestamp:
+          type: string
+          format: date-time
+
+    LiveHealthResponse:
+      type: object
+      required: [status, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        timestamp:
+          type: string
+          format: date-time
+
+    ReadyHealthOKResponse:
+      type: object
+      required: [status, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        timestamp:
+          type: string
+          format: date-time
+
+    ReadyHealthDegradedResponse:
+      type: object
+      required: [status, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [degraded]
+        timestamp:
+          type: string
+          format: date-time
+
+    # -- Auth ---------------------------------------------------------------
+    StartRequest:
+      type: object
+      additionalProperties: false
+      required: [email]
+      description: Unknown JSON fields are rejected. Only a bare email address is accepted.
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 255
+          description: Bare address only (`user@example.com`); display-name forms are rejected.
+
+    StartResponse:
+      type: object
+      required: [otp_required]
+      properties:
+        otp_required:
+          type: boolean
+
+    VerifyOTPRequest:
+      type: object
+      additionalProperties: false
+      required: [email, otp]
+      description: Unknown JSON fields are rejected.
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 255
+          description: Bare address only (`user@example.com`); display-name forms are rejected.
+        otp:
+          type: string
+          pattern: '^[0-9]{6}$'
+          description: Exactly 6 ASCII digits.
+
+    AuthResponse:
+      type: object
+      required: [access_token, refresh_token, user]
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        user:
+          $ref: "#/components/schemas/UserResponse"
+
+    RefreshRequest:
+      type: object
+      additionalProperties: false
+      required: [refresh_token]
+      description: Unknown JSON fields are rejected.
+      properties:
+        refresh_token:
+          type: string
+          minLength: 1
+          description: Must be present and not blank after trimming whitespace.
+
+    RefreshResponse:
+      type: object
+      required: [access_token, refresh_token]
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+
+    # -- User profile -------------------------------------------------------
+    UserResponse:
+      type: object
+      required: [id, email, name, username, profile_picture_url, leaderboard_visible, created_at, subscription]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        username:
+          type: string
+        profile_picture_url:
+          type: string
+          nullable: true
+        leaderboard_visible:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        subscription:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/SubscriptionResponse"
+
+    SubscriptionResponse:
+      type: object
+      required: [entitlement, is_active, current_period_end]
+      properties:
+        entitlement:
+          type: string
+        is_active:
+          type: boolean
+        current_period_end:
+          type: string
+          format: date-time
+          nullable: true
+
+    UpdateMeRequest:
+      type: object
+      additionalProperties: false
+      description: Unknown JSON fields are rejected. All fields are optional.
+      properties:
+        name:
+          type: string
+          maxLength: 100
+        username:
+          type: string
+          pattern: '^[A-Za-z0-9_]{3,30}$'
+          description: 3-30 characters; letters, digits, and underscores only.
+        leaderboard_visible:
+          type: boolean
+
+    UsernameAvailableResponse:
+      type: object
+      required: [available]
+      properties:
+        available:
+          type: boolean
+
+    PhotoUploadResponse:
+      type: object
+      required: [profile_picture_url]
+      properties:
+        profile_picture_url:
+          type: string
+
+    MessageResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+
+    DeleteConfirmRequest:
+      type: object
+      additionalProperties: false
+      required: [otp]
+      description: Unknown JSON fields are rejected.
+      properties:
+        otp:
+          type: string
+          pattern: '^[0-9]{6}$'
+          description: Exactly 6 ASCII digits.
+
+    # -- Devices ------------------------------------------------------------
+    RegisterDeviceRequest:
+      type: object
+      additionalProperties: false
+      required: [fcm_token, platform]
+      description: Unknown JSON fields are rejected.
+      properties:
+        fcm_token:
+          type: string
+          minLength: 1
+        platform:
+          type: string
+          enum: [android, ios]
+
+    UnregisterDeviceRequest:
+      type: object
+      additionalProperties: false
+      required: [fcm_token]
+      description: Unknown JSON fields are rejected.
+      properties:
+        fcm_token:
+          type: string
+          minLength: 1
+
+    # -- Friends ------------------------------------------------------------
+    FriendRequestRequest:
+      type: object
+      additionalProperties: false
+      required: [username]
+      description: Unknown JSON fields are rejected.
+      properties:
+        username:
+          type: string
+          pattern: '^[A-Za-z0-9_]{3,30}$'
+          description: 3-30 characters; letters, digits, and underscores only.
+
+    # BasicUserRow has no json tags; Go encoding/json uses PascalCase field names.
+    BasicUserRow:
+      type: object
+      properties:
+        ID:
+          type: string
+          format: uuid
+        Name:
+          type: string
+        Username:
+          type: string
+        ProfilePictureURL:
+          type: string
+          nullable: true
+        LeaderboardVisible:
+          type: boolean
+
+    # FriendRow has no json tags.
+    FriendRow:
+      type: object
+      properties:
+        FriendshipID:
+          type: string
+          format: uuid
+        User:
+          $ref: "#/components/schemas/BasicUserRow"
+        Since:
+          type: string
+          format: date-time
+
+    # FriendRequestRow has no json tags.
+    FriendRequestRow:
+      type: object
+      properties:
+        FriendshipID:
+          type: string
+          format: uuid
+        User:
+          $ref: "#/components/schemas/BasicUserRow"
+        CreatedAt:
+          type: string
+          format: date-time
+
+    # PaginationResult has no json tags.
+    PaginationResult:
+      type: object
+      properties:
+        Page:
+          type: integer
+        Limit:
+          type: integer
+        Total:
+          type: integer
+
+    # FriendMutationOutput has no json tags.
+    FriendMutationOutput:
+      type: object
+      properties:
+        FriendshipID:
+          type: string
+          format: uuid
+        Status:
+          type: string
+          enum: [pending, accepted]
+
+    # FriendListOutput has no json tags; serialised directly via writeJSON.
+    FriendListOutput:
+      type: object
+      properties:
+        Friends:
+          type: array
+          items:
+            $ref: "#/components/schemas/FriendRow"
+          nullable: true
+        Pagination:
+          $ref: "#/components/schemas/PaginationResult"
+
+    FriendRequestsOutput:
+      type: object
+      properties:
+        Requests:
+          type: array
+          items:
+            $ref: "#/components/schemas/FriendRequestRow"
+          nullable: true
+
+    SearchUsersResponse:
+      type: object
+      properties:
+        users:
+          type: array
+          items:
+            $ref: "#/components/schemas/BasicUserRow"
+          nullable: true
+
+    # -- Friend stats -------------------------------------------------------
+    DailyTrend:
+      type: object
+      required: [local_day, effective_ms, qualified, session_count]
+      properties:
+        local_day:
+          type: string
+          example: "2025-01-15"
+        effective_ms:
+          type: integer
+        qualified:
+          type: boolean
+        session_count:
+          type: integer
+
+    FriendStatsResponse:
+      type: object
+      properties:
+        User:
+          $ref: "#/components/schemas/BasicUserRow"
+        Stats:
+          type: object
+          required: [current_streak_days, longest_streak_days, total_focus_time_ms, daily_trends]
+          properties:
+            current_streak_days:
+              type: integer
+            longest_streak_days:
+              type: integer
+            total_focus_time_ms:
+              type: integer
+              format: int64
+            daily_trends:
+              type: array
+              items:
+                $ref: "#/components/schemas/DailyTrend"
+              nullable: true
+
+    # -- Leaderboard --------------------------------------------------------
+    LeaderboardEntry:
+      type: object
+      required: [rank, user]
+      properties:
+        rank:
+          type: integer
+        user:
+          $ref: "#/components/schemas/BasicUserRow"
+        current_streak_days:
+          type: integer
+        total_focus_time_ms:
+          type: integer
+          format: int64
+
+    LeaderboardRank:
+      type: object
+      required: [rank]
+      properties:
+        rank:
+          type: integer
+        current_streak_days:
+          type: integer
+        total_focus_time_ms:
+          type: integer
+          format: int64
+
+    LeaderboardResponse:
+      type: object
+      required: [entries, my_rank, pagination]
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/LeaderboardEntry"
+          nullable: true
+        my_rank:
+          $ref: "#/components/schemas/LeaderboardRank"
+        pagination:
+          $ref: "#/components/schemas/PaginationResult"
+
+    # -- Sync ---------------------------------------------------------------
+    SyncRequest:
+      type: object
+      additionalProperties: false
+      description: Unknown JSON fields are rejected. `tables` is optional; omitted or empty means no table syncs are requested.
+      properties:
+        tables:
+          $ref: "#/components/schemas/SyncRequestTables"
+
+    SyncRequestTables:
+      type: object
+      additionalProperties: false
+      description: Each table key is optional. When present, it triggers sync for that table. Unknown keys are rejected.
+      properties:
+        modes:
+          $ref: "#/components/schemas/SyncTableInput_Mode_string"
+        mode_blocked_apps:
+          $ref: "#/components/schemas/SyncTableInput_ModeBlockedApp_ModeBlockedAppDeletion"
+        schedules:
+          $ref: "#/components/schemas/SyncTableInput_Schedule_string"
+        restriction_sessions:
+          $ref: "#/components/schemas/SyncTableInput_RestrictionSession_string"
+        restriction_lifecycle_events:
+          $ref: "#/components/schemas/SyncTableInput_RestrictionLifecycleEvent_string"
+        nfc_linked_chips:
+          $ref: "#/components/schemas/SyncTableInput_NFCLinkedChip_string"
+        qr_linked_codes:
+          $ref: "#/components/schemas/SyncTableInput_QRLinkedCode_string"
+        streak_session_daily_rollups:
+          $ref: "#/components/schemas/SyncTableInput_StreakSessionDailyRollup_StreakSessionDailyRollupDeletion"
+        streak_daily_aggregates:
+          $ref: "#/components/schemas/SyncTableInput_StreakDailyAggregate_string"
+
+    # Generic sync-table input wrappers (OpenAPI 3.0 cannot use generics)
+    SyncTableInput_Mode_string:
+      type: object
+      required: [last_synced_at]
+      additionalProperties: false
+      properties:
+        last_synced_at:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Required when the table object is present.
+        upserts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModeInput"
+        deletions:
+          type: array
+          items:
+            type: string
+
+    SyncTableInput_ModeBlockedApp_ModeBlockedAppDeletion:
+      type: object
+      required: [last_synced_at]
+      additionalProperties: false
+      properties:
+        last_synced_at:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Required when the table object is present.
+        upserts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModeBlockedAppInput"
+        deletions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModeBlockedAppDeletion"
+
+    SyncTableInput_Schedule_string:
+      type: object
+      required: [last_synced_at]
+      additionalProperties: false
+      properties:
+        last_synced_at:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Required when the table object is present.
+        upserts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScheduleInput"
+        deletions:
+          type: array
+          items:
+            type: string
+
+    SyncTableInput_RestrictionSession_string:
+      type: object
+      required: [last_synced_at]
+      additionalProperties: false
+      properties:
+        last_synced_at:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Required when the table object is present.
+        upserts:
+          type: array
+          items:
+            $ref: "#/components/schemas/RestrictionSessionInput"
+        deletions:
+          type: array
+          items:
+            type: string
+
+    SyncTableInput_RestrictionLifecycleEvent_string:
+      type: object
+      required: [last_synced_at]
+      additionalProperties: false
+      properties:
+        last_synced_at:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Required when the table object is present.
+        upserts:
+          type: array
+          items:
+            $ref: "#/components/schemas/RestrictionLifecycleEventInput"
+        deletions:
+          type: array
+          items:
+            type: string
+
+    SyncTableInput_NFCLinkedChip_string:
+      type: object
+      required: [last_synced_at]
+      additionalProperties: false
+      properties:
+        last_synced_at:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Required when the table object is present.
+        upserts:
+          type: array
+          items:
+            $ref: "#/components/schemas/NFCLinkedChipInput"
+        deletions:
+          type: array
+          items:
+            type: string
+
+    SyncTableInput_QRLinkedCode_string:
+      type: object
+      required: [last_synced_at]
+      additionalProperties: false
+      properties:
+        last_synced_at:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Required when the table object is present.
+        upserts:
+          type: array
+          items:
+            $ref: "#/components/schemas/QRLinkedCodeInput"
+        deletions:
+          type: array
+          items:
+            type: string
+
+    SyncTableInput_StreakSessionDailyRollup_StreakSessionDailyRollupDeletion:
+      type: object
+      required: [last_synced_at]
+      additionalProperties: false
+      properties:
+        last_synced_at:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Required when the table object is present.
+        upserts:
+          type: array
+          items:
+            $ref: "#/components/schemas/StreakSessionDailyRollupInput"
+        deletions:
+          type: array
+          items:
+            $ref: "#/components/schemas/StreakSessionDailyRollupDeletion"
+
+    SyncTableInput_StreakDailyAggregate_string:
+      type: object
+      required: [last_synced_at]
+      additionalProperties: false
+      properties:
+        last_synced_at:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Required when the table object is present.
+        upserts:
+          type: array
+          items:
+            $ref: "#/components/schemas/StreakDailyAggregateInput"
+        deletions:
+          type: array
+          items:
+            type: string
+
+    # Sync upsert/row models (json tags from handler and syncmodel)
+    ModeInput:
+      type: object
+      additionalProperties: false
+      required: [id, title, text_on_screen, ending_pausing_scenario, icon_token, allowed_pauses_count, created_at, updated_at]
+      description: Unknown JSON fields are rejected.
+      properties:
+        id:
+          type: string
+          minLength: 1
+        title:
+          type: string
+          minLength: 1
+        text_on_screen:
+          type: string
+          minLength: 1
+        description:
+          type: string
+          nullable: true
+        allowed_pauses_count:
+          type: integer
+          minimum: 0
+        minimum_duration_ms:
+          type: integer
+          minimum: 1000
+          nullable: true
+        ending_pausing_scenario:
+          type: string
+          enum: [nfc, qr, manual]
+        icon_token:
+          type: string
+          minLength: 1
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+
+    ModeBlockedAppInput:
+      type: object
+      additionalProperties: false
+      required: [mode_id, platform, app_identifier, created_at, updated_at]
+      description: Unknown JSON fields are rejected.
+      properties:
+        mode_id:
+          type: string
+          minLength: 1
+        platform:
+          type: string
+          enum: [android, ios]
+        app_identifier:
+          type: string
+          minLength: 1
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+
+    ModeBlockedAppDeletion:
+      type: object
+      additionalProperties: false
+      required: [mode_id, platform, app_identifier]
+      description: Unknown JSON fields are rejected.
+      properties:
+        mode_id:
+          type: string
+          minLength: 1
+        platform:
+          type: string
+          enum: [android, ios]
+        app_identifier:
+          type: string
+          minLength: 1
+
+    ScheduleInput:
+      type: object
+      additionalProperties: false
+      required: [id, mode_id, days, start_minute, end_minute, enabled, created_at, updated_at]
+      description: Unknown JSON fields are rejected.
+      properties:
+        id:
+          type: string
+          minLength: 1
+        mode_id:
+          type: string
+          minLength: 1
+        days:
+          type: string
+          minLength: 1
+        start_minute:
+          type: integer
+          minimum: 0
+          maximum: 1439
+        end_minute:
+          type: integer
+          minimum: 0
+          maximum: 1439
+        enabled:
+          type: integer
+          enum: [0, 1]
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+
+    RestrictionSessionInput:
+      type: object
+      additionalProperties: false
+      required: [session_id, mode_id, source, started_at, pause_count, total_paused_ms, integrity_status, last_event_id, created_at, updated_at]
+      description: Unknown JSON fields are rejected.
+      properties:
+        session_id:
+          type: string
+          minLength: 1
+        mode_id:
+          type: string
+          minLength: 1
+        source:
+          type: string
+          enum: [manual, schedule]
+        started_at:
+          type: integer
+          format: int64
+        ended_at:
+          type: integer
+          format: int64
+          nullable: true
+        pause_count:
+          type: integer
+        total_paused_ms:
+          type: integer
+        last_paused_at:
+          type: integer
+          format: int64
+          nullable: true
+        integrity_status:
+          type: string
+          enum: [ok, anomaly]
+        last_anomaly_reason:
+          type: string
+          nullable: true
+        last_event_id:
+          type: string
+          minLength: 1
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+
+    RestrictionLifecycleEventInput:
+      type: object
+      additionalProperties: false
+      required: [id, session_id, mode_id, action, source, reason, occurred_at, created_at]
+      description: Unknown JSON fields are rejected.
+      properties:
+        id:
+          type: string
+          minLength: 1
+        session_id:
+          type: string
+          minLength: 1
+        mode_id:
+          type: string
+          minLength: 1
+        action:
+          type: string
+          enum: [START, PAUSE, RESUME, END]
+        source:
+          type: string
+          enum: [manual, schedule]
+        reason:
+          type: string
+          minLength: 1
+        occurred_at:
+          type: integer
+          format: int64
+        created_at:
+          type: integer
+          format: int64
+
+    NFCLinkedChipInput:
+      type: object
+      additionalProperties: false
+      required: [id, chip_identifier, name, created_at, updated_at]
+      description: Unknown JSON fields are rejected.
+      properties:
+        id:
+          type: string
+          minLength: 1
+        chip_identifier:
+          type: string
+          minLength: 1
+        name:
+          type: string
+          minLength: 1
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+
+    QRLinkedCodeInput:
+      type: object
+      additionalProperties: false
+      required: [id, scan_value, name, created_at, updated_at]
+      description: Unknown JSON fields are rejected.
+      properties:
+        id:
+          type: string
+          minLength: 1
+        scan_value:
+          type: string
+          minLength: 1
+        name:
+          type: string
+          minLength: 1
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+
+    StreakSessionDailyRollupInput:
+      type: object
+      additionalProperties: false
+      required: [session_id, local_day, effective_ms, updated_at]
+      description: Unknown JSON fields are rejected.
+      properties:
+        session_id:
+          type: string
+          minLength: 1
+        local_day:
+          type: string
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+        effective_ms:
+          type: integer
+          minimum: 0
+        updated_at:
+          type: integer
+          format: int64
+
+    StreakSessionDailyRollupDeletion:
+      type: object
+      additionalProperties: false
+      required: [session_id, local_day]
+      description: Unknown JSON fields are rejected.
+      properties:
+        session_id:
+          type: string
+          minLength: 1
+        local_day:
+          type: string
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+
+    StreakDailyAggregateInput:
+      type: object
+      additionalProperties: false
+      required: [local_day, effective_ms, qualified, source_session_count, updated_at]
+      description: Unknown JSON fields are rejected.
+      properties:
+        local_day:
+          type: string
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+        effective_ms:
+          type: integer
+          minimum: 0
+        qualified:
+          type: integer
+          enum: [0, 1]
+        source_session_count:
+          type: integer
+          minimum: 0
+        updated_at:
+          type: integer
+          format: int64
+
+    # Sync response models (json tags from syncmodel/types.go)
+    SyncResponse:
+      type: object
+      required: [server_time, tables]
+      properties:
+        server_time:
+          type: integer
+          format: int64
+          description: Server wall-clock in Unix milliseconds.
+        tables:
+          $ref: "#/components/schemas/SyncResponseTables"
+
+    SyncResponseTables:
+      type: object
+      description: Only tables requested in the input are present in the response.
+      properties:
+        modes:
+          $ref: "#/components/schemas/SyncTableChanges_Mode_string"
+        mode_blocked_apps:
+          $ref: "#/components/schemas/SyncTableChanges_ModeBlockedApp_ModeBlockedAppKey"
+        schedules:
+          $ref: "#/components/schemas/SyncTableChanges_Schedule_string"
+        restriction_sessions:
+          $ref: "#/components/schemas/SyncTableChanges_RestrictionSession_string"
+        restriction_lifecycle_events:
+          $ref: "#/components/schemas/SyncTableChanges_RestrictionLifecycleEvent_string"
+        nfc_linked_chips:
+          $ref: "#/components/schemas/SyncTableChanges_NFCLinkedChip_string"
+        qr_linked_codes:
+          $ref: "#/components/schemas/SyncTableChanges_QRLinkedCode_string"
+        streak_session_daily_rollups:
+          $ref: "#/components/schemas/SyncTableChanges_StreakSessionDailyRollup_StreakSessionDailyRollupKey"
+        streak_daily_aggregates:
+          $ref: "#/components/schemas/SyncTableChanges_StreakDailyAggregate_string"
+
+    SyncTableChanges_Mode_string:
+      type: object
+      required: [upserts, deletions]
+      properties:
+        upserts:
+          type: array
+          items:
+            $ref: "#/components/schemas/SyncMode"
+        deletions:
+          type: array
+          items:
+            type: string
+
+    SyncTableChanges_ModeBlockedApp_ModeBlockedAppKey:
+      type: object
+      required: [upserts, deletions]
+      properties:
+        upserts:
+          type: array
+          items:
+            $ref: "#/components/schemas/SyncModeBlockedApp"
+        deletions:
+          type: array
+          items:
+            $ref: "#/components/schemas/SyncModeBlockedAppKey"
+
+    SyncTableChanges_Schedule_string:
+      type: object
+      required: [upserts, deletions]
+      properties:
+        upserts:
+          type: array
+          items:
+            $ref: "#/components/schemas/SyncSchedule"
+        deletions:
+          type: array
+          items:
+            type: string
+
+    SyncTableChanges_RestrictionSession_string:
+      type: object
+      required: [upserts, deletions]
+      properties:
+        upserts:
+          type: array
+          items:
+            $ref: "#/components/schemas/SyncRestrictionSession"
+        deletions:
+          type: array
+          items:
+            type: string
+
+    SyncTableChanges_RestrictionLifecycleEvent_string:
+      type: object
+      required: [upserts, deletions]
+      properties:
+        upserts:
+          type: array
+          items:
+            $ref: "#/components/schemas/SyncRestrictionLifecycleEvent"
+        deletions:
+          type: array
+          items:
+            type: string
+
+    SyncTableChanges_NFCLinkedChip_string:
+      type: object
+      required: [upserts, deletions]
+      properties:
+        upserts:
+          type: array
+          items:
+            $ref: "#/components/schemas/SyncNFCLinkedChip"
+        deletions:
+          type: array
+          items:
+            type: string
+
+    SyncTableChanges_QRLinkedCode_string:
+      type: object
+      required: [upserts, deletions]
+      properties:
+        upserts:
+          type: array
+          items:
+            $ref: "#/components/schemas/SyncQRLinkedCode"
+        deletions:
+          type: array
+          items:
+            type: string
+
+    SyncTableChanges_StreakSessionDailyRollup_StreakSessionDailyRollupKey:
+      type: object
+      required: [upserts, deletions]
+      properties:
+        upserts:
+          type: array
+          items:
+            $ref: "#/components/schemas/SyncStreakSessionDailyRollup"
+        deletions:
+          type: array
+          items:
+            $ref: "#/components/schemas/SyncStreakSessionDailyRollupKey"
+
+    SyncTableChanges_StreakDailyAggregate_string:
+      type: object
+      required: [upserts, deletions]
+      properties:
+        upserts:
+          type: array
+          items:
+            $ref: "#/components/schemas/SyncStreakDailyAggregate"
+        deletions:
+          type: array
+          items:
+            type: string
+
+    # Sync response row models (json tags from syncmodel/types.go)
+    SyncMode:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        text_on_screen:
+          type: string
+        description:
+          type: string
+          nullable: true
+        allowed_pauses_count:
+          type: integer
+        minimum_duration_ms:
+          type: integer
+          nullable: true
+        ending_pausing_scenario:
+          type: string
+        icon_token:
+          type: string
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+
+    SyncModeBlockedApp:
+      type: object
+      properties:
+        mode_id:
+          type: string
+        platform:
+          type: string
+        app_identifier:
+          type: string
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+
+    SyncModeBlockedAppKey:
+      type: object
+      properties:
+        mode_id:
+          type: string
+        platform:
+          type: string
+        app_identifier:
+          type: string
+
+    SyncSchedule:
+      type: object
+      properties:
+        id:
+          type: string
+        mode_id:
+          type: string
+        days:
+          type: string
+        start_minute:
+          type: integer
+        end_minute:
+          type: integer
+        enabled:
+          type: integer
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+
+    SyncRestrictionSession:
+      type: object
+      properties:
+        session_id:
+          type: string
+        mode_id:
+          type: string
+        source:
+          type: string
+        started_at:
+          type: integer
+          format: int64
+        ended_at:
+          type: integer
+          format: int64
+          nullable: true
+        pause_count:
+          type: integer
+        total_paused_ms:
+          type: integer
+        last_paused_at:
+          type: integer
+          format: int64
+          nullable: true
+        integrity_status:
+          type: string
+        last_anomaly_reason:
+          type: string
+          nullable: true
+        last_event_id:
+          type: string
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+
+    SyncRestrictionLifecycleEvent:
+      type: object
+      properties:
+        id:
+          type: string
+        session_id:
+          type: string
+        mode_id:
+          type: string
+        action:
+          type: string
+        source:
+          type: string
+        reason:
+          type: string
+        occurred_at:
+          type: integer
+          format: int64
+        created_at:
+          type: integer
+          format: int64
+
+    SyncNFCLinkedChip:
+      type: object
+      properties:
+        id:
+          type: string
+        chip_identifier:
+          type: string
+        name:
+          type: string
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+
+    SyncQRLinkedCode:
+      type: object
+      properties:
+        id:
+          type: string
+        scan_value:
+          type: string
+        name:
+          type: string
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+
+    SyncStreakSessionDailyRollup:
+      type: object
+      properties:
+        session_id:
+          type: string
+        local_day:
+          type: string
+        effective_ms:
+          type: integer
+        updated_at:
+          type: integer
+          format: int64
+
+    SyncStreakSessionDailyRollupKey:
+      type: object
+      properties:
+        session_id:
+          type: string
+        local_day:
+          type: string
+
+    SyncStreakDailyAggregate:
+      type: object
+      properties:
+        local_day:
+          type: string
+        effective_ms:
+          type: integer
+        qualified:
+          type: integer
+        source_session_count:
+          type: integer
+        updated_at:
+          type: integer
+          format: int64
+
+    # -- Webhook ------------------------------------------------------------
+    RevenueCatWebhookPayload:
+      type: object
+      properties:
+        api_version:
+          type: string
+        event:
+          type: object
+          description: RevenueCat webhook event payload. Unknown fields are tolerated.
+          properties:
+            type:
+              type: string
+            id:
+              type: string
+            app_user_id:
+              type: string
+            original_app_user_id:
+              type: string
+            product_id:
+              type: string
+            entitlement_ids:
+              type: array
+              items:
+                type: string
+            event_timestamp_ms:
+              type: integer
+              format: int64
+            expiration_at_ms:
+              type: integer
+              format: int64
+              nullable: true
+            environment:
+              type: string
+            period_type:
+              type: string
+            store:
+              type: string
+            transferred_from:
+              type: array
+              items:
+                type: string
+            transferred_to:
+              type: array
+              items:
+                type: string
+
+    # -- Admin --------------------------------------------------------------
+    AdminLoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      description: Unknown JSON fields are rejected.
+      properties:
+        username:
+          type: string
+          minLength: 1
+          description: Must be non-empty after trimming whitespace.
+        password:
+          type: string
+          minLength: 1
+
+    AdminLoginResponse:
+      type: object
+      required: [access_token]
+      properties:
+        access_token:
+          type: string
+
+    AdminUserItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        name:
+          type: string
+        username:
+          type: string
+        profile_picture_url:
+          type: string
+          nullable: true
+        premium_entitlement_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    AdminListUsersResponse:
+      type: object
+      required: [users, pagination]
+      properties:
+        users:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminUserItem"
+        pagination:
+          $ref: "#/components/schemas/AdminPagination"
+
+    AdminPagination:
+      type: object
+      required: [page, limit, total]
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+
+    AdminUserDetail:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        name:
+          type: string
+        username:
+          type: string
+        profile_picture_url:
+          type: string
+          nullable: true
+        leaderboard_visible:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        is_premium:
+          type: boolean
+        current_period_end:
+          type: string
+          format: date-time
+          nullable: true
+        revenuecat_app_user_id:
+          type: string
+          nullable: true
+        friend_count:
+          type: integer
+        total_sessions:
+          type: integer
+        last_session_time:
+          type: integer
+          format: int64
+          nullable: true
+
+    AdminStatsResponse:
+      type: object
+      properties:
+        total_users:
+          type: integer
+        active_users_30d:
+          type: integer
+        users_with_premium_entitlement:
+          type: integer
+        active_premium_entitlements:
+          type: integer
+        total_friendships:
+          type: integer
+        avg_streak_days:
+          type: number
+          format: double
+        avg_daily_focus_time_ms:
+          type: number
+          format: double
+
+    ManageEntitlementRequest:
+      type: object
+      additionalProperties: false
+      required: [action, entitlement]
+      description: Unknown JSON fields are rejected.
+      properties:
+        action:
+          type: string
+          enum: [grant, revoke]
+        entitlement:
+          type: string
+          enum: [premium]
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Optional RFC3339 timestamp; must be in the future when provided.
+
+    AdminEntitlementItem:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        username:
+          type: string
+        entitlement:
+          type: string
+        is_active:
+          type: boolean
+        current_period_end:
+          type: string
+          format: date-time
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+
+    AdminListEntitlementsResponse:
+      type: object
+      required: [entitlements, pagination]
+      properties:
+        entitlements:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminEntitlementItem"
+        pagination:
+          $ref: "#/components/schemas/AdminPagination"
+
+  # -------------------------------------------------------------------------
+  # Reusable response components
+  # -------------------------------------------------------------------------
+  responses:
+    Unauthorized:
+      description: Missing or invalid authentication.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: Insufficient permissions or subscription required.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ValidationError:
+      description: Request validation failed (422).
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Resource not found.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: Resource conflict (e.g. duplicate username).
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RateLimited:
+      description: Too many requests. Rate-limit middleware also emits informational headers on enforced responses.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+        X-RateLimit-Limit:
+          $ref: "#/components/headers/XRateLimitLimit"
+          required: false
+        X-RateLimit-Remaining:
+          $ref: "#/components/headers/XRateLimitRemaining"
+          required: false
+        X-RateLimit-Reset:
+          $ref: "#/components/headers/XRateLimitReset"
+          required: false
+        Retry-After:
+          schema:
+            type: integer
+          required: false
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: Unexpected server error.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+paths:
+  # =========================================================================
+  # Health
+  # =========================================================================
+  /live:
+    get:
+      operationId: getLive
+      tags: [Health]
+      summary: Liveness probe
+      description: Always returns 200 to indicate the process is running. No external dependencies are checked.
+      responses:
+        "200":
+          description: Process is alive.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveHealthResponse"
+
+  /ready:
+    get:
+      operationId: getReady
+      tags: [Health]
+      summary: Readiness probe
+      description: Pings the database. Returns 200 when healthy, 503 when degraded.
+      responses:
+        "200":
+          description: Service is ready.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadyHealthOKResponse"
+        "503":
+          description: Service is degraded (database unreachable).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadyHealthDegradedResponse"
+
+  # =========================================================================
+  # Auth
+  # =========================================================================
+  /api/v1/auth/start:
+    post:
+      operationId: authStart
+      tags: [Auth]
+      summary: Start passwordless login
+      description: Sends a one-time password to the provided email address. The response always indicates otp_required to avoid leaking account existence. Unknown JSON fields are rejected. Rate limited by IP using the `auth` tier.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartRequest"
+      responses:
+        "200":
+          description: OTP sent (or silently accepted for anti-enumeration).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StartResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/auth/verify:
+    post:
+      operationId: authVerify
+      tags: [Auth]
+      summary: Verify OTP and sign in
+      description: "Validates the OTP, creates a user if needed, and returns access + refresh tokens. Unknown JSON fields are rejected. This route has two independent limits: the `auth` tier keyed by IP and the `verify-otp` tier keyed by normalized email."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyOTPRequest"
+      responses:
+        "200":
+          description: Authentication successful.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/auth/refresh:
+    post:
+      operationId: authRefresh
+      tags: [Auth]
+      summary: Refresh access token
+      description: Rotates the refresh token and issues a new access token pair. Reuse of a revoked refresh token triggers revocation of all tokens for that user. Unknown JSON fields are rejected. Rate limited by IP using the `auth` tier.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: Tokens rotated successfully.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefreshResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # =========================================================================
+  # Profile
+  # =========================================================================
+  /api/v1/me:
+    get:
+      operationId: getMe
+      tags: [Profile]
+      summary: Get current user profile
+      description: Requires a user JWT. Rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      responses:
+        "200":
+          description: User profile returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    patch:
+      operationId: updateMe
+      tags: [Profile]
+      summary: Update current user profile
+      description: Requires a user JWT. Unknown JSON fields are rejected. Rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMeRequest"
+      responses:
+        "200":
+          description: Updated user profile returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/me/username-available:
+    get:
+      operationId: usernameAvailable
+      tags: [Profile]
+      summary: Check if a username is available
+      description: Requires a user JWT. Rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      parameters:
+        - name: username
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_]{3,30}$'
+          description: 3-30 characters; letters, digits, and underscores only.
+      responses:
+        "200":
+          description: Availability result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsernameAvailableResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/me/photo:
+    post:
+      operationId: uploadPhoto
+      tags: [Profile]
+      summary: Upload profile photo
+      description: Accepts a JPEG or PNG image. In practice the entire request is capped at 1 MiB by global middleware before the upload handler runs. Requires a user JWT and is rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [photo]
+              properties:
+                photo:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Photo uploaded; new URL returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PhotoUploadResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/me/delete/request:
+    post:
+      operationId: deleteRequest
+      tags: [Profile]
+      summary: Request account deletion
+      description: Sends a confirmation OTP to the user's email. The message is intentionally vague for anti-enumeration. Requires a user JWT and is rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      responses:
+        "200":
+          description: 'Returns the generic anti-enumeration message, "If the account is eligible for deletion, a confirmation code has been sent."'
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/me/delete/confirm:
+    post:
+      operationId: deleteConfirm
+      tags: [Profile]
+      summary: Confirm account deletion
+      description: Verifies the deletion OTP and permanently deletes the user account. Unknown JSON fields are rejected. Requires a user JWT and is rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteConfirmRequest"
+      responses:
+        "200":
+          description: Account deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # =========================================================================
+  # Social — Devices
+  # =========================================================================
+  /api/v1/devices:
+    post:
+      operationId: registerDevice
+      tags: [Social]
+      summary: Register a push notification device
+      description: Unknown JSON fields are rejected. Requires a user JWT and is rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterDeviceRequest"
+      responses:
+        "200":
+          description: Device registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/devices/unregister:
+    post:
+      operationId: unregisterDevice
+      tags: [Social]
+      summary: Unregister a push notification device
+      description: Unknown JSON fields are rejected. Requires a user JWT and is rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UnregisterDeviceRequest"
+      responses:
+        "200":
+          description: Device unregistered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # =========================================================================
+  # Social — Friends
+  # =========================================================================
+  /api/v1/friends:
+    get:
+      operationId: listFriends
+      tags: [Social]
+      summary: List accepted friends
+      description: Requires a user JWT and the `premium` entitlement. Rate limited by user ID using the `general-api` tier. Invalid `page` and `limit` values silently fall back to defaults instead of returning 422.
+      security:
+        - UserJWT: []
+      parameters:
+        - name: page
+          in: query
+          description: 1-based page number. Invalid or non-positive values fall back to 1.
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          description: Page size. Invalid, non-positive, or values above 100 fall back to 20.
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Paginated friend list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FriendListOutput"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/friends/request:
+    post:
+      operationId: requestFriend
+      tags: [Social]
+      summary: Send a friend request
+      description: Unknown JSON fields are rejected. Requires a user JWT and the `premium` entitlement. Rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FriendRequestRequest"
+      responses:
+        "201":
+          description: Friend request created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FriendMutationOutput"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/friends/requests/incoming:
+    get:
+      operationId: listIncomingRequests
+      tags: [Social]
+      summary: List incoming friend requests
+      description: Requires a user JWT and the `premium` entitlement. Rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      responses:
+        "200":
+          description: Pending incoming requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FriendRequestsOutput"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/friends/requests/outgoing:
+    get:
+      operationId: listOutgoingRequests
+      tags: [Social]
+      summary: List outgoing friend requests
+      description: Requires a user JWT and the `premium` entitlement. Rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      responses:
+        "200":
+          description: Pending outgoing requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FriendRequestsOutput"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/friends/requests/{id}/accept:
+    post:
+      operationId: acceptFriend
+      tags: [Social]
+      summary: Accept a friend request
+      description: Requires a user JWT and the `premium` entitlement. Rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Friendship identifier. The handler only checks that the path segment is non-empty.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Request accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FriendMutationOutput"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/friends/requests/{id}/decline:
+    post:
+      operationId: declineFriend
+      tags: [Social]
+      summary: Decline a friend request
+      description: Requires a user JWT and the `premium` entitlement. Rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Friendship identifier. The handler only checks that the path segment is non-empty.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Request declined.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/friends/{id}:
+    delete:
+      operationId: removeFriend
+      tags: [Social]
+      summary: Remove an accepted friend
+      description: Requires a user JWT and the `premium` entitlement. Rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Friendship identifier. The handler only checks that the path segment is non-empty.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Friend removed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/friends/{id}/stats:
+    get:
+      operationId: friendStats
+      tags: [Social]
+      summary: Get a friend's focus statistics
+      description: Requires a user JWT and the `premium` entitlement. Rate limited by user ID using the `general-api` tier. Invalid `days` values fall back to 30 instead of returning 422.
+      security:
+        - UserJWT: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Friendship identifier. The handler only checks that the path segment is non-empty.
+          schema:
+            type: string
+        - name: days
+          in: query
+          description: Rolling window in days. Values outside 1..90 or non-integers fall back to 30.
+          schema:
+            type: integer
+            default: 30
+      responses:
+        "200":
+          description: Friend statistics returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FriendStatsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/friends/search:
+    get:
+      operationId: searchUsers
+      tags: [Social]
+      summary: Search users by username prefix
+      description: Requires a user JWT and the `premium` entitlement. Rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Username prefix (min 3 characters).
+          schema:
+            type: string
+            minLength: 3
+      responses:
+        "200":
+          description: Matching users returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchUsersResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # =========================================================================
+  # Social — Leaderboards
+  # =========================================================================
+  /api/v1/leaderboard/streaks:
+    get:
+      operationId: leaderboardStreaks
+      tags: [Social]
+      summary: Leaderboard ranked by current streak
+      description: Ranks all users by current streak, computes `my_rank` against the full user set, and only includes users with `leaderboard_visible=true` in `entries`. Requires a user JWT and is rate limited by user ID using the `general-api` tier. Invalid `page` and `limit` values silently fall back to defaults.
+      security:
+        - UserJWT: []
+      parameters:
+        - name: page
+          in: query
+          description: 1-based page number. Invalid or non-positive values fall back to 1.
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          description: Page size. Invalid, non-positive, or values above 100 fall back to 20.
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Streak leaderboard returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaderboardResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/leaderboard/focus-time:
+    get:
+      operationId: leaderboardFocusTime
+      tags: [Social]
+      summary: Leaderboard ranked by total focus time
+      description: Ranks all users by total focus time, computes `my_rank` against the full user set, and only includes users with `leaderboard_visible=true` in `entries`. Requires a user JWT and is rate limited by user ID using the `general-api` tier. Invalid `page` and `limit` values silently fall back to defaults.
+      security:
+        - UserJWT: []
+      parameters:
+        - name: page
+          in: query
+          description: 1-based page number. Invalid or non-positive values fall back to 1.
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          description: Page size. Invalid, non-positive, or values above 100 fall back to 20.
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Focus-time leaderboard returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaderboardResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # =========================================================================
+  # Sync
+  # =========================================================================
+  /api/v1/sync:
+    post:
+      operationId: sync
+      tags: [Sync]
+      summary: Bidirectional data sync
+      description: Sends local changes and receives server-side changes since the last sync cursor. Only tables included in the request are synchronised. Unknown JSON fields are rejected. Requires a user JWT and is rate limited by user ID using the `sync` tier.
+      security:
+        - UserJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SyncRequest"
+      responses:
+        "200":
+          description: Sync completed. Server changes and new cursor returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SyncResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # =========================================================================
+  # Webhook
+  # =========================================================================
+  /api/v1/webhooks/revenuecat:
+    post:
+      operationId: webhookRevenueCat
+      tags: [Webhook]
+      summary: RevenueCat subscription webhook
+      description: >
+        Receives subscription lifecycle events from RevenueCat. Authenticated via a
+        static Bearer secret (not a user JWT). Rate limited by IP using the
+        `webhook` tier. Returns 200 on success; 500 on transient failures so
+        RevenueCat retries delivery.
+      security:
+        - WebhookBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RevenueCatWebhookPayload"
+      responses:
+        "200":
+          description: Webhook processed successfully.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # =========================================================================
+  # Admin
+  # =========================================================================
+  /api/v1/admin/login:
+    post:
+      operationId: adminLogin
+      tags: [Admin]
+      summary: Admin login
+      description: Authenticates an admin by username and password. Returns a short-lived admin JWT. Unknown JSON fields are rejected. Rate limited by IP using the `admin` tier.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminLoginRequest"
+      responses:
+        "200":
+          description: Admin authenticated.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminLoginResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/admin/users:
+    get:
+      operationId: adminListUsers
+      tags: [Admin]
+      summary: List users (admin)
+      description: Requires an admin JWT. Rate limited by admin user ID using the `admin` tier. Invalid `page` and `limit` values silently fall back to defaults.
+      security:
+        - AdminJWT: []
+      parameters:
+        - name: page
+          in: query
+          description: 1-based page number. Invalid or non-positive values fall back to 1.
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          description: Page size. Invalid, non-positive, or values above 100 fall back to 20.
+          schema:
+            type: integer
+            default: 20
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Optional search filter (matches email, name, or username).
+      responses:
+        "200":
+          description: Paginated user list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminListUsersResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/admin/users/{id}:
+    get:
+      operationId: adminGetUserDetail
+      tags: [Admin]
+      summary: Get user detail (admin)
+      description: Requires an admin JWT. Rate limited by admin user ID using the `admin` tier.
+      security:
+        - AdminJWT: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: User identifier. The handler only checks that the path segment is non-empty.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Full user detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminUserDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/admin/stats:
+    get:
+      operationId: adminGetPlatformStats
+      tags: [Admin]
+      summary: Get platform statistics (admin)
+      description: Requires an admin JWT. Rate limited by admin user ID using the `admin` tier.
+      security:
+        - AdminJWT: []
+      responses:
+        "200":
+          description: Aggregate platform statistics.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminStatsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/admin/users/{id}/entitlements:
+    post:
+      operationId: adminManageEntitlement
+      tags: [Admin]
+      summary: Grant or revoke a user entitlement (admin)
+      description: Requires an admin JWT. Unknown JSON fields are rejected. Rate limited by admin user ID using the `admin` tier.
+      security:
+        - AdminJWT: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: User identifier. The handler only checks that the path segment is non-empty.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ManageEntitlementRequest"
+      responses:
+        "200":
+          description: Entitlement managed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/admin/entitlements:
+    get:
+      operationId: adminListEntitlements
+      tags: [Admin]
+      summary: List entitlements (admin)
+      description: Requires an admin JWT. Rate limited by admin user ID using the `admin` tier. Invalid `page` and `limit` values silently fall back to defaults.
+      security:
+        - AdminJWT: []
+      parameters:
+        - name: page
+          in: query
+          description: 1-based page number. Invalid or non-positive values fall back to 1.
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          description: Page size. Invalid, non-positive, or values above 100 fall back to 20.
+          schema:
+            type: integer
+            default: 20
+        - name: entitlement
+          in: query
+          schema:
+            type: string
+          description: Optional filter by entitlement name.
+        - name: is_active
+          in: query
+          schema:
+            type: boolean
+          description: Optional filter by active status.
+      responses:
+        "200":
+          description: Paginated entitlement list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminListEntitlementsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
