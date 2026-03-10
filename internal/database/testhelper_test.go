@@ -153,6 +153,7 @@ func coreTables() []string {
 		"refresh_tokens",
 		"admin_credentials",
 		"user_entitlements",
+		"admin_entitlement_overrides",
 		"friendships",
 		"device_tokens",
 		"sync_tombstones",

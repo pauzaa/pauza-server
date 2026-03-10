@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -95,17 +97,17 @@ func TestNewSMTPSender_UsesProvidedLogger(t *testing.T) {
 	}
 }
 
-func TestSubjectForPurpose_EmailVerification(t *testing.T) {
-	got := subjectForPurpose(PurposeEmailVerification)
-	want := "Verify your Pauza account"
+func TestSubjectForPurpose_AuthLogin(t *testing.T) {
+	got := subjectForPurpose(PurposeAuthLogin)
+	want := "Your Pauza sign-in code"
 	if got != want {
 		t.Errorf("subject = %q, want %q", got, want)
 	}
 }
 
-func TestSubjectForPurpose_PasswordReset(t *testing.T) {
-	got := subjectForPurpose(PurposePasswordReset)
-	want := "Reset your Pauza password"
+func TestSubjectForPurpose_AccountDeletion(t *testing.T) {
+	got := subjectForPurpose(PurposeAccountDeletion)
+	want := "Confirm your Pauza account deletion"
 	if got != want {
 		t.Errorf("subject = %q, want %q", got, want)
 	}
@@ -123,7 +125,7 @@ func TestSendOTP_CancelledContext(t *testing.T) {
 	cancel()
 
 	s := newTestSender()
-	err := s.SendOTP(ctx, "to@example.com", "123456", PurposeEmailVerification)
+	err := s.SendOTP(ctx, "to@example.com", "123456", PurposeAuthLogin)
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
 	}
@@ -174,6 +176,9 @@ func TestProbe_Success(t *testing.T) {
 func TestProbe_DialFailureHasProbePrefix(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
+		if errors.Is(err, os.ErrPermission) || strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("binding local test listener is not permitted: %v", err)
+		}
 		t.Fatalf("listen: %v", err)
 	}
 	addr := ln.Addr().String()
@@ -210,9 +215,9 @@ func TestSendOTP_HeaderInjection(t *testing.T) {
 		otp     string
 		purpose string
 	}{
-		{"newline in to", "evil@example.com\nBcc: spy@evil.com", "123456", PurposeEmailVerification},
-		{"cr in to", "evil@example.com\rBcc: spy@evil.com", "123456", PurposeEmailVerification},
-		{"newline in otp", "ok@example.com", "123\nBcc: spy@evil.com", PurposeEmailVerification},
+		{"newline in to", "evil@example.com\nBcc: spy@evil.com", "123456", PurposeAuthLogin},
+		{"cr in to", "evil@example.com\rBcc: spy@evil.com", "123456", PurposeAuthLogin},
+		{"newline in otp", "ok@example.com", "123\nBcc: spy@evil.com", PurposeAuthLogin},
 		{"newline in purpose", "ok@example.com", "123456", "verify\nBcc: spy@evil.com"},
 	}
 
@@ -230,11 +235,11 @@ func TestSendOTP_HeaderInjection(t *testing.T) {
 }
 
 func TestPurposeConstants(t *testing.T) {
-	if PurposeEmailVerification != "email_verification" {
-		t.Errorf("PurposeEmailVerification = %q, want %q", PurposeEmailVerification, "email_verification")
+	if PurposeAuthLogin != "auth_login" {
+		t.Errorf("PurposeAuthLogin = %q, want %q", PurposeAuthLogin, "auth_login")
 	}
-	if PurposePasswordReset != "password_reset" {
-		t.Errorf("PurposePasswordReset = %q, want %q", PurposePasswordReset, "password_reset")
+	if PurposeAccountDeletion != "account_deletion" {
+		t.Errorf("PurposeAccountDeletion = %q, want %q", PurposeAccountDeletion, "account_deletion")
 	}
 }
 
@@ -274,8 +279,8 @@ func TestSendOTP_EmptyParams(t *testing.T) {
 		otp     string
 		purpose string
 	}{
-		{"empty to", "", "123456", PurposeEmailVerification},
-		{"empty otp", "ok@example.com", "", PurposeEmailVerification},
+		{"empty to", "", "123456", PurposeAuthLogin},
+		{"empty otp", "ok@example.com", "", PurposeAuthLogin},
 		{"empty purpose", "ok@example.com", "123456", ""},
 	}
 
@@ -315,7 +320,7 @@ func TestSendOTP_HeaderInjectionInFrom(t *testing.T) {
 		TLSPolicy:        "mandatory",
 		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	err := s.SendOTP(context.Background(), "ok@example.com", "123456", PurposeEmailVerification)
+	err := s.SendOTP(context.Background(), "ok@example.com", "123456", PurposeAuthLogin)
 	if err == nil {
 		t.Fatal("expected error for header injection in from")
 	}
@@ -336,7 +341,7 @@ func TestSendOTP_HeaderInjectionInHost(t *testing.T) {
 		TLSPolicy:        "mandatory",
 		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	err := s.SendOTP(context.Background(), "ok@example.com", "123456", PurposeEmailVerification)
+	err := s.SendOTP(context.Background(), "ok@example.com", "123456", PurposeAuthLogin)
 	if err == nil {
 		t.Fatal("expected error for header injection in host")
 	}
@@ -357,7 +362,7 @@ func TestSendOTP_HeaderInjectionInUsername(t *testing.T) {
 		TLSPolicy:        "mandatory",
 		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	err := s.SendOTP(context.Background(), "ok@example.com", "123456", PurposeEmailVerification)
+	err := s.SendOTP(context.Background(), "ok@example.com", "123456", PurposeAuthLogin)
 	if err == nil {
 		t.Fatal("expected error for header injection in username")
 	}
@@ -378,7 +383,7 @@ func TestSendOTP_HeaderInjectionInPassword(t *testing.T) {
 		TLSPolicy:        "mandatory",
 		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	err := s.SendOTP(context.Background(), "ok@example.com", "123456", PurposeEmailVerification)
+	err := s.SendOTP(context.Background(), "ok@example.com", "123456", PurposeAuthLogin)
 	if err == nil {
 		t.Fatal("expected error for header injection in password")
 	}
@@ -395,6 +400,9 @@ func fakeSMTPServer(t *testing.T, recipientEmail string) (net.Listener, string) 
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
+		if errors.Is(err, os.ErrPermission) || strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("binding local test listener is not permitted: %v", err)
+		}
 		t.Fatalf("listen: %v", err)
 	}
 
@@ -466,7 +474,7 @@ func smtpSanitizationFixture(t *testing.T, recipient string) (error, string, str
 		Logger:           logger,
 	})
 
-	err := s.SendOTP(context.Background(), recipient, "123456", PurposeEmailVerification)
+	err := s.SendOTP(context.Background(), recipient, "123456", PurposeAuthLogin)
 	if err == nil {
 		t.Fatal("expected SMTP error, got nil")
 	}

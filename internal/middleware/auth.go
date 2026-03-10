@@ -15,6 +15,14 @@ import (
 // context. Requests without a valid token receive a 401 UNAUTHORIZED response.
 // The provided logger is used for structured warning output on auth failures.
 func JWTAuth(secret string, logger *slog.Logger) func(http.Handler) http.Handler {
+	return jwtAuth(secret, logger, "")
+}
+
+func AdminJWTAuth(secret string, logger *slog.Logger) func(http.Handler) http.Handler {
+	return jwtAuth(secret, logger, "admin")
+}
+
+func jwtAuth(secret string, logger *slog.Logger, requiredRole string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			header := r.Header.Get("Authorization")
@@ -45,6 +53,12 @@ func JWTAuth(secret string, logger *slog.Logger) func(http.Handler) http.Handler
 			if err != nil {
 				logger.WarnContext(r.Context(), "jwt auth: token validation failed",
 					"path", r.URL.Path, "err", err)
+				apperror.Unauthorized(w, "missing or invalid authentication")
+				return
+			}
+			if requiredRole != "" && claims.Role != requiredRole {
+				logger.WarnContext(r.Context(), "jwt auth: role mismatch",
+					"path", r.URL.Path, "required_role", requiredRole, "got_role", claims.Role)
 				apperror.Unauthorized(w, "missing or invalid authentication")
 				return
 			}

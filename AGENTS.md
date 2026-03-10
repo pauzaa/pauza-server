@@ -31,7 +31,7 @@ Child docs:
 | --- | --- | --- |
 | Startup and shutdown | `cmd/server/main.go` | config -> DB -> mail -> Redis -> server.New -> cleanup |
 | Router and middleware wiring | `internal/server/server.go` | probes, auth routes, rate-limit attachment |
-| Auth policy | `internal/service/auth.go` | register, verify, login, refresh, forgot/reset, anti-enumeration |
+| Auth policy | `internal/service/auth.go` | passwordless start, verify, refresh, anti-enumeration |
 | Auth SQL | `internal/repository/auth.go` | user, OTP, refresh-token, entitlement queries and locks |
 | JWT / OTP / password | `internal/auth/AGENTS.md` | token and credential primitives |
 | DB runtime helpers | `internal/database/AGENTS.md` | connect, migrate, seed, cleanup, destructive test helpers |
@@ -70,7 +70,7 @@ Child docs:
 ## UNIQUE STYLES
 - Request IDs are echoed back in `X-Request-Id`, even on recovered failures.
 - Request bodies are capped at 1 MiB before handlers run.
-- Forgot-password latency is normalized to reduce account-enumeration signals.
+- Auth start/verify flows avoid leaking account-existence signals.
 - Refresh-token reuse detection revokes all refresh tokens for that user.
 - Mail logging uses redaction and never logs OTP values.
 

@@ -44,11 +44,19 @@ type Config struct {
 	RevenueCatAPIKey        string `envconfig:"REVENUECAT_API_KEY" required:"true"`
 	RevenueCatWebhookSecret string `envconfig:"REVENUECAT_WEBHOOK_SECRET" required:"true"`
 
-	// Firebase
-	FirebaseServiceAccountJSON string `envconfig:"FIREBASE_SERVICE_ACCOUNT_JSON" required:"true"`
+	// Firebase (optional; enables push notifications when configured)
+	FirebaseServiceAccountJSON string `envconfig:"FIREBASE_SERVICE_ACCOUNT_JSON"`
 
-	// Redis-backed shared rate limiting for the server runtime.
-	RedisURL string `envconfig:"REDIS_URL" required:"true"`
+	// Redis-backed shared rate limiting for the server runtime. Optional for
+	// single-instance deployments; when unset the server falls back to the
+	// in-memory limiter.
+	RedisURL string `envconfig:"REDIS_URL"`
+
+	// Profile photo storage sink. The backend writes uploads into a
+	// deployment-provided path and returns URLs rooted at the configured public
+	// base URL; serving/publication is handled outside the app.
+	PhotoStorageDir    string `envconfig:"PHOTO_STORAGE_DIR" required:"true"`
+	PhotoPublicBaseURL string `envconfig:"PHOTO_PUBLIC_BASE_URL" required:"true"`
 
 	// Rate limiting groups (safe defaults per BACKEND_SPEC §10).
 	AuthRateLimit  int           `envconfig:"AUTH_RATE_LIMIT" default:"5"`
@@ -199,6 +207,12 @@ func (c *Config) validate() error {
 	}
 	if c.RefreshTokenRevokedRetention <= 0 {
 		return fmt.Errorf("REFRESH_TOKEN_REVOKED_RETENTION must be positive, got %s", c.RefreshTokenRevokedRetention)
+	}
+	if strings.TrimSpace(c.PhotoStorageDir) == "" {
+		return fmt.Errorf("PHOTO_STORAGE_DIR must not be empty")
+	}
+	if strings.TrimSpace(c.PhotoPublicBaseURL) == "" {
+		return fmt.Errorf("PHOTO_PUBLIC_BASE_URL must not be empty")
 	}
 
 	return nil

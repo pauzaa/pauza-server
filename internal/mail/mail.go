@@ -4,8 +4,8 @@ import "context"
 
 // OTP purpose constants used by SendOTP callers.
 const (
-	PurposeEmailVerification = "email_verification"
-	PurposePasswordReset     = "password_reset"
+	PurposeAuthLogin       = "auth_login"
+	PurposeAccountDeletion = "account_deletion"
 )
 
 // Sender abstracts email delivery so implementations can be swapped

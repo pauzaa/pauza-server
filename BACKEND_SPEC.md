@@ -5,7 +5,7 @@
 1. [Overview](#1-overview)
 2. [Authentication & Account Management](#2-authentication--account-management)
 3. [Database Schema](#3-database-schema)
-4. [Sync Protocol](#4-sync-protocol)
+4. [Replication Protocol](#4-replication-protocol)
 5. [REST API Endpoints](#5-rest-api-endpoints)
 6. [Subscription System](#6-subscription-system)
 7. [Friendships](#7-friendships)
@@ -24,10 +24,11 @@
 
 The Pauza backend provides server-side infrastructure for the Pauza digital wellbeing mobile application. Its primary responsibilities are:
 
-This specification is a target design document. Some sections describe functionality that is already implemented, while others describe planned functionality that is not implemented yet. Status labels used throughout: `✅ Implemented` and `🔲 Planned`.
+This specification is a target design document for the intended backend
+contract.
 
-- **User authentication** (registration, login, password reset)
-- **Bidirectional data sync** between the client's local SQLite database and the server's PostgreSQL database
+- **Passwordless user authentication** (email OTP challenge, verification, session refresh)
+- **Client-server replication** between the client's local SQLite database and the server's PostgreSQL database
 - **Subscription management** (RevenueCat webhook ingestion, entitlement enforcement)
 - **Social features** (friendships, shared stats)
 - **Leaderboards** (streak-based and focus-time-based rankings)
@@ -48,63 +49,56 @@ This specification is a target design document. Some sections describe functiona
 
 ### 1.3 Architecture Principles
 
-- **Offline-first**: The mobile client's local SQLite database is the source of truth. The backend serves as a synchronized replica for backup, restore, and social/leaderboard features.
-- **Bidirectional sync**: Data flows both ways. The client pushes local changes to the server, and pulls server-side changes back (e.g., after restoring on a new device).
-- **Timestamp-based sync with last-write-wins**: Each record has an `updated_at` timestamp. During sync, the most recently updated version of a record wins. This conflict model is only acceptable under the single-device assumption; concurrent edits from multiple devices can silently overwrite older writes.
-- **Single-device model**: One account is expected to be active on one device at a time. Sync is not designed for concurrent multi-device editing, and concurrent multi-device use can silently lose writes under the last-write-wins model.
+- **Offline-first**: The mobile client's local SQLite database is the source of truth during normal operation. The backend stores a replica for restore/bootstrap and server-side features.
+- **Incremental replication**: The client replicates per-table changes with `last_synced_at` cursors. `last_synced_at = 0` requests a restore/bootstrap snapshot for that table.
+- **Timestamp-based record versioning**: Replicated records carry client timestamps so the backend can deterministically apply newer client state and return newer server-side changes.
+- **Single-device model**: One account is expected to be active on one device at a time. Concurrent active use across devices is unsupported and may result in stale restores or overwritten backup state.
 - **Subscription enforcement on both client and server**: The client hides premium UI features, and the server rejects requests to premium-only endpoints for non-subscribers.
 
 ---
 
 ## 2. Authentication & Account Management
 
-### 2.1 Registration Flow
+### 2.1 Passwordless Authentication Flow
 
 ```
 Client                          Server
   |                               |
-  |  POST /auth/register          |
-  |  { email, password }          |
+  |  POST /auth/start             |
+  |  { email }                    |
   |------------------------------>|
-  |                               |  If email already exists:
-  |  409 CONFLICT                 |    return error (use /auth/login)
-  |<------------------------------|
-  |                               |  If email is new:
-  |                               |    hash password, store pending user
-  |                               |    generate 6-digit OTP, send to email
-  |  200 { otp_required: true }   |    OTP expires in 10 minutes
+  |                               |  Generate 6-digit OTP and send email
+  |                               |  Invalidate any older unused auth_login
+  |                               |  OTPs for the same email
+  |                               |  If email is new, account creation is
+  |                               |  deferred until OTP verification
+  |                               |  If email already exists, return the same
+  |                               |  generic response
+  |  200 { otp_required: true }   |    without confirming account existence
   |<------------------------------|
   |                               |
-  |  POST /auth/verify-otp        |
+  |  POST /auth/verify            |
   |  { email, otp }               |
   |------------------------------>|
-  |                               |  Verify OTP, activate user account
-  |                               |  Generate JWT access + refresh tokens
+  |                               |  Verify latest valid auth_login OTP
+  |                               |  If email is new: create account
+  |                               |  Issue JWT access + refresh tokens
   |  200 { access_token,          |
   |        refresh_token, user }  |
   |<------------------------------|
 ```
 
-- Passwords are hashed using **bcrypt** with a cost factor of at least 12.
-- OTP codes are 6-digit numeric, valid for 10 minutes, single-use.
+- OTP codes are 6-digit numeric, valid for 10 minutes, single-use, and scoped by `(email, purpose)`.
+- Issuing a new OTP for the same `(email, purpose)` invalidates all older unused OTPs for that pair.
 - A maximum of 3 OTP verification attempts are allowed per email per 10-minute window.
+- Auth entry points should not reveal whether the email already exists.
+- Passwords are not used. Email possession is the primary authentication and
+  recovery factor.
 
-### 2.2 Login Flow
+### 2.2 Account Provisioning
 
-```
-Client                          Server
-  |                               |
-  |  POST /auth/login             |
-  |  { email, password }          |
-  |------------------------------>|
-  |                               |  Verify email exists and password matches
-  |  200 { access_token,          |
-  |        refresh_token, user }  |
-  |<------------------------------|
-```
-
-- Returns `401 UNAUTHORIZED` if email does not exist or password is incorrect.
-- The error message must not reveal whether the email exists (prevent enumeration).
+- A new `users` row is created only after successful OTP verification.
+- Re-verifying the same email signs the user in rather than creating a second account.
 
 ### 2.3 Token Strategy
 
@@ -145,31 +139,29 @@ Client                          Server
 - If a revoked refresh token is reused, **all refresh tokens for that user are revoked** (indicates token theft).
 - Refresh-token rows will grow over time; cleanup is a later operational concern. A periodic cleanup job should eventually delete expired rows and revoked rows based on revocation time.
 
-### 2.4 Password Reset Flow
+### 2.4 Recovery Model
 
-```
-Client                          Server
-  |                               |
-  |  POST /auth/forgot-password   |
-  |  { email }                    |
-  |------------------------------>|
-  |                               |  If email exists: generate OTP, send email
-  |  200 { message }              |  Return 200 for success or unknown email
-  |  5xx { error }                |  Return 5xx for infrastructure/delivery failure
-  |<------------------------------|
-  |                               |
-  |  POST /auth/reset-password    |
-  |  { email, otp, new_password } |
-  |------------------------------>|
-  |                               |  Verify OTP, update password hash
-  |                               |  Revoke all existing refresh tokens
-  |  200 { message }              |
-  |<------------------------------|
-```
+- Because authentication is passwordless, there is no password reset flow.
+- Account recovery is equivalent to proving control of the email address.
+- If a user can receive and verify a valid login OTP, they can regain access to
+  their account.
+- If a user loses access to their email inbox, they lose access to the account
+  unless another recovery mechanism is introduced in a future revision.
 
 ### 2.5 Account Deletion
 
-`DELETE /api/v1/me` permanently deletes the user account and all associated data (modes, sessions, friendships, subscriptions, etc.). This is irreversible. The endpoint should require the user to confirm by providing their current password in the request body.
+Account deletion is a two-step flow:
+
+1. `POST /api/v1/me/delete/request` sends a one-time deletion OTP to the
+   authenticated user's email address and invalidates any older unused
+   `account_deletion` OTPs for that email.
+2. `POST /api/v1/me/delete/confirm` verifies the OTP and permanently deletes the
+   user account and all associated data.
+
+`POST /api/v1/me/delete/request` does not revoke the current access token or
+refresh tokens. `POST /api/v1/me/delete/confirm` deletes the account and, by
+cascade, invalidates all active sessions and refresh tokens. This is
+irreversible.
 
 ---
 
@@ -185,12 +177,10 @@ All timestamps are stored as `TIMESTAMPTZ` (PostgreSQL timestamp with time zone)
 CREATE TABLE users (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email               TEXT NOT NULL,
-  password_hash       TEXT NOT NULL,
   name                TEXT NOT NULL DEFAULT '',
   username            TEXT NOT NULL UNIQUE,
   profile_picture_url TEXT,
   leaderboard_visible BOOLEAN NOT NULL DEFAULT TRUE,
-  email_verified      BOOLEAN NOT NULL DEFAULT FALSE,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -204,17 +194,40 @@ CREATE UNIQUE INDEX idx_users_username ON users (lower(username));
 ```sql
 CREATE TABLE otp_codes (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  email      TEXT NOT NULL,
+  user_id    UUID REFERENCES users(id) ON DELETE CASCADE,
   code_hash  TEXT NOT NULL,
-  purpose    TEXT NOT NULL CHECK (purpose IN ('email_verification', 'password_reset')),
+  purpose    TEXT NOT NULL CHECK (purpose IN ('auth_login', 'account_deletion')),
   expires_at TIMESTAMPTZ NOT NULL,
   used       BOOLEAN NOT NULL DEFAULT FALSE,
-  attempts   INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_otp_codes_user_purpose ON otp_codes (user_id, purpose, used, expires_at);
+CREATE INDEX idx_otp_codes_email_purpose ON otp_codes (lower(email), purpose, used, expires_at);
 CREATE INDEX idx_otp_codes_expires_at ON otp_codes (expires_at);
+```
+
+At most one unused OTP should remain active for a given `(email, purpose)`.
+Issuing a new OTP for that pair invalidates older unused rows before the new OTP
+is stored.
+
+#### `otp_failed_attempts`
+
+Tracks failed OTP submissions for rate limiting and lockout windows. Failed
+attempts are modeled separately from `otp_codes` so the verification budget
+applies across OTP re-issuance, not just a single code row.
+
+```sql
+CREATE TABLE otp_failed_attempts (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email        TEXT NOT NULL,
+  user_id      UUID REFERENCES users(id) ON DELETE CASCADE,
+  purpose      TEXT NOT NULL CHECK (purpose IN ('auth_login', 'account_deletion')),
+  attempted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_otp_failed_attempts_email_purpose_attempted_at
+  ON otp_failed_attempts (lower(email), purpose, attempted_at);
 ```
 
 #### `refresh_tokens`
@@ -281,16 +294,17 @@ CREATE TABLE friendships (
   id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   requester_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   addressee_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  status       TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'declined')),
+  status       TEXT NOT NULL CHECK (status IN ('pending', 'accepted')),
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-  CHECK (requester_id != addressee_id),
-  UNIQUE (requester_id, addressee_id)
+  CHECK (requester_id != addressee_id)
 );
 
 CREATE INDEX idx_friendships_addressee ON friendships (addressee_id, status);
 CREATE INDEX idx_friendships_requester ON friendships (requester_id, status);
+CREATE UNIQUE INDEX idx_friendships_user_pair
+  ON friendships (LEAST(requester_id, addressee_id), GREATEST(requester_id, addressee_id));
 ```
 
 #### `device_tokens`
@@ -308,29 +322,11 @@ CREATE TABLE device_tokens (
 CREATE INDEX idx_device_tokens_user ON device_tokens (user_id);
 ```
 
-#### `sync_tombstones`
-
-Tracks hard-deleted records so the sync protocol can propagate deletions.
-
-```sql
-CREATE TABLE sync_tombstones (
-  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  table_name TEXT NOT NULL,
-  record_id  TEXT NOT NULL,
-  deleted_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX idx_sync_tombstones_user_time ON sync_tombstones (user_id, deleted_at);
-```
-
-Tombstones older than 90 days are garbage-collected by a periodic background job.
-
-### 3.2 Synced Tables
+### 3.2 Replicated Tables
 
 These tables mirror the client's local SQLite schema. Each table gains a `user_id` column as a foreign key to `users`. Column types are adapted from SQLite to PostgreSQL:
 
-- `INTEGER` timestamps (milliseconds since epoch in SQLite) become `BIGINT` in PostgreSQL (preserving the client's format for sync compatibility).
+- `INTEGER` timestamps (milliseconds since epoch in SQLite) become `BIGINT` in PostgreSQL (preserving the client's format for replication compatibility).
 - `TEXT` remains `TEXT`.
 - `INTEGER` flags (0/1) remain `INTEGER` (not `BOOLEAN`) to match client format.
 
@@ -497,7 +493,7 @@ CREATE TABLE streak_daily_aggregates (
 CREATE INDEX idx_streak_aggregates_qualified ON streak_daily_aggregates (user_id, qualified, local_day);
 ```
 
-### 3.3 Tables NOT Synced
+### 3.3 Tables NOT Replicated
 
 | Client Table | Reason |
 |---|---|
@@ -505,15 +501,29 @@ CREATE INDEX idx_streak_aggregates_qualified ON streak_daily_aggregates (user_id
 
 ---
 
-## 4. Sync Protocol
+## 4. Replication Protocol
 
 ### 4.1 Overview
 
-The sync protocol uses a single endpoint (`POST /api/v1/sync`) to exchange data bidirectionally between client and server. It is designed for an offline-first, single-device architecture.
+The protocol uses a single endpoint (`POST /api/v1/sync`) for incremental
+replication between the active client and the backend replica.
 
-> **Important:** This protocol assumes one active device per account. Its timestamp-based last-write-wins behavior can silently lose data if the same account is edited concurrently on multiple devices. Supporting true multi-device concurrency would require a different conflict-resolution model in a future revision.
+For each replicated table, the client sends:
 
-### 4.2 Sync Request
+- `last_synced_at`: the last server cursor the client has fully applied for that table
+- `upserts`: records created or updated locally since that cursor
+- `deletions`: primary keys deleted locally since that cursor
+
+The server applies the client changes transactionally, then returns server
+changes newer than `last_synced_at` for the same table. `last_synced_at = 0`
+requests a restore/bootstrap snapshot for that table.
+
+This is not a general-purpose multi-master sync engine. The product model is
+still single-device, but the wire protocol is incremental in both directions so
+the backend can serve restore/bootstrap and server-side features from the same
+replicated state.
+
+### 4.2 Replication Request
 
 The client sends:
 
@@ -553,11 +563,17 @@ The client sends:
 
 | Field | Description |
 |---|---|
-| `last_synced_at` | Milliseconds-since-epoch timestamp of the client's last successful sync for this table. `0` for first sync (full download). |
-| `upserts` | Array of records created or updated locally since `last_synced_at`. |
-| `deletions` | Array of primary key values for records deleted locally since `last_synced_at`. For single-column PKs, this is an array of strings. For composite PKs, this is an array of objects with all PK fields. |
+| `last_synced_at` | Milliseconds-since-epoch server cursor for that table. `0` requests restore/bootstrap for the table. The client advances this value only after a successful response has been fully applied locally. |
+| `upserts` | Array of records created or updated locally since the client's current cursor for that table. |
+| `deletions` | Array of primary key values for records deleted locally since the client's current cursor for that table. For single-column PKs this is an array of strings. For composite PKs this is an array of objects with all PK fields. |
 
-### 4.3 Sync Response
+If a request fails or the client does not receive the response, the client may
+retry with the same `last_synced_at`, `upserts`, and `deletions`. Duplicate
+upserts are safe because records are keyed by primary key and compared by record
+version (`updated_at`, or `created_at` where no `updated_at` exists). Duplicate
+deletions are safe because deleting a missing row is a no-op.
+
+### 4.3 Replication Response
 
 The server responds with:
 
@@ -573,11 +589,11 @@ The server responds with:
           "..."
         }
       ],
-      "deletions": ["uuid-5"]
+      "deletions": []
     },
     "mode_blocked_apps": {
       "upserts": [ ... ],
-      "deletions": [ ... ]
+      "deletions": []
     }
   }
 }
@@ -587,57 +603,86 @@ The server responds with:
 
 | Field | Description |
 |---|---|
-| `server_time` | The server's current time in milliseconds-since-epoch. The client should store this and use it as `last_synced_at` on the next sync. |
-| `upserts` | Records that were updated on the server since the client's `last_synced_at` (includes conflict-resolved records). |
-| `deletions` | Primary keys of records that were deleted on the server since the client's `last_synced_at` (from `sync_tombstones`). |
+| `server_time` | The server's current time in milliseconds-since-epoch. The client stores this as the next cursor after it has successfully applied the full response. |
+| `upserts` | Server records for that table whose server-side change time is newer than `last_synced_at`. When `last_synced_at = 0`, this is the full server snapshot for the table. |
+| `deletions` | Server tombstones for that table whose deletion time is newer than `last_synced_at`. These are part of normal replication responses, including after bootstrap if the retention window includes matching tombstones. |
 
-### 4.4 Sync Processing (Server-Side)
+### 4.4 Replication Processing (Server-Side)
 
-For each table in the request, the server performs the following steps **within a single database transaction**:
+For each table in the request, the server performs the following steps **within
+a single database transaction**:
 
 1. **Process client upserts**: For each record in the client's `upserts` array:
    - Look up the existing server record by primary key.
    - If no server record exists: insert the client record.
-   - If a server record exists and the client's `updated_at` > server's `updated_at`: update with client data (**last-write-wins**).
-   - If a server record exists and the client's `updated_at` <= server's `updated_at`: skip (server version is newer; it will be sent back in the response).
+   - If a server record exists and the client's `updated_at` > server's `updated_at`: update with client data.
+   - If a server record exists and the client's `updated_at` <= server's `updated_at`: keep the server copy unchanged.
 
-2. **Process client deletions**: For each primary key in the client's `deletions` array:
-   - Delete the server record.
-   - Insert a row into `sync_tombstones` with the current timestamp.
+2. **Process client deletions**: For each primary key in the client's
+   `deletions` array:
+   - Delete the corresponding server record if it exists.
+   - Record a tombstone so later clients or restore/bootstrap flows can observe
+     that deletion until tombstone retention expires.
 
-3. **Gather server changes**: Query for all records where `updated_at` > client's `last_synced_at`.
-   - Exclude records that were just upserted from the client in step 1 (to avoid echo).
-   - Query `sync_tombstones` for this table where `deleted_at` > client's `last_synced_at`.
+3. **Gather server data for response**:
+   - If `last_synced_at = 0` for a table, return the full current server
+     snapshot for that table.
+   - Also return all tombstones for that table newer than `last_synced_at`.
+   - Otherwise, return all server upserts and tombstones newer than
+     `last_synced_at`.
 
-4. **Return server changes** in the response.
+4. **Return the response**.
 
-### 4.5 Synced Tables Reference
+The server response is the authoritative result of that replication cycle. The
+client should update its local cursor for a table only after applying both
+`upserts` and `deletions` from the response.
 
-| Table | Primary Key (for sync) | Notes |
+### 4.5 Replicated Tables Reference
+
+| Table | Primary Key (for replication) | Notes |
 |---|---|---|
-| `modes` | `id` | |
+| `modes` | `id` | Delete payload is the record ID string |
 | `mode_blocked_apps` | `(mode_id, platform, app_identifier)` | Composite PK |
-| `schedules` | `id` | |
-| `restriction_sessions` | `session_id` | |
-| `restriction_lifecycle_events` | `id` | No `updated_at` column; use `created_at` for sync cursor |
-| `nfc_linked_chips` | `id` | |
-| `qr_linked_codes` | `id` | |
+| `schedules` | `id` | Delete payload is the record ID string |
+| `restriction_sessions` | `session_id` | Delete payload is the session ID string |
+| `restriction_lifecycle_events` | `id` | No `updated_at` column; use `created_at` as the record version when comparing uploads |
+| `nfc_linked_chips` | `id` | Delete payload is the record ID string |
+| `qr_linked_codes` | `id` | Delete payload is the record ID string |
 | `streak_session_daily_rollups` | `(session_id, local_day)` | Composite PK |
-| `streak_daily_aggregates` | `local_day` | |
+| `streak_daily_aggregates` | `local_day` | Delete payload is the local day string |
 
-### 4.6 Tombstone Garbage Collection
-
-A background job runs periodically (e.g., daily) and deletes rows from `sync_tombstones` where `deleted_at` is older than 90 days. Clients that have not synced in over 90 days should perform a full sync (`last_synced_at = 0` for all tables).
-
-### 4.7 First Sync / Full Restore
+### 4.6 Restore Semantics
 
 When `last_synced_at = 0` for a table:
 
-- The client sends all its local records as `upserts`.
-- The server returns all records it has for that user.
-- Last-write-wins applies to any overlapping records.
+- The client requests the server's stored snapshot for that table.
+- The client may still include local `upserts` and `deletions`; the server
+  applies them before building the response.
+- The server returns all records it currently stores for that user and table,
+  plus tombstones newer than the retained deletion horizon.
 
-This enables restoring data on a new device: the client sends `last_synced_at = 0` with empty `upserts`, and receives the full server-side dataset.
+This enables restoring data on a new device: the client sends
+`last_synced_at = 0` with empty `upserts` and empty `deletions`, then rebuilds
+its local SQLite tables from the returned snapshot.
+
+### 4.7 Ongoing Replication Semantics
+
+After bootstrap, the client continues to use the same replication shape:
+
+- the client sends `last_synced_at`, `upserts`, and `deletions`,
+- the backend applies the client changes and returns any newer server upserts
+  and tombstones,
+- the client applies the response and then advances its cursor to `server_time`.
+
+If there are no newer server changes for a table, the response arrays for that
+table may be empty.
+
+### 4.8 Failure Mode
+
+If a client change is applied locally but never successfully replicated, the
+backend replica will lag behind the device. A later restore/bootstrap on another
+device may therefore reconstruct older state. The client should retry failed
+replication requests with the same cursor and payload until one succeeds.
 
 ---
 
@@ -652,37 +697,34 @@ All endpoints are prefixed with `/api/v1` unless otherwise noted.
 | `Content-Type` | `application/json` | All requests with a body |
 | `Authorization` | `Bearer <access_token>` | All authenticated endpoints |
 
-### 5.1 Authentication ✅ Implemented
+### 5.1 Authentication
 
-#### `POST /api/v1/auth/register`
+#### `POST /api/v1/auth/start`
 
-Start registration for a new account.
+Start a passwordless authentication challenge.
 
 **Request:**
 
 ```json
 {
-  "email": "user@example.com",
-  "password": "securePassword123"
+  "email": "user@example.com"
 }
 ```
 
 **Validation:**
 
 - `email`: valid email format, max 255 characters, case-insensitive (stored lowercase).
-- `password`: minimum 8 characters.
 
 **Responses:**
 
 | Status | Body | Condition |
 |---|---|---|
-| `200` | `{ "otp_required": true }` | New email; OTP sent |
-| `409` | `{ "error": { "code": "CONFLICT", "message": "Email already registered" } }` | Email exists |
+| `200` | `{ "otp_required": true }` | Request accepted; response does not confirm whether the email was newly registered or already exists |
 | `422` | `{ "error": { "code": "VALIDATION_ERROR", ... } }` | Invalid input |
 
-#### `POST /api/v1/auth/verify-otp`
+#### `POST /api/v1/auth/verify`
 
-Verify email OTP to complete registration.
+Verify the passwordless email OTP and sign the user in.
 
 **Request:**
 
@@ -697,31 +739,11 @@ Verify email OTP to complete registration.
 
 | Status | Body | Condition |
 |---|---|---|
-| `200` | `{ "access_token": "...", "refresh_token": "...", "user": { ... } }` | OTP valid, account created |
+| `200` | `{ "access_token": "...", "refresh_token": "...", "user": { ... } }` | OTP valid; existing account signed in or new account created and signed in |
 | `401` | `{ "error": { "code": "UNAUTHORIZED", "message": "Invalid or expired OTP" } }` | Wrong/expired OTP |
 | `429` | `{ "error": { "code": "RATE_LIMITED", ... } }` | Too many attempts |
 
 The `user` object in the response follows the profile format described in [Section 5.3](#53-profile).
-
-#### `POST /api/v1/auth/login`
-
-Authenticate an existing user.
-
-**Request:**
-
-```json
-{
-  "email": "user@example.com",
-  "password": "securePassword123"
-}
-```
-
-**Responses:**
-
-| Status | Body | Condition |
-|---|---|---|
-| `200` | `{ "access_token": "...", "refresh_token": "...", "user": { ... } }` | Credentials valid |
-| `401` | `{ "error": { "code": "UNAUTHORIZED", "message": "Invalid email or password" } }` | Invalid credentials |
 
 #### `POST /api/v1/auth/refresh`
 
@@ -742,68 +764,26 @@ Exchange a refresh token for a new token pair.
 | `200` | `{ "access_token": "...", "refresh_token": "..." }` | Token valid |
 | `401` | `{ "error": { "code": "UNAUTHORIZED", ... } }` | Token invalid/revoked/expired |
 
-#### `POST /api/v1/auth/forgot-password`
 
-Request a password reset OTP.
-
-**Request:**
-
-```json
-{
-  "email": "user@example.com"
-}
-```
-
-**Responses:**
-
-| Status | Body | Condition |
-|---|---|---|
-| `200` | `{ "message": "If the email is registered, a reset code has been sent." }` | Success, or email not found (anti-enumeration) |
-| `5xx` | `{ "error": { "code": "INTERNAL_ERROR", ... } }` | Infrastructure/system failure; safe to retry |
-
-The `200` response is returned both when the email exists and when it does not, to prevent account enumeration. A `5xx` is only returned on infrastructure failures (e.g. SMTP or database unavailability) and does not reveal whether the account exists.
-
-#### `POST /api/v1/auth/reset-password`
-
-Reset password using OTP.
-
-**Request:**
-
-```json
-{
-  "email": "user@example.com",
-  "otp": "123456",
-  "new_password": "newSecurePassword456"
-}
-```
-
-**Responses:**
-
-| Status | Body | Condition |
-|---|---|---|
-| `200` | `{ "message": "Password reset successfully" }` | Success; all refresh tokens revoked |
-| `401` | `{ "error": { "code": "UNAUTHORIZED", ... } }` | Invalid/expired OTP |
-| `422` | `{ "error": { "code": "VALIDATION_ERROR", ... } }` | Password too weak |
-
-### 5.2 Sync ✅ Implemented
+### 5.2 Replication
 
 #### `POST /api/v1/sync`
 
 **Auth:** Required (JWT).
 
-Bidirectional data synchronization. See [Section 4](#4-sync-protocol) for full protocol details.
+Replication endpoint. See [Section 4](#4-replication-protocol) for full protocol details.
 
-**Request:** See [Section 4.2](#42-sync-request).
+**Request:** See [Section 4.2](#42-replication-request).
 
-**Response:** See [Section 4.3](#43-sync-response).
+**Response:** See [Section 4.3](#43-replication-response).
 
 | Status | Body | Condition |
 |---|---|---|
-| `200` | Sync response payload | Success |
+| `200` | Replication response payload | Success |
 | `401` | Error | Unauthorized |
-| `422` | Error | Malformed sync payload |
+| `422` | Error | Malformed replication payload |
 
-### 5.3 Profile ✅ Implemented
+### 5.3 Profile
 
 #### `GET /api/v1/me`
 
@@ -864,7 +844,7 @@ All fields are optional. Only provided fields are updated.
 | `409` | Error with code `CONFLICT` | Username already taken |
 | `422` | Error with code `VALIDATION_ERROR` | Invalid input |
 
-#### `POST /api/v1/me/photo` 🔲 Planned
+#### `POST /api/v1/me/photo`
 
 Upload a profile photo.
 
@@ -896,17 +876,38 @@ Check if a username is available.
 }
 ```
 
-#### `DELETE /api/v1/me`
+#### `POST /api/v1/me/delete/request`
+
+Send an account-deletion OTP to the authenticated user's email address.
+
+**Auth:** Required (JWT).
+
+Issuing a new deletion OTP invalidates any older unused `account_deletion` OTPs
+for the same email. This request does not revoke the current access token or any
+refresh tokens.
+
+**Response (`200`):**
+
+```json
+{
+  "message": "If the account is eligible for deletion, a confirmation code has been sent."
+}
+```
+
+#### `POST /api/v1/me/delete/confirm`
 
 Permanently delete the user account and all associated data.
 
 **Auth:** Required (JWT).
 
+On success, the user row and all dependent data are deleted. All active sessions
+and refresh tokens become invalid as a consequence of account deletion.
+
 **Request:**
 
 ```json
 {
-  "password": "currentPassword123"
+  "otp": "123456"
 }
 ```
 
@@ -915,9 +916,9 @@ Permanently delete the user account and all associated data.
 | Status | Body | Condition |
 |---|---|---|
 | `200` | `{ "message": "Account deleted" }` | Success |
-| `401` | Error | Wrong password |
+| `401` | Error | Wrong/expired OTP |
 
-### 5.4 Friendships 🔲 Planned
+### 5.4 Friendships
 
 All friendship endpoints require an active premium subscription. Returns `403` with error code `SUBSCRIPTION_REQUIRED` if the user is on the free tier.
 
@@ -1042,7 +1043,7 @@ Accept a pending friendship request.
 |---|---|---|
 | `200` | `{ "friendship_id": "uuid", "status": "accepted" }` | Accepted |
 | `404` | Error | Request not found or not addressed to current user |
-| `409` | Error | Already accepted or declined |
+| `409` | Error | Already accepted or no longer pending |
 
 Triggers a push notification to the requester (see [Section 9](#9-push-notifications)).
 
@@ -1133,7 +1134,7 @@ Searches by username only (prefix match, case-insensitive). Does not return the 
 
 Results are capped at 20 entries.
 
-### 5.5 Leaderboard 🔲 Planned
+### 5.5 Leaderboard
 
 #### `GET /api/v1/leaderboard/streaks`
 
@@ -1209,11 +1210,11 @@ Leaderboard ranked by total cumulative focus time.
 }
 ```
 
-### 5.6 Subscriptions (Client-Facing) 🔲 Planned
+### 5.6 Subscriptions (Client-Facing)
 
 Client-facing purchase flows are handled through the RevenueCat SDK in the mobile app. The backend's role is limited to storing a reconciled entitlement snapshot for authorization and account-state display.
 
-### 5.7 Push Notification Device Registration 🔲 Planned
+### 5.7 Push Notification Device Registration
 
 #### `POST /api/v1/devices`
 
@@ -1263,7 +1264,7 @@ Unregister an FCM device token (e.g., on logout) without placing the raw token i
 |---|---|---|
 | `200` | `{ "message": "Device unregistered" }` | Success (also returned if token not found, for idempotency) |
 
-### 5.8 RevenueCat Webhook 🔲 Planned
+### 5.8 RevenueCat Webhook
 
 #### `POST /api/v1/webhooks/revenuecat`
 
@@ -1290,7 +1291,7 @@ Operational notes:
 
 Returns `200` for accepted webhook deliveries. RevenueCat retries on non-2xx responses.
 
-### 5.9 Admin Endpoints 🔲 Planned
+### 5.9 Admin Endpoints
 
 All admin endpoints are prefixed with `/api/v1/admin` and require admin authentication via a separate admin JWT obtained from the admin login endpoint.
 
@@ -1342,7 +1343,7 @@ List users with search and pagination.
 
 #### `GET /api/v1/admin/users/:id`
 
-Get detailed user info including entitlement state, friend count, and sync activity.
+Get detailed user info including entitlement state, friend count, and replication activity.
 
 #### `GET /api/v1/admin/stats`
 
@@ -1382,7 +1383,7 @@ Aggregate platform statistics.
 
 This listing is oriented around stored entitlement state (for example, filtering active `premium` entitlements), not plan type.
 
-### 5.10 Health Probes ✅ Implemented
+### 5.10 Health Probes
 
 Two health-check endpoints exist at the root level (not under `/api/v1`). They
 share the same JSON response shape but serve different purposes in container
@@ -1431,7 +1432,7 @@ When the database is unreachable:
 
 ---
 
-## 6. Subscription System 🔲 Planned
+## 6. Subscription System
 
 ### 6.1 Architecture
 
@@ -1481,11 +1482,14 @@ Premium-gated endpoints are marked in their documentation with **Subscription: P
 
 ---
 
-## 7. Friendships 🔲 Planned
+## 7. Friendships
 
 ### 7.1 Overview
 
-Friendships allow premium users to connect with each other and view detailed stats. The friendship system uses a request/accept model.
+Friendships allow premium users to connect with each other and view detailed
+stats. The friendship system uses a request/accept model over an unordered user
+pair: for any two users there may be at most one friendship row, regardless of
+who initiated the request.
 
 ### 7.2 Lifecycle
 
@@ -1510,17 +1514,18 @@ Friendships allow premium users to connect with each other and view detailed sta
 
 - Only **accepted** friends can view each other's stats.
 - Stats include: current streak, longest streak, total focus time, and daily trends (last 30-90 days from `streak_daily_aggregates`).
-- Friend stats are computed from the friend's synced data on the server.
+- Friend stats are computed from the friend's replicated data on the server.
 
 ### 7.4 Subscription Dependency
 
 - All friendship endpoints require an active premium subscription.
 - If a user's subscription expires, they cannot access friendship features, but their existing friendship records are **preserved** (not deleted). If they re-subscribe, their friends are restored.
 - If both users have expired subscriptions, neither can view the other's stats, but the friendship record remains.
+- Declining a pending request deletes the pending row instead of transitioning it to a separate `declined` state.
 
 ---
 
-## 8. Leaderboard 🔲 Planned
+## 8. Leaderboard
 
 ### 8.1 Overview
 
@@ -1537,7 +1542,7 @@ Two independent leaderboards rank users based on different metrics:
 
 ### 8.3 Computation
 
-Leaderboard rankings are computed on-demand from the synced `streak_daily_aggregates` table. For performance at scale, consider:
+Leaderboard rankings are computed on-demand from the replicated `streak_daily_aggregates` table. For performance at scale, consider:
 
 - Materialized views or summary tables refreshed periodically (e.g., every 15 minutes).
 - Caching leaderboard pages with a short TTL.
@@ -1561,7 +1566,7 @@ WITH recent_days AS (
 
 ---
 
-## 9. Push Notifications 🔲 Planned
+## 9. Push Notifications
 
 ### 9.1 Architecture
 
@@ -1592,7 +1597,7 @@ Flutter App                    Pauza Backend                Firebase
 
 ### 9.3 Schedule Reminders
 
-The backend runs a periodic job (e.g., every minute) that checks `schedules` (synced) for upcoming scheduled mode activations. If a schedule is due to start within 15 minutes, and a reminder has not already been sent for this occurrence, a push notification is sent to the user.
+The backend runs a periodic job (e.g., every minute) that checks replicated `schedules` for upcoming scheduled mode activations. If a schedule is due to start within 15 minutes, and a reminder has not already been sent for this occurrence, a push notification is sent to the user.
 
 To avoid duplicate reminders, the backend tracks sent reminders in memory or in a lightweight table/cache with a TTL.
 
@@ -1607,24 +1612,27 @@ To avoid duplicate reminders, the backend tracks sent reminders in memory or in 
 
 ## 10. Rate Limiting
 
-Rate limits are enforced per the following rules. Responses that exceed the limit return HTTP `429 Too Many Requests` with a `Retry-After` header.
+Rate limits are enforced per the following rules. Responses that exceed the
+limit return HTTP `429 Too Many Requests` with a `Retry-After` header.
 
 | Endpoint Group | Limit | Scope |
 |---|---|---|
 | Auth endpoints (`/auth/*`) | 5 requests / minute | Per IP address |
-| OTP verification (`/auth/verify-otp`) | 3 requests / minute | Per email address |
-| Sync (`/sync`) | 30 requests / minute | Per authenticated user |
+| OTP verification (`/auth/verify`) | 3 requests / minute | Per email address |
+| Replication (`/sync`) | 30 requests / minute | Per authenticated user |
 | General API (all other authenticated endpoints) | 60 requests / minute | Per authenticated user |
 | Admin endpoints (`/admin/*`) | 30 requests / minute | Per admin |
 | Webhooks (`/webhooks/*`) | 100 requests / minute | Per IP address |
 
-`/auth/verify-otp` is subject to both limits above: the shared auth-endpoint per-IP limit and the endpoint-specific per-email OTP verification limit.
+`/auth/verify` is subject to both limits above: the shared auth-endpoint per-IP
+limit and the endpoint-specific per-email OTP verification limit.
 
 **Implementation notes:**
 
 - Use a sliding window or token bucket algorithm.
-- Rate limit state is stored in Redis.
-- Rate limit headers should be included in all responses: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`.
+- Rate limiting is Redis-backed in every deployment. There is no in-process fallback limiter.
+- The limiter should fail open if the backend is unavailable: requests are allowed, the incident is logged/observed, and fabricated budget headers are not emitted.
+- When the limiter has authoritative budget data, responses should include `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset`.
 
 ---
 
@@ -1671,7 +1679,7 @@ For `VALIDATION_ERROR`, the `details` field contains per-field errors:
     "details": {
       "fields": {
         "email": "must be a valid email address",
-        "password": "must be at least 8 characters"
+        "otp": "must be a 6-digit numeric code"
       }
     }
   }
@@ -1684,7 +1692,8 @@ For `VALIDATION_ERROR`, the `details` field contains per-field errors:
 
 ### 12.1 Docker Compose
 
-The application is deployed as two Docker containers managed by Docker Compose:
+For local development, Docker Compose typically runs at least three services:
+the API, PostgreSQL, and Redis. Production deployment topology may differ.
 
 ```yaml
 # docker-compose.yml (reference structure)
@@ -1702,16 +1711,25 @@ services:
       - JWT_REFRESH_TOKEN_TTL=720h
       - REVENUECAT_API_KEY=<key>
       - REVENUECAT_WEBHOOK_SECRET=<secret>
-      - FIREBASE_SERVICE_ACCOUNT_JSON=<path-or-base64>
+      - REDIS_URL=redis://redis:6379/0
+      - FIREBASE_SERVICE_ACCOUNT_JSON=<path-or-base64 or empty when push is disabled>
       - SMTP_HOST=<host>
       - SMTP_PORT=587
       - SMTP_USERNAME=<username>
       - SMTP_PASSWORD=<password>
       - SMTP_FROM=noreply@pauza.app
+      - SMTP_TIMEOUT=30s
+      - SMTP_TLS_POLICY=mandatory
+      - TRUSTED_PROXIES=<cidr-list>
+      - CLEANUP_INTERVAL=1h
+      - OTP_RETENTION_PERIOD=24h
+      - REFRESH_TOKEN_REVOKED_RETENTION=168h
       - ADMIN_SEED_USERNAME=admin
       - ADMIN_SEED_PASSWORD=<password>
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/live"]
@@ -1733,6 +1751,14 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   pgdata:
 ```
@@ -1747,12 +1773,27 @@ volumes:
 | `JWT_REFRESH_TOKEN_TTL` | Refresh token lifetime (e.g., `720h`) | Yes |
 | `REVENUECAT_API_KEY` | RevenueCat REST API key | Yes |
 | `REVENUECAT_WEBHOOK_SECRET` | Shared secret for webhook verification | Yes |
-| `FIREBASE_SERVICE_ACCOUNT_JSON` | Path to Firebase service account JSON or base64-encoded content | Yes |
+| `REDIS_URL` | Redis connection string for shared rate limiting | Yes |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | Firebase service account JSON content or another deployment-specific representation of the credential | Yes when push notifications are enabled |
 | `SMTP_HOST` | SMTP server hostname | Yes |
 | `SMTP_PORT` | SMTP server port | Yes |
 | `SMTP_USERNAME` | SMTP authentication username | Yes |
 | `SMTP_PASSWORD` | SMTP authentication password | Yes |
 | `SMTP_FROM` | Email sender address | Yes |
+| `SMTP_TIMEOUT` | SMTP dial/send timeout | No |
+| `SMTP_TLS_POLICY` | SMTP TLS behavior: `mandatory`, `opportunistic`, or `none` | No |
+| `TRUSTED_PROXIES` | Comma-separated IPs/CIDRs allowed to supply forwarded client IP headers | No |
+| `AUTH_RATE_LIMIT` | Auth endpoint request budget per window | No |
+| `AUTH_RATE_WINDOW` | Window for auth endpoint request budget | No |
+| `VERIFY_OTP_RATE_LIMIT` | OTP verification request budget per window | No |
+| `VERIFY_OTP_RATE_WINDOW` | Window for OTP verification request budget | No |
+| `GENERAL_API_RATE_LIMIT` | General authenticated API request budget per window | No |
+| `GENERAL_API_RATE_WINDOW` | Window for general authenticated API budget | No |
+| `SYNC_RATE_LIMIT` | Replication request budget per window | No |
+| `SYNC_RATE_WINDOW` | Window for replication request budget | No |
+| `CLEANUP_INTERVAL` | Interval for auth/replication cleanup jobs | No |
+| `OTP_RETENTION_PERIOD` | How long expired/used OTP artifacts are kept before cleanup | No |
+| `REFRESH_TOKEN_REVOKED_RETENTION` | How long revoked/expired refresh-token rows are retained before cleanup | No |
 | `ADMIN_SEED_USERNAME` | Initial admin username (used by `cmd/seed-admin`) | For seed command |
 | `ADMIN_SEED_PASSWORD` | Initial admin password (used by `cmd/seed-admin`) | For seed command |
 | `PORT` | Server listen port (default `8080`) | No |

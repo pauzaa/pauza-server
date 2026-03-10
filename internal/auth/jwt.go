@@ -14,6 +14,7 @@ const tokenIssuer = "pauza"
 // The user ID is stored in the standard RegisteredClaims.Subject field.
 type Claims struct {
 	Email string `json:"email"`
+	Role  string `json:"role,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -21,7 +22,15 @@ type Claims struct {
 // secret, and time-to-live. The user ID is stored in the standard Subject
 // claim and can be read back via Claims.Subject after validation.
 func IssueAccessToken(userID, email, secret string, ttl time.Duration) (string, error) {
-	if userID == "" {
+	return issueToken(userID, email, "", secret, ttl)
+}
+
+func IssueAdminToken(adminID, secret string, ttl time.Duration) (string, error) {
+	return issueToken(adminID, "", "admin", secret, ttl)
+}
+
+func issueToken(subject, email, role, secret string, ttl time.Duration) (string, error) {
+	if subject == "" {
 		return "", fmt.Errorf("issuing access token: userID must not be empty")
 	}
 	if secret == "" {
@@ -31,9 +40,10 @@ func IssueAccessToken(userID, email, secret string, ttl time.Duration) (string, 
 	now := time.Now().UTC()
 	claims := Claims{
 		Email: email,
+		Role:  role,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    tokenIssuer,
-			Subject:   userID,
+			Subject:   subject,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 		},

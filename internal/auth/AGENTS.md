@@ -2,14 +2,14 @@
 > See `/AGENTS.md` for repo-wide rules and `internal/AGENTS.md` for layering.
 
 ## OVERVIEW
-`internal/auth` owns JWT, refresh-token, OTP, and password primitives. It is security-sensitive and intentionally separate from HTTP, SQL, and SMTP delivery.
+`internal/auth` owns JWT, refresh-token, and OTP primitives for passwordless user auth, plus password helpers used by admin credentials. It is security-sensitive and intentionally separate from HTTP, SQL, and SMTP delivery.
 
 ## WHERE TO LOOK
 | Task | Location | Notes |
 | --- | --- | --- |
 | Access JWTs | `internal/auth/jwt.go` | HS256, issuer `pauza`, subject = user ID |
 | Refresh tokens | `internal/auth/token.go` | raw token generation + SHA-256 hashing |
-| Passwords | `internal/auth/password.go` | bcrypt hash/check + dummy check |
+| Passwords | `internal/auth/password.go` | bcrypt hash/check for admin credentials |
 | OTPs | `internal/auth/otp.go` | 6-digit codes, bcrypt hash, expiry/attempt limits |
 
 ## CONVENTIONS

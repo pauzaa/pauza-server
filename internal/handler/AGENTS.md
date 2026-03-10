@@ -7,18 +7,18 @@
 ## WHERE TO LOOK
 | Task | Location | Notes |
 | --- | --- | --- |
-| Auth endpoints | `internal/handler/auth.go` | register, verify, login, refresh, forgot/reset, profile |
+| Auth endpoints | `internal/handler/auth.go` | passwordless start, verify, refresh, profile |
 | Health probes | `internal/handler/health.go` | `/live` and `/ready` contracts |
 | Handler integration tests | `internal/handler/auth_integration_test.go` | production router + DB-backed auth flows |
 | JSON error envelope | `internal/apperror/apperror.go` | standard codes, messages, details |
-| Field validation | `internal/validate/validate.go` | email, password, OTP, username, name |
+| Field validation | `internal/validate/validate.go` | email, OTP, username, name, platform |
 
 ## CONVENTIONS
 - Use `decodeJSONBody` for JSON request parsing; it rejects unknown fields and trailing documents.
 - Validate at the boundary, then pass `r.Context()` into the service layer.
 - Map service sentinel errors through `writeServiceError`; do not invent ad hoc JSON error shapes.
 - Keep response timestamps human-readable and UTC RFC3339.
-- The forgot-password timing floor is split across handler and service: handler owns the wall-clock padding, service owns the generic outcome.
+- Passwordless auth responses must not leak whether an email already belongs to an existing user.
 
 ## TESTING
 - Unit tests can parallelize; the integration suite is build-tagged and intentionally does not call `t.Parallel()`.

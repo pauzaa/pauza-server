@@ -11,10 +11,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/IsorilovA/pauza-server/internal/apperror"
 	"github.com/IsorilovA/pauza-server/internal/config"
 	"github.com/IsorilovA/pauza-server/internal/handler"
 	"github.com/IsorilovA/pauza-server/internal/mail"
 	authmw "github.com/IsorilovA/pauza-server/internal/middleware"
+	"github.com/IsorilovA/pauza-server/internal/photostore"
+	"github.com/IsorilovA/pauza-server/internal/push"
 	"github.com/IsorilovA/pauza-server/internal/ratelimit"
 	"github.com/IsorilovA/pauza-server/internal/repository"
 	"github.com/IsorilovA/pauza-server/internal/service"
@@ -83,11 +86,9 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 // New creates and configures the HTTP server with all routes and middleware.
 // The mailer parameter allows callers to inject any mail.Sender implementation
 // (e.g. a real SMTP sender in production, or an in-memory stub in tests).
-// The redisClient parameter is explicit: production startup passes a Redis
-// client so rate limiters use Redis as the shared backend wrapped in a fail-open
-// layer. A nil client is kept only for local/unit test wiring, where an
-// in-memory limiter preserves existing handler behavior without claiming
-// production-grade shared enforcement.
+// The redisClient parameter is explicit: when provided, rate limiters use Redis
+// as the shared backend wrapped in a fail-open layer. When nil, the server uses
+// an in-memory limiter suitable for single-instance deployments.
 // The returned cleanup function stops background goroutines (e.g. rate-limiter
 // eviction loops) and must be called during graceful shutdown.
 func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mail.Sender, redisClient *redis.Client) (*http.Server, func()) {
@@ -116,11 +117,13 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 	syncRepo := repository.NewPgxSyncRepository()
 	syncService := service.NewSyncService(pool, syncRepo, authRepo, logger)
 	syncHandler := handler.NewSyncHandlerWithLogger(syncService, logger)
+	socialRepo := repository.NewSocialRepository()
+	socialHandler := handler.NewSocialHandler(service.NewSocialService(pool, socialRepo, push.NewNoopSender(logger), logger))
+	photoStore := photostore.NewFileStore(cfg.PhotoStorageDir, cfg.PhotoPublicBaseURL)
 
-	// newLimiter creates a rate limiter with the given budget. Production code
-	// uses the Redis-backed fail-open path so multiple server instances share a
-	// single limiter state. The nil-Redis branch is retained for tests that
-	// build server.New without external dependencies.
+	// newLimiter creates a rate limiter with the given budget. Multi-instance
+	// deployments should provide Redis; single-instance deployments may fall back
+	// to the in-memory limiter.
 	newLimiter := func(prefix string, rate int, window time.Duration) ratelimit.Limiter {
 		if redisClient != nil {
 			inner := ratelimit.NewRedisLimiter(redisClient, rate, window, ratelimit.WithPrefix("rl:"+prefix+":"))
@@ -139,23 +142,17 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 	// so that the JWT middleware applies only to protected endpoints. This
 	// avoids relying on chi route registration order for correctness.
 	r.Route("/api/v1", func(r chi.Router) {
-		// Public auth routes (no JWT required).
+		// Public passwordless user-auth routes (no JWT required).
 		r.Route("/auth", func(r chi.Router) {
 			r.With(authmw.RateLimit(authLimiter, cfg.AuthRateLimit, authmw.IPKey)).
-				Post("/register", authHandler.Register)
-			r.With(authmw.RateLimit(authLimiter, cfg.AuthRateLimit, authmw.IPKey)).
-				Post("/login", authHandler.Login)
+				Post("/start", authHandler.Start)
 			r.With(authmw.RateLimit(authLimiter, cfg.AuthRateLimit, authmw.IPKey)).
 				Post("/refresh", authHandler.Refresh)
-			r.With(authmw.RateLimit(authLimiter, cfg.AuthRateLimit, authmw.IPKey)).
-				Post("/forgot-password", authHandler.ForgotPassword)
-			r.With(authmw.RateLimit(authLimiter, cfg.AuthRateLimit, authmw.IPKey)).
-				Post("/reset-password", authHandler.ResetPassword)
 			r.With(
 				authmw.RateLimit(authLimiter, cfg.AuthRateLimit, authmw.IPKey),
 				authmw.RateLimit(verifyOTPLimiter, cfg.VerifyOTPRateLimit, authmw.EmailKey),
 			).
-				Post("/verify-otp", authHandler.VerifyOTP)
+				Post("/verify", authHandler.VerifyOTP)
 		})
 
 		// Protected routes — JWT required. All endpoints in this group
@@ -170,8 +167,49 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 
 				r.Get("/me", authHandler.GetMe)
 				r.Patch("/me", authHandler.UpdateMe)
-				r.Delete("/me", authHandler.DeleteMe)
 				r.Get("/me/username-available", authHandler.UsernameAvailable)
+				r.Post("/me/delete/request", authHandler.DeleteRequest)
+				r.Post("/me/delete/confirm", authHandler.DeleteConfirm)
+				r.Post("/me/photo", func(w http.ResponseWriter, r *http.Request) {
+					file, header, err := r.FormFile("photo")
+					if err != nil {
+						apperror.ValidationFieldErrors(w, "Invalid request body", apperror.FieldErrors{"photo": "photo is required"})
+						return
+					}
+					defer file.Close()
+					if header.Size > 5<<20 {
+						apperror.ValidationFieldErrors(w, "Invalid request body", apperror.FieldErrors{"photo": "photo must not exceed 5 MB"})
+						return
+					}
+					if msg := handler.ValidatePhotoUpload(file); msg != "" {
+						apperror.ValidationFieldErrors(w, "Invalid request body", apperror.FieldErrors{"photo": msg})
+						return
+					}
+					ext := ".jpg"
+					if header.Header.Get("Content-Type") == "image/png" {
+						ext = ".png"
+					}
+					url, err := photoStore.Save(r.Context(), file, ext)
+					if err != nil {
+						logger.Error("saving photo upload", "err", err)
+						apperror.InternalError(w)
+						return
+					}
+					authHandler.UploadPhoto(w, r, url)
+				})
+				r.Post("/devices", socialHandler.RegisterDevice)
+				r.Post("/devices/unregister", socialHandler.UnregisterDevice)
+				r.Get("/friends", socialHandler.ListFriends)
+				r.Post("/friends/request", socialHandler.RequestFriend)
+				r.Get("/friends/requests/incoming", socialHandler.ListIncomingRequests)
+				r.Get("/friends/requests/outgoing", socialHandler.ListOutgoingRequests)
+				r.Post("/friends/requests/{id}/accept", socialHandler.AcceptFriend)
+				r.Post("/friends/requests/{id}/decline", socialHandler.DeclineFriend)
+				r.Delete("/friends/{id}", socialHandler.RemoveFriend)
+				r.Get("/friends/{id}/stats", socialHandler.FriendStats)
+				r.Get("/friends/search", socialHandler.SearchUsers)
+				r.Get("/leaderboard/streaks", socialHandler.LeaderboardStreaks)
+				r.Get("/leaderboard/focus-time", socialHandler.LeaderboardFocusTime)
 			})
 
 			r.With(authmw.RateLimit(syncLimiter, cfg.SyncRateLimit, authmw.UserIDKey)).Post("/sync", syncHandler.Sync)

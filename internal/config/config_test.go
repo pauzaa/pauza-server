@@ -27,6 +27,8 @@ func setRequiredEnvVars(t *testing.T) {
 		"REVENUECAT_WEBHOOK_SECRET":     "rc_test_secret",
 		"FIREBASE_SERVICE_ACCOUNT_JSON": "{}",
 		"REDIS_URL":                     "redis://localhost:6379/0",
+		"PHOTO_STORAGE_DIR":             "./var/photos",
+		"PHOTO_PUBLIC_BASE_URL":         "https://cdn.test/photos",
 	}
 
 	for k, v := range vars {
@@ -120,6 +122,8 @@ func TestLoad_MissingRequiredVar(t *testing.T) {
 	t.Setenv("REVENUECAT_WEBHOOK_SECRET", "rc_test_secret")
 	t.Setenv("FIREBASE_SERVICE_ACCOUNT_JSON", "{}")
 	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
+	t.Setenv("PHOTO_STORAGE_DIR", "./var/photos")
+	t.Setenv("PHOTO_PUBLIC_BASE_URL", "https://cdn.test/photos")
 
 	// Ensure DATABASE_URL is unset even if the developer has it in their shell.
 	// t.Setenv cannot clear a variable, so use a save/restore pattern instead.
@@ -152,12 +156,12 @@ func TestLoad_MissingRedisURL(t *testing.T) {
 		}
 	})
 
-	_, err := Load()
-	if err == nil {
-		t.Fatal("expected error for missing REDIS_URL, got nil")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected no error for missing REDIS_URL, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "REDIS_URL") {
-		t.Errorf("expected error to mention REDIS_URL, got: %v", err)
+	if cfg.RedisURL != "" {
+		t.Errorf("expected empty RedisURL when REDIS_URL is unset, got: %q", cfg.RedisURL)
 	}
 }
 

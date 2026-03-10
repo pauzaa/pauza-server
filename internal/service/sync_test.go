@@ -93,7 +93,7 @@ func TestSync_MissingUser_ReturnsUnauthorized(t *testing.T) {
 	t.Parallel()
 
 	userVerifier := &fakeAuthRepo{
-		getVerifiedUserByIDForUpdateFn: func(_ context.Context, db repository.DBTX, userID string) (repository.UserRow, error) {
+		getUserByIDForUpdateFn: func(_ context.Context, db repository.DBTX, userID string) (repository.UserRow, error) {
 			if userID != "user-001" {
 				t.Errorf("userID = %q, want %q", userID, "user-001")
 			}
@@ -102,7 +102,7 @@ func TestSync_MissingUser_ReturnsUnauthorized(t *testing.T) {
 			}
 			return repository.UserRow{}, repository.ErrNotFound
 		},
-		getVerifiedUserByIDFn: func(context.Context, repository.DBTX, string) (repository.UserRow, error) {
+		getUserByIDFn: func(context.Context, repository.DBTX, string) (repository.UserRow, error) {
 			t.Fatal("GetVerifiedUserByID should not be called when row-lock lookup is supported")
 			return repository.UserRow{}, nil
 		},

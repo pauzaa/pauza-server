@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/IsorilovA/pauza-server/internal/repository"
 	"github.com/IsorilovA/pauza-server/internal/syncmodel"
@@ -19,7 +18,7 @@ type SyncInput struct {
 type SyncOutput = syncmodel.Response
 
 type syncUserVerifier interface {
-	GetVerifiedUserByIDForUpdate(ctx context.Context, db repository.DBTX, userID string) (repository.UserRow, error)
+	GetUserByIDForUpdate(ctx context.Context, db repository.DBTX, userID string) (repository.UserRow, error)
 }
 
 type SyncService struct {
@@ -53,7 +52,7 @@ func (s *SyncService) Sync(ctx context.Context, in SyncInput) (SyncOutput, error
 		_ = tx.Rollback(ctx)
 	}()
 
-	_, errUser := s.userVerifier.GetVerifiedUserByIDForUpdate(ctx, tx, in.UserID)
+	_, errUser := s.userVerifier.GetUserByIDForUpdate(ctx, tx, in.UserID)
 	if errUser != nil {
 		if errors.Is(errUser, repository.ErrNotFound) {
 			return SyncOutput{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
@@ -137,13 +136,28 @@ func (s *SyncService) Sync(ctx context.Context, in SyncInput) (SyncOutput, error
 		out.Tables.StreakDailyAggregates = &changes
 	}
 
+	serverTime, err := currentServerCursor(ctx, tx)
+	if err != nil {
+		s.logger.Error("loading sync server cursor", "err", err)
+		return SyncOutput{}, ErrInternal
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		s.logger.Error("committing sync transaction", "err", err)
 		return SyncOutput{}, ErrInternal
 	}
 
-	out.ServerTime = time.Now().UTC().UnixMilli()
+	out.ServerTime = serverTime
 	return out, nil
+}
+
+func currentServerCursor(ctx context.Context, db repository.DBTX) (int64, error) {
+	var serverTime int64
+	err := db.QueryRow(ctx, `SELECT FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint`).Scan(&serverTime)
+	if err != nil {
+		return 0, err
+	}
+	return serverTime, nil
 }
 
 func (s *SyncService) syncInternal(stage string, err error) (SyncOutput, error) {

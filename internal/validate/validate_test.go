@@ -52,49 +52,6 @@ func TestEmail_Invalid(t *testing.T) {
 	}
 }
 
-func TestPassword_Valid(t *testing.T) {
-	cases := []struct {
-		name  string
-		input string
-	}{
-		{"exact_min", "12345678"},
-		{"long_with_spaces", "a very long password with spaces"},
-		{"unicode", "pässwörd"},
-		{"exact_max_bytes", strings.Repeat("a", 72)},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if msg := validate.Password(tc.input); msg != "" {
-				t.Errorf("Password(%q) = %q, want empty", tc.input, msg)
-			}
-		})
-	}
-}
-
-func TestPassword_Invalid(t *testing.T) {
-	cases := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"empty", "", "required"},
-		{"too_short", "short", "at least 8"},
-		{"one_below_min", "1234567", "at least 8"},
-		{"exceeds_bcrypt_limit", strings.Repeat("a", 73), "72 bytes"},
-		{"long_multibyte_over_72_bytes", strings.Repeat("é", 37), "72 bytes"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			msg := validate.Password(tc.input)
-			if msg == "" {
-				t.Errorf("Password(%q) = empty, want error containing %q", tc.input, tc.want)
-			} else if !strings.Contains(msg, tc.want) {
-				t.Errorf("Password(%q) = %q, want substring %q", tc.input, msg, tc.want)
-			}
-		})
-	}
-}
-
 func TestUsername_Valid(t *testing.T) {
 	cases := []struct {
 		name  string

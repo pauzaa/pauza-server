@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -105,7 +104,7 @@ func (r *PgxSyncRepository) SyncModes(ctx context.Context, db DBTX, userID strin
 
 	rows, err := db.Query(ctx, `SELECT id, title, text_on_screen, description, allowed_pauses_count, minimum_duration_ms, ending_pausing_scenario, icon_token, created_at, updated_at
 		FROM modes
-		WHERE user_id = $1 AND ($2 = 0 OR updated_at > $2)
+		WHERE user_id = $1 AND ($2 = 0 OR server_updated_at > $2)
 		ORDER BY id`, userID, in.LastSyncedAt)
 	if err != nil {
 		return syncmodel.TableChanges[syncmodel.Mode, string]{}, fmt.Errorf("listing changed modes: %w", err)
@@ -196,7 +195,7 @@ func (r *PgxSyncRepository) SyncModeBlockedApps(ctx context.Context, db DBTX, us
 
 	rows, err := db.Query(ctx, `SELECT mode_id, platform, app_identifier, created_at, updated_at
 		FROM mode_blocked_apps
-		WHERE user_id = $1 AND ($2 = 0 OR updated_at > $2)
+		WHERE user_id = $1 AND ($2 = 0 OR server_updated_at > $2)
 		ORDER BY mode_id, platform, app_identifier`, userID, in.LastSyncedAt)
 	if err != nil {
 		return syncmodel.TableChanges[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]{}, fmt.Errorf("listing changed mode_blocked_apps: %w", err)
@@ -287,7 +286,7 @@ func (r *PgxSyncRepository) SyncSchedules(ctx context.Context, db DBTX, userID s
 
 	rows, err := db.Query(ctx, `SELECT id, mode_id, days, start_minute, end_minute, enabled, created_at, updated_at
 		FROM schedules
-		WHERE user_id = $1 AND ($2 = 0 OR updated_at > $2)
+		WHERE user_id = $1 AND ($2 = 0 OR server_updated_at > $2)
 		ORDER BY id`, userID, in.LastSyncedAt)
 	if err != nil {
 		return syncmodel.TableChanges[syncmodel.Schedule, string]{}, fmt.Errorf("listing changed schedules: %w", err)
@@ -384,7 +383,7 @@ func (r *PgxSyncRepository) SyncRestrictionSessions(ctx context.Context, db DBTX
 
 	rows, err := db.Query(ctx, `SELECT session_id, mode_id, source, started_at, ended_at, pause_count, total_paused_ms, last_paused_at, integrity_status, last_anomaly_reason, last_event_id, created_at, updated_at
 		FROM restriction_sessions
-		WHERE user_id = $1 AND ($2 = 0 OR updated_at > $2)
+		WHERE user_id = $1 AND ($2 = 0 OR server_updated_at > $2)
 		ORDER BY session_id`, userID, in.LastSyncedAt)
 	if err != nil {
 		return syncmodel.TableChanges[syncmodel.RestrictionSession, string]{}, fmt.Errorf("listing changed restriction_sessions: %w", err)
@@ -468,7 +467,7 @@ func (r *PgxSyncRepository) SyncRestrictionLifecycleEvents(ctx context.Context, 
 
 	rows, err := db.Query(ctx, `SELECT id, session_id, mode_id, action, source, reason, occurred_at, created_at
 		FROM restriction_lifecycle_events
-		WHERE user_id = $1 AND ($2 = 0 OR created_at > $2)
+		WHERE user_id = $1 AND ($2 = 0 OR server_created_at > $2)
 		ORDER BY id`, userID, in.LastSyncedAt)
 	if err != nil {
 		return syncmodel.TableChanges[syncmodel.RestrictionLifecycleEvent, string]{}, fmt.Errorf("listing changed restriction_lifecycle_events: %w", err)
@@ -551,7 +550,7 @@ func (r *PgxSyncRepository) SyncNFCLinkedChips(ctx context.Context, db DBTX, use
 
 	rows, err := db.Query(ctx, `SELECT id, chip_identifier, name, created_at, updated_at
 		FROM nfc_linked_chips
-		WHERE user_id = $1 AND ($2 = 0 OR updated_at > $2)
+		WHERE user_id = $1 AND ($2 = 0 OR server_updated_at > $2)
 		ORDER BY id`, userID, in.LastSyncedAt)
 	if err != nil {
 		return syncmodel.TableChanges[syncmodel.NFCLinkedChip, string]{}, fmt.Errorf("listing changed nfc_linked_chips: %w", err)
@@ -634,7 +633,7 @@ func (r *PgxSyncRepository) SyncQRLinkedCodes(ctx context.Context, db DBTX, user
 
 	rows, err := db.Query(ctx, `SELECT id, scan_value, name, created_at, updated_at
 		FROM qr_linked_codes
-		WHERE user_id = $1 AND ($2 = 0 OR updated_at > $2)
+		WHERE user_id = $1 AND ($2 = 0 OR server_updated_at > $2)
 		ORDER BY id`, userID, in.LastSyncedAt)
 	if err != nil {
 		return syncmodel.TableChanges[syncmodel.QRLinkedCode, string]{}, fmt.Errorf("listing changed qr_linked_codes: %w", err)
@@ -725,7 +724,7 @@ func (r *PgxSyncRepository) SyncStreakSessionDailyRollups(ctx context.Context, d
 
 	rows, err := db.Query(ctx, `SELECT session_id, local_day, effective_ms, updated_at
 		FROM streak_session_daily_rollups
-		WHERE user_id = $1 AND ($2 = 0 OR updated_at > $2)
+		WHERE user_id = $1 AND ($2 = 0 OR server_updated_at > $2)
 		ORDER BY session_id, local_day`, userID, in.LastSyncedAt)
 	if err != nil {
 		return syncmodel.TableChanges[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]{}, fmt.Errorf("listing changed streak_session_daily_rollups: %w", err)
@@ -816,7 +815,7 @@ func (r *PgxSyncRepository) SyncStreakDailyAggregates(ctx context.Context, db DB
 
 	rows, err := db.Query(ctx, `SELECT local_day, effective_ms, qualified, source_session_count, updated_at
 		FROM streak_daily_aggregates
-		WHERE user_id = $1 AND ($2 = 0 OR updated_at > $2)
+		WHERE user_id = $1 AND ($2 = 0 OR server_updated_at > $2)
 		ORDER BY local_day`, userID, in.LastSyncedAt)
 	if err != nil {
 		return syncmodel.TableChanges[syncmodel.StreakDailyAggregate, string]{}, fmt.Errorf("listing changed streak_daily_aggregates: %w", err)
@@ -873,8 +872,8 @@ func (r *PgxSyncRepository) listTombstones(ctx context.Context, db DBTX, userID 
 	} else {
 		rows, err = db.Query(ctx, `SELECT DISTINCT record_id
 			FROM sync_tombstones
-			WHERE user_id = $1 AND table_name = $2 AND deleted_at > $3
-			ORDER BY record_id`, userID, tableName, time.UnixMilli(lastSyncedAt).UTC())
+			WHERE user_id = $1 AND table_name = $2 AND server_deleted_at > $3
+			ORDER BY record_id`, userID, tableName, lastSyncedAt)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("listing tombstones for %s: %w", tableName, err)

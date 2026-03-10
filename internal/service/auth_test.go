@@ -83,16 +83,6 @@ func TestIsUniqueViolation(t *testing.T) {
 	}
 }
 
-// TestForgotPasswordMinDuration_IsPositive ensures the exported timing constant
-// has a positive value, preventing accidental zeroing.
-func TestForgotPasswordMinDuration_IsPositive(t *testing.T) {
-	t.Parallel()
-
-	if ForgotPasswordMinDuration <= 0 {
-		t.Errorf("ForgotPasswordMinDuration = %v, want positive", ForgotPasswordMinDuration)
-	}
-}
-
 // TestServiceMessage verifies the serviceMessage extraction and fallback.
 func TestServiceMessage(t *testing.T) {
 	t.Parallel()

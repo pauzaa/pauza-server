@@ -95,10 +95,10 @@ func (s *SMTPSender) newClient() (*gomail.Client, error) {
 // before invoking this helper.
 func subjectForPurpose(purpose string) string {
 	switch purpose {
-	case PurposeEmailVerification:
-		return "Verify your Pauza account"
-	case PurposePasswordReset:
-		return "Reset your Pauza password"
+	case PurposeAuthLogin:
+		return "Your Pauza sign-in code"
+	case PurposeAccountDeletion:
+		return "Confirm your Pauza account deletion"
 	default:
 		return ""
 	}

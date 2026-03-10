@@ -56,20 +56,25 @@ func main() {
 		Logger:           logger,
 	})
 
-	// 5. Create Redis client for shared rate limiting.
-	opts, err := redis.ParseURL(cfg.RedisURL)
-	if err != nil {
-		logger.Error("failed to parse REDIS_URL", "err", err)
-		os.Exit(1)
-	}
-	redisClient := redis.NewClient(opts)
+	// 5. Create Redis client for shared rate limiting when configured.
+	var redisClient *redis.Client
+	if strings.TrimSpace(cfg.RedisURL) != "" {
+		opts, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			logger.Error("failed to parse REDIS_URL", "err", err)
+			os.Exit(1)
+		}
+		redisClient = redis.NewClient(opts)
 
-	rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer rcancel()
-	if err := redisClient.Ping(rctx).Err(); err != nil {
-		logger.Warn("redis ping failed on startup; shared rate limiting will fail open until redis recovers", "err", err)
+		rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer rcancel()
+		if err := redisClient.Ping(rctx).Err(); err != nil {
+			logger.Warn("redis ping failed on startup; shared rate limiting will fail open until redis recovers", "err", err)
+		} else {
+			logger.Info("redis connected for shared rate limiting")
+		}
 	} else {
-		logger.Info("redis connected for shared rate limiting")
+		logger.Info("REDIS_URL is not set; using in-memory rate limiting")
 	}
 
 	// 6. Log effective trusted-proxy configuration.
@@ -136,7 +141,9 @@ func main() {
 	processCancel()
 	stopCleanup()
 	cleanup()
-	redisClient.Close()
+	if redisClient != nil {
+		redisClient.Close()
+	}
 	pool.Close()
 	logger.Info("server stopped")
 
