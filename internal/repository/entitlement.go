@@ -2,8 +2,11 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // EntitlementRepository defines the data-access operations for user
@@ -11,7 +14,20 @@ import (
 // so it can be called against the pool or inside an explicit transaction.
 type EntitlementRepository interface {
 	UpsertEntitlement(ctx context.Context, db DBTX, params UpsertEntitlementParams) error
+	GetEntitlement(ctx context.Context, db DBTX, userID, entitlement string) (EntitlementDetailRow, error)
 	GetUsersByRevenueCatID(ctx context.Context, db DBTX, appUserID, originalAppUserID string) ([]UserRow, error)
+}
+
+// EntitlementDetailRow holds all user_entitlements columns needed when
+// preserving existing RevenueCat/snapshot data during an admin override.
+type EntitlementDetailRow struct {
+	UserID                      string
+	Entitlement                 string
+	IsActive                    bool
+	RevenueCatAppUserID         *string
+	RevenueCatOriginalAppUserID *string
+	CurrentPeriodEnd            *time.Time
+	LastWebhookEventAt          *time.Time
 }
 
 // UpsertEntitlementParams holds the fields written by the entitlement upsert.
@@ -63,6 +79,29 @@ func (r *PgxEntitlementRepository) UpsertEntitlement(ctx context.Context, db DBT
 		return fmt.Errorf("upserting entitlement: %w", err)
 	}
 	return nil
+}
+
+func (r *PgxEntitlementRepository) GetEntitlement(ctx context.Context, db DBTX, userID, entitlement string) (EntitlementDetailRow, error) {
+	var e EntitlementDetailRow
+	err := db.QueryRow(ctx,
+		`SELECT user_id, entitlement, is_active,
+		        revenuecat_app_user_id, revenuecat_original_app_user_id,
+		        current_period_end, last_webhook_event_at
+		 FROM user_entitlements
+		 WHERE user_id = $1 AND entitlement = $2`,
+		userID, entitlement,
+	).Scan(
+		&e.UserID, &e.Entitlement, &e.IsActive,
+		&e.RevenueCatAppUserID, &e.RevenueCatOriginalAppUserID,
+		&e.CurrentPeriodEnd, &e.LastWebhookEventAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return EntitlementDetailRow{}, ErrNotFound
+	}
+	if err != nil {
+		return EntitlementDetailRow{}, fmt.Errorf("getting entitlement: %w", err)
+	}
+	return e, nil
 }
 
 func (r *PgxEntitlementRepository) GetUsersByRevenueCatID(ctx context.Context, db DBTX, appUserID, originalAppUserID string) ([]UserRow, error) {

@@ -258,6 +258,143 @@ func TestJWTAuth_ValidToken(t *testing.T) {
 	}
 }
 
+// =========================================================================
+// AdminJWTAuth tests
+// =========================================================================
+
+func TestAdminJWTAuth_ValidAdminToken(t *testing.T) {
+	adminID := "admin-001"
+	tokenStr, err := auth.IssueAdminToken(adminID, testSecret, 30*time.Minute)
+	if err != nil {
+		t.Fatalf("IssueAdminToken() error = %v", err)
+	}
+
+	var gotUser middleware.AuthUser
+	var gotOK bool
+	called := false
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		gotUser, gotOK = middleware.UserFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := middleware.AdminJWTAuth(testSecret, discardLogger())(inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/protected", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenStr)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !called {
+		t.Fatal("next handler should have been called")
+	}
+	if !gotOK {
+		t.Fatal("UserFromContext returned ok = false, want true")
+	}
+	if gotUser.UserID != adminID {
+		t.Errorf("UserID = %q, want %q", gotUser.UserID, adminID)
+	}
+}
+
+func TestAdminJWTAuth_RejectsUserToken(t *testing.T) {
+	// A valid user JWT (no role) should be rejected by AdminJWTAuth.
+	tokenStr, err := auth.IssueAccessToken(
+		"550e8400-e29b-41d4-a716-446655440000",
+		"user@example.com",
+		testSecret,
+		15*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("IssueAccessToken() error = %v", err)
+	}
+
+	spy := &handlerSpy{}
+	handler := middleware.AdminJWTAuth(testSecret, discardLogger())(spy)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/protected", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenStr)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	assertUnauthorized(t, rec)
+	if spy.called.Load() {
+		t.Error("next handler should not have been called")
+	}
+}
+
+func TestAdminJWTAuth_MissingHeader(t *testing.T) {
+	spy := &handlerSpy{}
+	handler := middleware.AdminJWTAuth(testSecret, discardLogger())(spy)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/protected", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	assertUnauthorized(t, rec)
+	if spy.called.Load() {
+		t.Error("next handler should not have been called")
+	}
+}
+
+func TestAdminJWTAuth_ExpiredToken(t *testing.T) {
+	tokenStr, err := auth.IssueAdminToken(
+		"admin-001",
+		testSecret,
+		-1*time.Second,
+	)
+	if err != nil {
+		t.Fatalf("IssueAdminToken() error = %v", err)
+	}
+
+	spy := &handlerSpy{}
+	handler := middleware.AdminJWTAuth(testSecret, discardLogger())(spy)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/protected", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenStr)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	assertUnauthorized(t, rec)
+	if spy.called.Load() {
+		t.Error("next handler should not have been called")
+	}
+}
+
+func TestAdminJWTAuth_WrongSecret(t *testing.T) {
+	const wrongSecret = "wrong-secret-at-least-32-bytes!!"
+
+	tokenStr, err := auth.IssueAdminToken("admin-001", testSecret, 30*time.Minute)
+	if err != nil {
+		t.Fatalf("IssueAdminToken() error = %v", err)
+	}
+
+	spy := &handlerSpy{}
+	handler := middleware.AdminJWTAuth(wrongSecret, discardLogger())(spy)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/protected", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenStr)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	assertUnauthorized(t, rec)
+	if spy.called.Load() {
+		t.Error("next handler should not have been called")
+	}
+}
+
+// =========================================================================
+// JWTAuth logging tests
+// =========================================================================
+
 func TestJWTAuth_MalformedInput_LogsWarning(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))

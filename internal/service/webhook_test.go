@@ -19,6 +19,7 @@ import (
 // fakeEntitlementRepo implements repository.EntitlementRepository.
 type fakeEntitlementRepo struct {
 	upsertEntitlementFn      func(ctx context.Context, db repository.DBTX, params repository.UpsertEntitlementParams) error
+	getEntitlementFn         func(ctx context.Context, db repository.DBTX, userID, entitlement string) (repository.EntitlementDetailRow, error)
 	getUsersByRevenueCatIDFn func(ctx context.Context, db repository.DBTX, appUserID, originalAppUserID string) ([]repository.UserRow, error)
 }
 
@@ -29,6 +30,13 @@ func (f *fakeEntitlementRepo) UpsertEntitlement(ctx context.Context, db reposito
 		return f.upsertEntitlementFn(ctx, db, params)
 	}
 	return nil
+}
+
+func (f *fakeEntitlementRepo) GetEntitlement(ctx context.Context, db repository.DBTX, userID, entitlement string) (repository.EntitlementDetailRow, error) {
+	if f.getEntitlementFn != nil {
+		return f.getEntitlementFn(ctx, db, userID, entitlement)
+	}
+	return repository.EntitlementDetailRow{}, repository.ErrNotFound
 }
 
 func (f *fakeEntitlementRepo) GetUsersByRevenueCatID(ctx context.Context, db repository.DBTX, appUserID, originalAppUserID string) ([]repository.UserRow, error) {
@@ -822,6 +830,432 @@ func TestWebhook_UUIDFastPath_MergesEntitlementLookup(t *testing.T) {
 	}
 	if !reconciledUsers[entitlementID] {
 		t.Errorf("entitlement-only user %q was not reconciled", entitlementID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Override guard tests (Chunk 5)
+// ---------------------------------------------------------------------------
+
+// fakeOverrideChecker implements overrideChecker.
+type fakeOverrideChecker struct {
+	getActiveOverrideFn func(ctx context.Context, db repository.DBTX, userID, entitlement string) (repository.OverrideRow, error)
+}
+
+var _ overrideChecker = (*fakeOverrideChecker)(nil)
+
+func (f *fakeOverrideChecker) GetActiveOverride(ctx context.Context, db repository.DBTX, userID, entitlement string) (repository.OverrideRow, error) {
+	if f.getActiveOverrideFn != nil {
+		return f.getActiveOverrideFn(ctx, db, userID, entitlement)
+	}
+	return repository.OverrideRow{}, repository.ErrNotFound
+}
+
+// newTestWebhookServiceWithOverride is like newTestWebhookService but injects
+// the override checker via the WithOverrideChecker option.
+func newTestWebhookServiceWithOverride(
+	entRepo *fakeEntitlementRepo,
+	rcClient *fakeRCClient,
+	userLookup *fakeWebhookUserLookup,
+	oc overrideChecker,
+) *WebhookService {
+	return NewWebhookService(
+		&fakePool{},
+		entRepo,
+		rcClient,
+		userLookup,
+		discardLogger(),
+		WithOverrideChecker(oc),
+	)
+}
+
+// TestWebhook_ActiveGrantOverride_SkipsReconciliation verifies that when an
+// active admin grant override exists for a user, the webhook reconciliation
+// does NOT upsert the entitlement for that user.
+func TestWebhook_ActiveGrantOverride_SkipsReconciliation(t *testing.T) {
+	t.Parallel()
+
+	userLookup := &fakeWebhookUserLookup{
+		getUserByIDFn: func(_ context.Context, _ repository.DBTX, userID string) (repository.UserRow, error) {
+			return repository.UserRow{ID: userID, Email: "alice@example.com"}, nil
+		},
+	}
+
+	rcClient := &fakeRCClient{
+		getSubscriberFn: func(_ context.Context, _ string) (*revenuecat.SubscriberResponse, error) {
+			return activeSubscriberResponse(validUUID), nil
+		},
+	}
+
+	entRepo := &fakeEntitlementRepo{
+		upsertEntitlementFn: func(_ context.Context, _ repository.DBTX, _ repository.UpsertEntitlementParams) error {
+			t.Fatal("UpsertEntitlement must not be called when active grant override exists")
+			return nil
+		},
+	}
+
+	oc := &fakeOverrideChecker{
+		getActiveOverrideFn: func(_ context.Context, _ repository.DBTX, userID, entitlement string) (repository.OverrideRow, error) {
+			return repository.OverrideRow{
+				UserID:      userID,
+				Entitlement: entitlement,
+				Action:      "grant",
+			}, nil
+		},
+	}
+
+	svc := newTestWebhookServiceWithOverride(entRepo, rcClient, userLookup, oc)
+
+	err := svc.HandleWebhook(context.Background(), revenuecat.WebhookEvent{
+		Type:             "EXPIRATION",
+		ID:               "evt_exp_override_1",
+		AppUserID:        validUUID,
+		EventTimestampMs: 1700000000000,
+	})
+	if err != nil {
+		t.Fatalf("HandleWebhook() = %v, want nil (skipped due to override)", err)
+	}
+}
+
+// TestWebhook_ActiveRevokeOverride_SkipsReconciliation verifies that when an
+// active admin revoke override exists, the webhook does NOT upsert.
+func TestWebhook_ActiveRevokeOverride_SkipsReconciliation(t *testing.T) {
+	t.Parallel()
+
+	userLookup := &fakeWebhookUserLookup{
+		getUserByIDFn: func(_ context.Context, _ repository.DBTX, userID string) (repository.UserRow, error) {
+			return repository.UserRow{ID: userID, Email: "alice@example.com"}, nil
+		},
+	}
+
+	rcClient := &fakeRCClient{
+		getSubscriberFn: func(_ context.Context, _ string) (*revenuecat.SubscriberResponse, error) {
+			return activeSubscriberResponse(validUUID), nil
+		},
+	}
+
+	entRepo := &fakeEntitlementRepo{
+		upsertEntitlementFn: func(_ context.Context, _ repository.DBTX, _ repository.UpsertEntitlementParams) error {
+			t.Fatal("UpsertEntitlement must not be called when active revoke override exists")
+			return nil
+		},
+	}
+
+	oc := &fakeOverrideChecker{
+		getActiveOverrideFn: func(_ context.Context, _ repository.DBTX, userID, entitlement string) (repository.OverrideRow, error) {
+			return repository.OverrideRow{
+				UserID:      userID,
+				Entitlement: entitlement,
+				Action:      "revoke",
+			}, nil
+		},
+	}
+
+	svc := newTestWebhookServiceWithOverride(entRepo, rcClient, userLookup, oc)
+
+	err := svc.HandleWebhook(context.Background(), revenuecat.WebhookEvent{
+		Type:             "RENEWAL",
+		ID:               "evt_renewal_override_1",
+		AppUserID:        validUUID,
+		EventTimestampMs: 1700000000000,
+	})
+	if err != nil {
+		t.Fatalf("HandleWebhook() = %v, want nil (skipped due to override)", err)
+	}
+}
+
+// TestWebhook_NoOverride_ReconcilesNormally verifies that when the override
+// checker is configured but returns ErrNotFound, reconciliation proceeds.
+func TestWebhook_NoOverride_ReconcilesNormally(t *testing.T) {
+	t.Parallel()
+
+	userLookup := &fakeWebhookUserLookup{
+		getUserByIDFn: func(_ context.Context, _ repository.DBTX, userID string) (repository.UserRow, error) {
+			return repository.UserRow{ID: userID, Email: "alice@example.com"}, nil
+		},
+	}
+
+	rcClient := &fakeRCClient{
+		getSubscriberFn: func(_ context.Context, _ string) (*revenuecat.SubscriberResponse, error) {
+			return activeSubscriberResponse(validUUID), nil
+		},
+	}
+
+	var upserted bool
+	entRepo := &fakeEntitlementRepo{
+		upsertEntitlementFn: func(_ context.Context, _ repository.DBTX, params repository.UpsertEntitlementParams) error {
+			upserted = true
+			return nil
+		},
+	}
+
+	oc := &fakeOverrideChecker{
+		getActiveOverrideFn: func(_ context.Context, _ repository.DBTX, _, _ string) (repository.OverrideRow, error) {
+			return repository.OverrideRow{}, repository.ErrNotFound
+		},
+	}
+
+	svc := newTestWebhookServiceWithOverride(entRepo, rcClient, userLookup, oc)
+
+	err := svc.HandleWebhook(context.Background(), revenuecat.WebhookEvent{
+		Type:             "RENEWAL",
+		ID:               "evt_renewal_no_override",
+		AppUserID:        validUUID,
+		EventTimestampMs: 1700000000000,
+	})
+	if err != nil {
+		t.Fatalf("HandleWebhook() = %v, want nil", err)
+	}
+	if !upserted {
+		t.Error("UpsertEntitlement was not called — expected normal reconciliation when no override exists")
+	}
+}
+
+// TestWebhook_NilOverrideChecker_ReconcilesNormally verifies backward
+// compatibility: when no override checker is set, reconciliation always proceeds.
+func TestWebhook_NilOverrideChecker_ReconcilesNormally(t *testing.T) {
+	t.Parallel()
+
+	userLookup := &fakeWebhookUserLookup{
+		getUserByIDFn: func(_ context.Context, _ repository.DBTX, userID string) (repository.UserRow, error) {
+			return repository.UserRow{ID: userID, Email: "alice@example.com"}, nil
+		},
+	}
+
+	rcClient := &fakeRCClient{
+		getSubscriberFn: func(_ context.Context, _ string) (*revenuecat.SubscriberResponse, error) {
+			return activeSubscriberResponse(validUUID), nil
+		},
+	}
+
+	var upserted bool
+	entRepo := &fakeEntitlementRepo{
+		upsertEntitlementFn: func(_ context.Context, _ repository.DBTX, _ repository.UpsertEntitlementParams) error {
+			upserted = true
+			return nil
+		},
+	}
+
+	// No WithOverrideChecker option — nil overrides field.
+	svc := newTestWebhookService(entRepo, rcClient, userLookup)
+
+	err := svc.HandleWebhook(context.Background(), revenuecat.WebhookEvent{
+		Type:             "RENEWAL",
+		ID:               "evt_renewal_nil_checker",
+		AppUserID:        validUUID,
+		EventTimestampMs: 1700000000000,
+	})
+	if err != nil {
+		t.Fatalf("HandleWebhook() = %v, want nil", err)
+	}
+	if !upserted {
+		t.Error("UpsertEntitlement was not called — expected reconciliation without override checker")
+	}
+}
+
+// TestWebhook_OverrideCheckError_ReturnsError verifies that when the override
+// checker returns a transient error (not ErrNotFound), reconciliation fails
+// rather than silently proceeding and potentially overwriting an admin override.
+func TestWebhook_OverrideCheckError_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	userLookup := &fakeWebhookUserLookup{
+		getUserByIDFn: func(_ context.Context, _ repository.DBTX, userID string) (repository.UserRow, error) {
+			return repository.UserRow{ID: userID, Email: "alice@example.com"}, nil
+		},
+	}
+
+	rcClient := &fakeRCClient{
+		getSubscriberFn: func(_ context.Context, _ string) (*revenuecat.SubscriberResponse, error) {
+			return activeSubscriberResponse(validUUID), nil
+		},
+	}
+
+	entRepo := &fakeEntitlementRepo{
+		upsertEntitlementFn: func(_ context.Context, _ repository.DBTX, _ repository.UpsertEntitlementParams) error {
+			t.Fatal("UpsertEntitlement must not be called when override check fails")
+			return nil
+		},
+	}
+
+	overrideErr := errors.New("redis timeout")
+	oc := &fakeOverrideChecker{
+		getActiveOverrideFn: func(_ context.Context, _ repository.DBTX, _, _ string) (repository.OverrideRow, error) {
+			return repository.OverrideRow{}, overrideErr
+		},
+	}
+
+	svc := newTestWebhookServiceWithOverride(entRepo, rcClient, userLookup, oc)
+
+	err := svc.HandleWebhook(context.Background(), revenuecat.WebhookEvent{
+		Type:             "RENEWAL",
+		ID:               "evt_renewal_override_err",
+		AppUserID:        validUUID,
+		EventTimestampMs: 1700000000000,
+	})
+	if err == nil {
+		t.Fatal("HandleWebhook() = nil, want error when override check fails")
+	}
+	if !errors.Is(err, overrideErr) {
+		t.Errorf("error chain does not contain override error: %v", err)
+	}
+}
+
+// TestWebhook_RC404_ActiveOverride_SkipsInactiveUpsert verifies that when
+// RevenueCat returns 404 but an active override exists, the service does NOT
+// upsert an inactive entitlement for the overridden user.
+func TestWebhook_RC404_ActiveOverride_SkipsInactiveUpsert(t *testing.T) {
+	t.Parallel()
+
+	userLookup := &fakeWebhookUserLookup{
+		getUserByIDFn: func(_ context.Context, _ repository.DBTX, userID string) (repository.UserRow, error) {
+			return repository.UserRow{ID: userID, Email: "alice@example.com"}, nil
+		},
+	}
+
+	rcClient := &fakeRCClient{
+		getSubscriberFn: func(_ context.Context, appUserID string) (*revenuecat.SubscriberResponse, error) {
+			return nil, &revenuecat.APIError{StatusCode: 404, AppUserID: appUserID}
+		},
+	}
+
+	entRepo := &fakeEntitlementRepo{
+		upsertEntitlementFn: func(_ context.Context, _ repository.DBTX, _ repository.UpsertEntitlementParams) error {
+			t.Fatal("UpsertEntitlement must not be called for overridden user on RC 404")
+			return nil
+		},
+	}
+
+	oc := &fakeOverrideChecker{
+		getActiveOverrideFn: func(_ context.Context, _ repository.DBTX, _, _ string) (repository.OverrideRow, error) {
+			return repository.OverrideRow{Action: "grant"}, nil
+		},
+	}
+
+	svc := newTestWebhookServiceWithOverride(entRepo, rcClient, userLookup, oc)
+
+	err := svc.HandleWebhook(context.Background(), revenuecat.WebhookEvent{
+		Type:             "EXPIRATION",
+		ID:               "evt_exp_override_404",
+		AppUserID:        validUUID,
+		EventTimestampMs: 1700000000000,
+	})
+	if err != nil {
+		t.Fatalf("HandleWebhook() = %v, want nil (overridden user skipped on RC 404)", err)
+	}
+}
+
+// TestWebhook_RC404_OverrideCheckError_ReturnsError verifies that when
+// RevenueCat returns 404 and the override checker returns a transient error,
+// the error is propagated.
+func TestWebhook_RC404_OverrideCheckError_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	userLookup := &fakeWebhookUserLookup{
+		getUserByIDFn: func(_ context.Context, _ repository.DBTX, userID string) (repository.UserRow, error) {
+			return repository.UserRow{ID: userID, Email: "alice@example.com"}, nil
+		},
+	}
+
+	rcClient := &fakeRCClient{
+		getSubscriberFn: func(_ context.Context, appUserID string) (*revenuecat.SubscriberResponse, error) {
+			return nil, &revenuecat.APIError{StatusCode: 404, AppUserID: appUserID}
+		},
+	}
+
+	entRepo := &fakeEntitlementRepo{
+		upsertEntitlementFn: func(_ context.Context, _ repository.DBTX, _ repository.UpsertEntitlementParams) error {
+			t.Fatal("UpsertEntitlement must not be called when override check fails")
+			return nil
+		},
+	}
+
+	overrideErr := errors.New("db timeout on override check")
+	oc := &fakeOverrideChecker{
+		getActiveOverrideFn: func(context.Context, repository.DBTX, string, string) (repository.OverrideRow, error) {
+			return repository.OverrideRow{}, overrideErr
+		},
+	}
+
+	svc := newTestWebhookServiceWithOverride(entRepo, rcClient, userLookup, oc)
+
+	err := svc.HandleWebhook(context.Background(), revenuecat.WebhookEvent{
+		Type:             "EXPIRATION",
+		ID:               "evt_exp_override_err",
+		AppUserID:        validUUID,
+		EventTimestampMs: 1700000000000,
+	})
+	if err == nil {
+		t.Fatal("HandleWebhook() = nil, want error when override check fails on RC 404")
+	}
+	if !errors.Is(err, overrideErr) {
+		t.Errorf("error chain does not contain override error: %v", err)
+	}
+}
+
+// TestWebhook_MultipleUsers_PartialOverride verifies that when one user has an
+// active override and another does not, only the non-overridden user is
+// reconciled.
+func TestWebhook_MultipleUsers_PartialOverride(t *testing.T) {
+	t.Parallel()
+
+	const rcAnonymousID = "$RCAnonymousID:partial_override"
+	const overriddenUID = "aaaa1111-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	const normalUID = "bbbb2222-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+	userLookup := &fakeWebhookUserLookup{
+		getUserByIDFn: func(context.Context, repository.DBTX, string) (repository.UserRow, error) {
+			t.Fatal("GetUserByID should not be called for non-UUID app_user_id")
+			return repository.UserRow{}, nil
+		},
+	}
+
+	rcClient := &fakeRCClient{
+		getSubscriberFn: func(context.Context, string) (*revenuecat.SubscriberResponse, error) {
+			return activeSubscriberResponse(rcAnonymousID), nil
+		},
+	}
+
+	reconciledUsers := make(map[string]bool)
+	entRepo := &fakeEntitlementRepo{
+		getUsersByRevenueCatIDFn: func(_ context.Context, _ repository.DBTX, _, _ string) ([]repository.UserRow, error) {
+			return []repository.UserRow{
+				{ID: overriddenUID, Email: "overridden@example.com"},
+				{ID: normalUID, Email: "normal@example.com"},
+			}, nil
+		},
+		upsertEntitlementFn: func(_ context.Context, _ repository.DBTX, params repository.UpsertEntitlementParams) error {
+			reconciledUsers[params.UserID] = true
+			return nil
+		},
+	}
+
+	oc := &fakeOverrideChecker{
+		getActiveOverrideFn: func(_ context.Context, _ repository.DBTX, userID, _ string) (repository.OverrideRow, error) {
+			if userID == overriddenUID {
+				return repository.OverrideRow{Action: "grant"}, nil
+			}
+			return repository.OverrideRow{}, repository.ErrNotFound
+		},
+	}
+
+	svc := newTestWebhookServiceWithOverride(entRepo, rcClient, userLookup, oc)
+
+	err := svc.HandleWebhook(context.Background(), revenuecat.WebhookEvent{
+		Type:             "RENEWAL",
+		ID:               "evt_partial_override",
+		AppUserID:        rcAnonymousID,
+		EventTimestampMs: 1700000000000,
+	})
+	if err != nil {
+		t.Fatalf("HandleWebhook() = %v, want nil", err)
+	}
+
+	if reconciledUsers[overriddenUID] {
+		t.Errorf("overridden user %q was reconciled — should have been skipped", overriddenUID)
+	}
+	if !reconciledUsers[normalUID] {
+		t.Errorf("normal user %q was not reconciled — should have been", normalUID)
 	}
 }
 

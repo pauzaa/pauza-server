@@ -30,13 +30,34 @@ type revenueCatSubscriberFetcher interface {
 	GetSubscriber(ctx context.Context, appUserID string) (*revenuecat.SubscriberResponse, error)
 }
 
+// overrideChecker is the narrow interface the webhook service uses to detect
+// active admin entitlement overrides. It avoids coupling to the full
+// AdminRepository. The dependency is optional: when nil the webhook service
+// reconciles unconditionally (backwards-compatible).
+type overrideChecker interface {
+	GetActiveOverride(ctx context.Context, db repository.DBTX, userID, entitlement string) (repository.OverrideRow, error)
+}
+
 // WebhookService handles RevenueCat webhook reconciliation logic.
 type WebhookService struct {
 	pool            repository.Pool
 	entitlementRepo repository.EntitlementRepository
 	rcClient        revenueCatSubscriberFetcher
 	userLookup      webhookUserLookup
+	overrides       overrideChecker // nil → no override guard (backwards-compatible)
 	logger          *slog.Logger
+}
+
+// WebhookServiceOption configures optional WebhookService dependencies.
+type WebhookServiceOption func(*WebhookService)
+
+// WithOverrideChecker sets the override checker used to skip reconciliation
+// when an active admin entitlement override exists for a user. When not
+// provided the service reconciles unconditionally.
+func WithOverrideChecker(oc overrideChecker) WebhookServiceOption {
+	return func(s *WebhookService) {
+		s.overrides = oc
+	}
 }
 
 // NewWebhookService creates a WebhookService with its required dependencies.
@@ -46,14 +67,19 @@ func NewWebhookService(
 	rcClient revenueCatSubscriberFetcher,
 	userLookup webhookUserLookup,
 	logger *slog.Logger,
+	opts ...WebhookServiceOption,
 ) *WebhookService {
-	return &WebhookService{
+	s := &WebhookService{
 		pool:            pool,
 		entitlementRepo: entitlementRepo,
 		rcClient:        rcClient,
 		userLookup:      userLookup,
 		logger:          logger,
 	}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // HandleWebhook processes a single RevenueCat webhook event. TEST events are
@@ -116,6 +142,36 @@ func (s *WebhookService) collectReconcileIDs(event revenuecat.WebhookEvent) []st
 	return ids
 }
 
+// hasActiveOverride returns true when an active admin entitlement override
+// exists for the given user and entitlement. It returns false when no override
+// checker is configured (backwards-compatible). Transient errors from the
+// checker are returned to the caller so that reconciliation does not silently
+// overwrite an admin override when the lookup fails.
+func (s *WebhookService) hasActiveOverride(ctx context.Context, userID, entitlement string) (bool, error) {
+	if s.overrides == nil {
+		return false, nil
+	}
+	override, err := s.overrides.GetActiveOverride(ctx, s.pool, userID, entitlement)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return false, nil
+		}
+		s.logger.Error("checking active override", "user_id", userID, "entitlement", entitlement, "err", err)
+		return false, fmt.Errorf("checking active override for user %s: %w", userID, err)
+	}
+	// An active grant or revoke override means the admin has explicitly set
+	// the entitlement state — skip RevenueCat reconciliation.
+	if override.Action == "grant" || override.Action == "revoke" {
+		s.logger.Info("skipping reconciliation due to active admin override",
+			"user_id", userID,
+			"entitlement", entitlement,
+			"override_action", override.Action,
+		)
+		return true, nil
+	}
+	return false, nil
+}
+
 // reconcileUser fetches the current subscriber state from RevenueCat for
 // a single RevenueCat user ID, resolves all matching local users, derives
 // the premium entitlement state, and upserts the local user_entitlements
@@ -140,6 +196,16 @@ func (s *WebhookService) reconcileUser(ctx context.Context, rcUserID string, eve
 			// Subscriber no longer exists at RevenueCat — mark inactive for all.
 			var firstErr error
 			for _, uid := range localUserIDs {
+				overridden, oErr := s.hasActiveOverride(ctx, uid, premiumEntitlement)
+				if oErr != nil {
+					if firstErr == nil {
+						firstErr = oErr
+					}
+					continue
+				}
+				if overridden {
+					continue
+				}
 				if uErr := s.upsertInactive(ctx, uid, rcUserID, event); uErr != nil {
 					if firstErr == nil {
 						firstErr = uErr
@@ -160,6 +226,19 @@ func (s *WebhookService) reconcileUser(ctx context.Context, rcUserID string, eve
 	rcOriginal := subResp.Subscriber.OriginalAppUserID
 	var firstErr error
 	for _, localUserID := range localUserIDs {
+		overridden, oErr := s.hasActiveOverride(ctx, localUserID, premiumEntitlement)
+		if oErr != nil {
+			s.logger.Error("override check failed, skipping reconciliation for user",
+				"user_id", localUserID, "rc_user_id", rcUserID, "err", oErr)
+			if firstErr == nil {
+				firstErr = oErr
+			}
+			continue
+		}
+		if overridden {
+			continue
+		}
+
 		params := repository.UpsertEntitlementParams{
 			UserID:                      localUserID,
 			Entitlement:                 premiumEntitlement,

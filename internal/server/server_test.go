@@ -37,16 +37,19 @@ func testConfig() *config.Config {
 		// Consolidated rate limits — use generous values so tests are not
 		// throttled. The window must also be positive (MemoryLimiter uses
 		// it for the eviction ticker).
-		AuthRateLimit:        10000,
-		AuthRateWindow:       time.Minute,
-		VerifyOTPRateLimit:   10000,
-		VerifyOTPRateWindow:  time.Minute,
-		GeneralAPIRateLimit:  10000,
-		GeneralAPIRateWindow: time.Minute,
-		SyncRateLimit:        10000,
-		SyncRateWindow:       time.Minute,
-		WebhookRateLimit:     10000,
-		WebhookRateWindow:    time.Minute,
+		AuthRateLimit:          10000,
+		AuthRateWindow:         time.Minute,
+		VerifyOTPRateLimit:     10000,
+		VerifyOTPRateWindow:    time.Minute,
+		GeneralAPIRateLimit:    10000,
+		GeneralAPIRateWindow:   time.Minute,
+		SyncRateLimit:          10000,
+		SyncRateWindow:         time.Minute,
+		WebhookRateLimit:       10000,
+		WebhookRateWindow:      time.Minute,
+		AdminJWTAccessTokenTTL: time.Hour,
+		AdminRateLimit:         10000,
+		AdminRateWindow:        time.Minute,
 	}
 }
 
@@ -1059,6 +1062,184 @@ func TestNew_WebhookRevenueCatRouteExists(t *testing.T) {
 			t.Errorf("expected 500 from nil pool after auth pass-through, got %d", rec.Code)
 		}
 	})
+}
+
+// =========================================================================
+// Admin route wiring tests
+// =========================================================================
+
+// TestNew_AdminLoginRouteExists verifies that POST /api/v1/admin/login is
+// reachable (non-404) and public (no JWT required). An empty body should get
+// a 422 validation error, not 401 or 404.
+func TestNew_AdminLoginRouteExists(t *testing.T) {
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/login",
+		strings.NewReader(`{"username":"","password":""}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusNotFound {
+		t.Fatal("expected POST /api/v1/admin/login to be wired (non-404), got 404")
+	}
+	// Login is public — empty fields should result in a 422 validation error,
+	// not 401 (auth middleware would produce 401).
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("expected 422 for empty credentials, got %d", rec.Code)
+	}
+}
+
+// TestNew_AdminProtectedRoutesRequireAuth verifies that protected admin
+// endpoints return 401 without any JWT.
+func TestNew_AdminProtectedRoutesRequireAuth(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{"list_users", http.MethodGet, "/api/v1/admin/users", ""},
+		{"get_user_detail", http.MethodGet, "/api/v1/admin/users/some-id", ""},
+		{"get_stats", http.MethodGet, "/api/v1/admin/stats", ""},
+		{"manage_entitlement", http.MethodPost, "/api/v1/admin/users/some-id/entitlements",
+			`{"action":"grant","entitlement":"premium"}`},
+		{"list_entitlements", http.MethodGet, "/api/v1/admin/entitlements", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
+			defer cleanup()
+
+			var bodyReader io.Reader
+			if tt.body != "" {
+				bodyReader = strings.NewReader(tt.body)
+			}
+			req := httptest.NewRequest(tt.method, tt.path, bodyReader)
+			if tt.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			rec := httptest.NewRecorder()
+
+			srv.Handler.ServeHTTP(rec, req)
+
+			if rec.Code == http.StatusNotFound {
+				t.Errorf("expected %s %s to be wired (non-404), got 404", tt.method, tt.path)
+			}
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("expected %s %s without JWT to return 401, got %d", tt.method, tt.path, rec.Code)
+			}
+		})
+	}
+}
+
+// TestNew_AdminProtectedRoutesRejectUserJWT verifies that a valid user JWT
+// (no role) is rejected by the AdminJWTAuth middleware on protected admin routes.
+func TestNew_AdminProtectedRoutesRejectUserJWT(t *testing.T) {
+	cfg := testConfig()
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	defer cleanup()
+
+	// Issue a regular user JWT — no admin role.
+	userToken, err := auth.IssueAccessToken("test-user-id", "user@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
+	if err != nil {
+		t.Fatalf("IssueAccessToken: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{"list_users", http.MethodGet, "/api/v1/admin/users", ""},
+		{"get_user_detail", http.MethodGet, "/api/v1/admin/users/some-id", ""},
+		{"get_stats", http.MethodGet, "/api/v1/admin/stats", ""},
+		{"manage_entitlement", http.MethodPost, "/api/v1/admin/users/some-id/entitlements",
+			`{"action":"grant","entitlement":"premium"}`},
+		{"list_entitlements", http.MethodGet, "/api/v1/admin/entitlements", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var bodyReader io.Reader
+			if tt.body != "" {
+				bodyReader = strings.NewReader(tt.body)
+			}
+			req := httptest.NewRequest(tt.method, tt.path, bodyReader)
+			req.Header.Set("Authorization", "Bearer "+userToken)
+			if tt.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			rec := httptest.NewRecorder()
+
+			srv.Handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("expected %s %s with user JWT to return 401, got %d", tt.method, tt.path, rec.Code)
+			}
+		})
+	}
+}
+
+// TestNew_AdminProtectedRoutesAcceptAdminJWT verifies that a valid admin JWT
+// passes through AdminJWTAuth and reaches the handler. The nil DB pool causes
+// a 500 (panic → Recoverer), which proves route + auth middleware work.
+func TestNew_AdminProtectedRoutesAcceptAdminJWT(t *testing.T) {
+	cfg := testConfig()
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	defer cleanup()
+
+	adminToken, err := auth.IssueAdminToken("admin-001", cfg.JWTSecret, cfg.AdminJWTAccessTokenTTL)
+	if err != nil {
+		t.Fatalf("IssueAdminToken: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{"list_users", http.MethodGet, "/api/v1/admin/users", ""},
+		{"get_user_detail", http.MethodGet, "/api/v1/admin/users/some-id", ""},
+		{"get_stats", http.MethodGet, "/api/v1/admin/stats", ""},
+		{"manage_entitlement", http.MethodPost, "/api/v1/admin/users/some-id/entitlements",
+			`{"action":"grant","entitlement":"premium"}`},
+		{"list_entitlements", http.MethodGet, "/api/v1/admin/entitlements", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var bodyReader io.Reader
+			if tt.body != "" {
+				bodyReader = strings.NewReader(tt.body)
+			}
+			req := httptest.NewRequest(tt.method, tt.path, bodyReader)
+			req.Header.Set("Authorization", "Bearer "+adminToken)
+			if tt.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			rec := httptest.NewRecorder()
+
+			srv.Handler.ServeHTTP(rec, req)
+
+			// With admin JWT passing auth, the handler will fail because
+			// there is no DB pool. A 500 proves the route + auth work.
+			if rec.Code == http.StatusUnauthorized {
+				t.Errorf("expected %s %s with admin JWT to pass auth, got 401", tt.method, tt.path)
+			}
+			if rec.Code == http.StatusNotFound {
+				t.Errorf("expected %s %s to be wired, got 404", tt.method, tt.path)
+			}
+			if rec.Code != http.StatusInternalServerError {
+				t.Errorf("expected %s %s to return 500 from nil pool, got %d", tt.method, tt.path, rec.Code)
+			}
+		})
+	}
 }
 
 // TestNew_VerifyOTPUsesPerEmailRateLimitAcrossIPs proves that verify also

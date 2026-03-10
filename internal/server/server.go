@@ -122,11 +122,20 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 	socialHandler := handler.NewSocialHandler(service.NewSocialService(pool, socialRepo, push.NewNoopSender(logger), logger))
 	photoStore := photostore.NewFileStore(cfg.PhotoStorageDir, cfg.PhotoPublicBaseURL)
 
+	// Admin repository (shared with webhook override checking and admin routes).
+	adminRepo := repository.NewPgxAdminRepository()
+
 	// RevenueCat webhook dependencies.
 	rcClient := revenuecat.NewClient(cfg.RevenueCatAPIKey)
 	entitlementRepo := repository.NewPgxEntitlementRepository()
-	webhookService := service.NewWebhookService(pool, entitlementRepo, rcClient, authRepo, logger)
+	webhookService := service.NewWebhookService(pool, entitlementRepo, rcClient, authRepo, logger,
+		service.WithOverrideChecker(adminRepo),
+	)
 	webhookHandler := handler.NewWebhookHandler(webhookService, cfg.RevenueCatWebhookSecret, logger)
+
+	// Admin API dependencies (after entitlementRepo and adminRepo are available).
+	adminService := service.NewAdminService(pool, adminRepo, entitlementRepo, cfg.JWTSecret, cfg.AdminJWTAccessTokenTTL, logger)
+	adminHandler := handler.NewAdminHandler(adminService, logger)
 
 	// newLimiter creates a rate limiter with the given budget. Multi-instance
 	// deployments should provide Redis; single-instance deployments may fall back
@@ -144,6 +153,7 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 	generalAPILimiter := newLimiter("general-api", cfg.GeneralAPIRateLimit, cfg.GeneralAPIRateWindow)
 	syncLimiter := newLimiter("sync", cfg.SyncRateLimit, cfg.SyncRateWindow)
 	webhookLimiter := newLimiter("webhook", cfg.WebhookRateLimit, cfg.WebhookRateWindow)
+	adminLimiter := newLimiter("admin", cfg.AdminRateLimit, cfg.AdminRateWindow)
 
 	// --- /api/v1 routes -------------------------------------------------
 	// Public and protected routes are mounted in separate chi.Route groups
@@ -166,6 +176,26 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 		// RevenueCat webhook (Bearer-secret auth, not JWT).
 		r.With(authmw.RateLimit(webhookLimiter, cfg.WebhookRateLimit, authmw.IPKey)).
 			Post("/webhooks/revenuecat", webhookHandler.HandleRevenueCat)
+
+		// Admin routes — login is public and rate-limited per IP; all
+		// other endpoints require an admin JWT and are rate-limited per
+		// admin identity (with an IP-based outer layer for unauthorized
+		// probing protection).
+		r.Route("/admin", func(r chi.Router) {
+			r.With(authmw.RateLimit(adminLimiter, cfg.AdminRateLimit, authmw.IPKey)).
+				Post("/login", adminHandler.Login)
+
+			r.Group(func(r chi.Router) {
+				r.Use(authmw.AdminJWTAuth(cfg.JWTSecret, logger))
+				r.Use(authmw.RateLimit(adminLimiter, cfg.AdminRateLimit, authmw.UserIDKey))
+
+				r.Get("/users", adminHandler.ListUsers)
+				r.Get("/users/{id}", adminHandler.GetUserDetail)
+				r.Get("/stats", adminHandler.GetPlatformStats)
+				r.Post("/users/{id}/entitlements", adminHandler.ManageEntitlement)
+				r.Get("/entitlements", adminHandler.ListEntitlements)
+			})
+		})
 
 		// Protected routes — JWT required. All endpoints in this group
 		// require a valid access token; the middleware stores the
@@ -234,6 +264,7 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 		generalAPILimiter.Stop()
 		syncLimiter.Stop()
 		webhookLimiter.Stop()
+		adminLimiter.Stop()
 	}
 
 	return &http.Server{

@@ -20,6 +20,7 @@ import (
 )
 
 var ErrConflict = errors.New("conflict")
+var ErrNotFound = errors.New("not found")
 var ErrUnauthorized = errors.New("unauthorized")
 var ErrRateLimited = errors.New("rate limited")
 var ErrSubscriptionRequired = errors.New("subscription required")

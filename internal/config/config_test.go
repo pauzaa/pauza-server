@@ -86,6 +86,15 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.SyncRateWindow != time.Minute {
 		t.Errorf("expected default SyncRateWindow 1m, got: %s", cfg.SyncRateWindow)
 	}
+	if cfg.AdminJWTAccessTokenTTL != time.Hour {
+		t.Errorf("expected default AdminJWTAccessTokenTTL 1h, got: %s", cfg.AdminJWTAccessTokenTTL)
+	}
+	if cfg.AdminRateLimit != 30 {
+		t.Errorf("expected default AdminRateLimit 30, got: %d", cfg.AdminRateLimit)
+	}
+	if cfg.AdminRateWindow != time.Minute {
+		t.Errorf("expected default AdminRateWindow 1m, got: %s", cfg.AdminRateWindow)
+	}
 }
 
 func TestLoad_CustomPortAndLogLevel(t *testing.T) {
@@ -524,6 +533,12 @@ func TestLoad_CleanupInvalid(t *testing.T) {
 		{"negative_sync_rate_limit", "SYNC_RATE_LIMIT", "-1", "SYNC_RATE_LIMIT"},
 		{"zero_sync_rate_window", "SYNC_RATE_WINDOW", "0s", "SYNC_RATE_WINDOW"},
 		{"negative_sync_rate_window", "SYNC_RATE_WINDOW", "-1m", "SYNC_RATE_WINDOW"},
+		{"zero_admin_jwt_ttl", "ADMIN_JWT_ACCESS_TOKEN_TTL", "0s", "ADMIN_JWT_ACCESS_TOKEN_TTL"},
+		{"negative_admin_jwt_ttl", "ADMIN_JWT_ACCESS_TOKEN_TTL", "-5m", "ADMIN_JWT_ACCESS_TOKEN_TTL"},
+		{"zero_admin_rate_limit", "ADMIN_RATE_LIMIT", "0", "ADMIN_RATE_LIMIT"},
+		{"negative_admin_rate_limit", "ADMIN_RATE_LIMIT", "-1", "ADMIN_RATE_LIMIT"},
+		{"zero_admin_rate_window", "ADMIN_RATE_WINDOW", "0s", "ADMIN_RATE_WINDOW"},
+		{"negative_admin_rate_window", "ADMIN_RATE_WINDOW", "-1m", "ADMIN_RATE_WINDOW"},
 	}
 
 	for _, tt := range tests {

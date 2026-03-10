@@ -1,0 +1,392 @@
+package handler
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/IsorilovA/pauza-server/internal/apperror"
+	"github.com/IsorilovA/pauza-server/internal/service"
+)
+
+// AdminServicer is the subset of service.AdminService the handler depends on.
+type AdminServicer interface {
+	Login(ctx context.Context, in service.LoginInput) (service.LoginOutput, error)
+	ListUsers(ctx context.Context, in service.ListUsersInput) (service.ListUsersOutput, error)
+	GetUserDetail(ctx context.Context, in service.GetUserDetailInput) (service.UserDetailOutput, error)
+	GetPlatformStats(ctx context.Context) (service.PlatformStatsOutput, error)
+	ManageEntitlement(ctx context.Context, in service.ManageEntitlementInput) (service.MessageOutput, error)
+	ListEntitlements(ctx context.Context, in service.ListEntitlementsInput) (service.ListEntitlementsOutput, error)
+}
+
+var _ AdminServicer = (*service.AdminService)(nil)
+
+// AdminHandler handles admin HTTP endpoints.
+type AdminHandler struct {
+	svc    AdminServicer
+	logger *slog.Logger
+}
+
+// NewAdminHandler creates an AdminHandler with the given service and logger.
+func NewAdminHandler(svc AdminServicer, logger *slog.Logger) *AdminHandler {
+	return &AdminHandler{svc: svc, logger: logger}
+}
+
+// ---------------------------------------------------------------------------
+// Request / response types
+// ---------------------------------------------------------------------------
+
+type adminLoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type adminLoginResponse struct {
+	AccessToken string `json:"access_token"`
+}
+
+type adminUserItemResponse struct {
+	ID                       string  `json:"id"`
+	Email                    string  `json:"email"`
+	Name                     string  `json:"name"`
+	Username                 string  `json:"username"`
+	ProfilePictureURL        *string `json:"profile_picture_url"`
+	PremiumEntitlementActive bool    `json:"premium_entitlement_active"`
+	CreatedAt                string  `json:"created_at"`
+}
+
+type adminListUsersResponse struct {
+	Users      []adminUserItemResponse `json:"users"`
+	Pagination paginationResponse      `json:"pagination"`
+}
+
+type paginationResponse struct {
+	Page  int `json:"page"`
+	Limit int `json:"limit"`
+	Total int `json:"total"`
+}
+
+type adminUserDetailResponse struct {
+	ID                  string  `json:"id"`
+	Email               string  `json:"email"`
+	Name                string  `json:"name"`
+	Username            string  `json:"username"`
+	ProfilePictureURL   *string `json:"profile_picture_url"`
+	LeaderboardVisible  bool    `json:"leaderboard_visible"`
+	CreatedAt           string  `json:"created_at"`
+	IsPremium           bool    `json:"is_premium"`
+	CurrentPeriodEnd    *string `json:"current_period_end"`
+	RevenueCatAppUserID *string `json:"revenuecat_app_user_id"`
+	FriendCount         int     `json:"friend_count"`
+	TotalSessions       int     `json:"total_sessions"`
+	LastSessionTime     *int64  `json:"last_session_time"`
+}
+
+type adminStatsResponse struct {
+	TotalUsers                int     `json:"total_users"`
+	ActiveUsers30d            int     `json:"active_users_30d"`
+	PremiumUsers              int     `json:"users_with_premium_entitlement"`
+	ActivePremiumEntitlements int     `json:"active_premium_entitlements"`
+	TotalFriendships          int     `json:"total_friendships"`
+	AvgStreakDays             float64 `json:"avg_streak_days"`
+	AvgDailyFocusTimeMS       float64 `json:"avg_daily_focus_time_ms"`
+}
+
+type manageEntitlementRequest struct {
+	Action      string  `json:"action"`
+	Entitlement string  `json:"entitlement"`
+	ExpiresAt   *string `json:"expires_at"`
+}
+
+type adminEntitlementItemResponse struct {
+	UserID           string  `json:"user_id"`
+	Email            string  `json:"email"`
+	Username         string  `json:"username"`
+	Entitlement      string  `json:"entitlement"`
+	IsActive         bool    `json:"is_active"`
+	CurrentPeriodEnd *string `json:"current_period_end"`
+	UpdatedAt        string  `json:"updated_at"`
+}
+
+type adminListEntitlementsResponse struct {
+	Entitlements []adminEntitlementItemResponse `json:"entitlements"`
+	Pagination   paginationResponse             `json:"pagination"`
+}
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
+// Login handles POST /api/v1/admin/login.
+func (h *AdminHandler) Login(w http.ResponseWriter, r *http.Request) {
+	var req adminLoginRequest
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
+
+	fields := make(apperror.FieldErrors)
+	if strings.TrimSpace(req.Username) == "" {
+		fields["username"] = "username is required"
+	}
+	if req.Password == "" {
+		fields["password"] = "password is required"
+	}
+	if len(fields) > 0 {
+		apperror.ValidationFieldErrors(w, "Invalid request body", fields)
+		return
+	}
+
+	out, err := h.svc.Login(r.Context(), service.LoginInput{
+		Username: req.Username,
+		Password: req.Password,
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(adminLoginResponse{AccessToken: out.Token}); err != nil {
+		h.logger.Error("encoding admin login response", "err", err)
+	}
+}
+
+// ListUsers handles GET /api/v1/admin/users.
+func (h *AdminHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
+	page, limit := paginationParams(r)
+	search := r.URL.Query().Get("search")
+
+	out, err := h.svc.ListUsers(r.Context(), service.ListUsersInput{
+		Page:   page,
+		Limit:  limit,
+		Search: search,
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	users := make([]adminUserItemResponse, len(out.Users))
+	for i, u := range out.Users {
+		users[i] = adminUserItemResponse{
+			ID:                       u.ID,
+			Email:                    u.Email,
+			Name:                     u.Name,
+			Username:                 u.Username,
+			ProfilePictureURL:        u.ProfilePictureURL,
+			PremiumEntitlementActive: u.IsPremium,
+			CreatedAt:                u.CreatedAt.UTC().Format(time.RFC3339),
+		}
+	}
+
+	resp := adminListUsersResponse{
+		Users: users,
+		Pagination: paginationResponse{
+			Page:  out.Page,
+			Limit: out.Limit,
+			Total: out.Total,
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		h.logger.Error("encoding admin list-users response", "err", err)
+	}
+}
+
+// GetUserDetail handles GET /api/v1/admin/users/{id}.
+func (h *AdminHandler) GetUserDetail(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "id")
+	if userID == "" {
+		apperror.ValidationFieldErrors(w, "Invalid request", apperror.FieldErrors{
+			"id": "user id is required",
+		})
+		return
+	}
+
+	out, err := h.svc.GetUserDetail(r.Context(), service.GetUserDetailInput{
+		UserID: userID,
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	resp := adminUserDetailResponse{
+		ID:                  out.ID,
+		Email:               out.Email,
+		Name:                out.Name,
+		Username:            out.Username,
+		ProfilePictureURL:   out.ProfilePictureURL,
+		LeaderboardVisible:  out.LeaderboardVisible,
+		CreatedAt:           out.CreatedAt.UTC().Format(time.RFC3339),
+		IsPremium:           out.IsPremium,
+		RevenueCatAppUserID: out.RevenueCatAppUserID,
+		FriendCount:         out.FriendCount,
+		TotalSessions:       out.TotalSessions,
+		LastSessionTime:     out.LastSessionTime,
+	}
+	if out.CurrentPeriodEnd != nil {
+		s := out.CurrentPeriodEnd.UTC().Format(time.RFC3339)
+		resp.CurrentPeriodEnd = &s
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		h.logger.Error("encoding admin user-detail response", "err", err)
+	}
+}
+
+// GetPlatformStats handles GET /api/v1/admin/stats.
+func (h *AdminHandler) GetPlatformStats(w http.ResponseWriter, r *http.Request) {
+	out, err := h.svc.GetPlatformStats(r.Context())
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	resp := adminStatsResponse{
+		TotalUsers:                out.TotalUsers,
+		ActiveUsers30d:            out.ActiveUsers30d,
+		PremiumUsers:              out.PremiumUsers,
+		ActivePremiumEntitlements: out.ActivePremiumEntitlements,
+		TotalFriendships:          out.TotalFriendships,
+		AvgStreakDays:             out.AvgStreakDays,
+		AvgDailyFocusTimeMS:       out.AvgDailyFocusTimeMS,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		h.logger.Error("encoding admin stats response", "err", err)
+	}
+}
+
+// ManageEntitlement handles POST /api/v1/admin/users/{id}/entitlements.
+func (h *AdminHandler) ManageEntitlement(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "id")
+	if userID == "" {
+		apperror.ValidationFieldErrors(w, "Invalid request", apperror.FieldErrors{
+			"id": "user id is required",
+		})
+		return
+	}
+
+	var req manageEntitlementRequest
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
+
+	fields := make(apperror.FieldErrors)
+	if req.Action != "grant" && req.Action != "revoke" {
+		fields["action"] = "action must be grant or revoke"
+	}
+	if req.Entitlement == "" {
+		fields["entitlement"] = "entitlement is required"
+	}
+
+	var expiresAt *time.Time
+	if req.ExpiresAt != nil {
+		t, parseErr := time.Parse(time.RFC3339, *req.ExpiresAt)
+		if parseErr != nil {
+			fields["expires_at"] = "expires_at must be a valid RFC3339 timestamp"
+		} else if !t.After(time.Now()) {
+			fields["expires_at"] = "expires_at must be in the future"
+		} else {
+			expiresAt = &t
+		}
+	}
+
+	if len(fields) > 0 {
+		apperror.ValidationFieldErrors(w, "Invalid request body", fields)
+		return
+	}
+
+	out, err := h.svc.ManageEntitlement(r.Context(), service.ManageEntitlementInput{
+		UserID:      userID,
+		Entitlement: req.Entitlement,
+		Action:      req.Action,
+		ExpiresAt:   expiresAt,
+	})
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidAction) || errors.Is(err, service.ErrInvalidEntitlement) {
+			apperror.ValidationError(w, serviceMessage(err, service.ErrInvalidAction, serviceMessage(err, service.ErrInvalidEntitlement, "Invalid input")), nil)
+			return
+		}
+		writeServiceError(w, err)
+		return
+	}
+
+	writeMessageResponse(w, h.logger, http.StatusOK, out.Message, "admin-manage-entitlement")
+}
+
+// ListEntitlements handles GET /api/v1/admin/entitlements.
+func (h *AdminHandler) ListEntitlements(w http.ResponseWriter, r *http.Request) {
+	page, limit := paginationParams(r)
+	entitlement := r.URL.Query().Get("entitlement")
+
+	var isActive *bool
+	if raw := r.URL.Query().Get("is_active"); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			apperror.ValidationFieldErrors(w, "Invalid query parameter", apperror.FieldErrors{
+				"is_active": "is_active must be a boolean",
+			})
+			return
+		}
+		isActive = &parsed
+	}
+
+	out, err := h.svc.ListEntitlements(r.Context(), service.ListEntitlementsInput{
+		Page:        page,
+		Limit:       limit,
+		Entitlement: entitlement,
+		IsActive:    isActive,
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	entitlements := make([]adminEntitlementItemResponse, len(out.Entitlements))
+	for i, e := range out.Entitlements {
+		item := adminEntitlementItemResponse{
+			UserID:      e.UserID,
+			Email:       e.Email,
+			Username:    e.Username,
+			Entitlement: e.Entitlement,
+			IsActive:    e.IsActive,
+			UpdatedAt:   e.UpdatedAt.UTC().Format(time.RFC3339),
+		}
+		if e.CurrentPeriodEnd != nil {
+			s := e.CurrentPeriodEnd.UTC().Format(time.RFC3339)
+			item.CurrentPeriodEnd = &s
+		}
+		entitlements[i] = item
+	}
+
+	resp := adminListEntitlementsResponse{
+		Entitlements: entitlements,
+		Pagination: paginationResponse{
+			Page:  out.Page,
+			Limit: out.Limit,
+			Total: out.Total,
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		h.logger.Error("encoding admin list-entitlements response", "err", err)
+	}
+}

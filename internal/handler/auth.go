@@ -135,6 +135,8 @@ func writeServiceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, service.ErrConflict):
 		apperror.Conflict(w, serviceMessage(err, service.ErrConflict, "Conflict"))
+	case errors.Is(err, service.ErrNotFound):
+		apperror.NotFound(w, serviceMessage(err, service.ErrNotFound, "Not found"))
 	case errors.Is(err, service.ErrSubscriptionRequired):
 		apperror.SubscriptionRequired(w, serviceMessage(err, service.ErrSubscriptionRequired, "Subscription required"))
 	case errors.Is(err, service.ErrUnauthorized):

@@ -74,6 +74,10 @@ type Config struct {
 	WebhookRateLimit  int           `envconfig:"WEBHOOK_RATE_LIMIT" default:"100"`
 	WebhookRateWindow time.Duration `envconfig:"WEBHOOK_RATE_WINDOW" default:"1m"`
 
+	AdminJWTAccessTokenTTL time.Duration `envconfig:"ADMIN_JWT_ACCESS_TOKEN_TTL" default:"1h"`
+	AdminRateLimit         int           `envconfig:"ADMIN_RATE_LIMIT" default:"30"`
+	AdminRateWindow        time.Duration `envconfig:"ADMIN_RATE_WINDOW" default:"1m"`
+
 	// Cleanup job
 	CleanupInterval    time.Duration `envconfig:"CLEANUP_INTERVAL" default:"1h"`
 	OTPRetentionPeriod time.Duration `envconfig:"OTP_RETENTION_PERIOD" default:"24h"`
@@ -205,6 +209,15 @@ func (c *Config) validate() error {
 	}
 	if c.WebhookRateWindow <= 0 {
 		return fmt.Errorf("WEBHOOK_RATE_WINDOW must be positive, got %s", c.WebhookRateWindow)
+	}
+	if c.AdminJWTAccessTokenTTL <= 0 {
+		return fmt.Errorf("ADMIN_JWT_ACCESS_TOKEN_TTL must be positive, got %s", c.AdminJWTAccessTokenTTL)
+	}
+	if c.AdminRateLimit <= 0 {
+		return fmt.Errorf("ADMIN_RATE_LIMIT must be positive, got %d", c.AdminRateLimit)
+	}
+	if c.AdminRateWindow <= 0 {
+		return fmt.Errorf("ADMIN_RATE_WINDOW must be positive, got %s", c.AdminRateWindow)
 	}
 
 	// Cleanup durations must be positive

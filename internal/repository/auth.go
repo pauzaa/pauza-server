@@ -469,11 +469,37 @@ func (r *PgxAuthRepository) GetUserEmailByID(ctx context.Context, db DBTX, userI
 
 func (r *PgxAuthRepository) GetEntitlementSnapshot(ctx context.Context, db DBTX, userID string) (EntitlementRow, error) {
 	var e EntitlementRow
+	// Use two CTEs—one for the stored snapshot, one for the active admin
+	// override—and combine them with a cross join so the result is produced
+	// even when only one side exists. Precedence:
+	//   active admin grant  (± snapshot) → is_active = true
+	//   active admin revoke (± snapshot) → is_active = false
+	//   no active override + snapshot    → snapshot is_active
+	//   no active override + no snapshot → no row (ErrNotFound)
 	err := db.QueryRow(ctx,
-		`SELECT entitlement, is_active, current_period_end
-		 FROM user_entitlements
-		 WHERE user_id = $1 AND entitlement = 'premium'
-		 LIMIT 1`,
+		`WITH snapshot AS (
+		   SELECT is_active, current_period_end
+		   FROM user_entitlements
+		   WHERE user_id = $1 AND entitlement = 'premium'
+		 ),
+		 override AS (
+		   SELECT action
+		   FROM admin_entitlement_overrides
+		   WHERE user_id = $1 AND entitlement = 'premium'
+		     AND (expires_at IS NULL OR expires_at > now())
+		 )
+		 SELECT 'premium' AS entitlement,
+		        CASE
+		          WHEN o.action = 'grant'  THEN true
+		          WHEN o.action = 'revoke' THEN false
+		          ELSE s.is_active
+		        END AS is_active,
+		        s.current_period_end
+		 FROM (SELECT 1) AS base
+		 LEFT JOIN snapshot  s ON true
+		 LEFT JOIN override  o ON true
+		 WHERE s.is_active IS NOT NULL
+		    OR o.action IS NOT NULL`,
 		userID,
 	).Scan(&e.Entitlement, &e.IsActive, &e.CurrentPeriodEnd)
 	if errors.Is(err, pgx.ErrNoRows) {
