@@ -319,6 +319,14 @@ CREATE TABLE streak_daily_aggregates (
 
 CREATE INDEX idx_streak_aggregates_qualified ON streak_daily_aggregates (user_id, qualified, local_day);
 
+-- 20. leaderboard_metrics (FK -> users)
+CREATE TABLE leaderboard_metrics (
+  user_id               UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  current_streak_days   INTEGER NOT NULL DEFAULT 0 CHECK (current_streak_days >= 0),
+  total_focus_time_ms   BIGINT NOT NULL DEFAULT 0 CHECK (total_focus_time_ms >= 0),
+  updated_at            BIGINT NOT NULL DEFAULT 0
+);
+
 -- Server-managed replication cursors.
 CREATE OR REPLACE FUNCTION set_server_updated_at_bigint()
 RETURNS trigger AS $$

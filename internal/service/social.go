@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
 
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -35,13 +34,14 @@ type socialRepository interface {
 	DeletePendingRequest(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
 	RemoveFriend(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
 	SearchUsers(ctx context.Context, db repository.DBTX, prefix, excludeUserID string, limit int) ([]repository.BasicUserRow, error)
-	ListUsers(ctx context.Context, db repository.DBTX, visibleOnly bool) ([]repository.BasicUserRow, error)
 	LoadRecentDailyAggregates(ctx context.Context, db repository.DBTX, userID string, days int) ([]struct {
 		LocalDay    string
 		EffectiveMS int
 		Qualified   bool
 	}, error)
 	LoadTotalFocusTime(ctx context.Context, db repository.DBTX, userID string) (int64, error)
+	ListLeaderboardEntries(ctx context.Context, db repository.DBTX, metric repository.LeaderboardMetric, page, limit int) ([]repository.LeaderboardRow, int, error)
+	GetLeaderboardRank(ctx context.Context, db repository.DBTX, metric repository.LeaderboardMetric, userID string) (repository.LeaderboardRow, error)
 }
 
 func NewSocialService(pool repository.Pool, repo socialRepository, pushSender push.Sender, logger *slog.Logger) *SocialService {
@@ -280,67 +280,41 @@ func (s *SocialService) requirePremium(ctx context.Context, userID string) error
 }
 
 func (s *SocialService) buildLeaderboard(ctx context.Context, userID string, page, limit int, byStreak bool) (LeaderboardOutput, error) {
-	users, err := s.repo.ListUsers(ctx, s.pool, false)
+	metric := repository.LeaderboardMetricFocusTime
+	if byStreak {
+		metric = repository.LeaderboardMetricStreak
+	}
+
+	rows, total, err := s.repo.ListLeaderboardEntries(ctx, s.pool, metric, page, limit)
 	if err != nil {
-		s.logger.Error("listing users for leaderboard", "err", err)
+		s.logger.Error("listing leaderboard entries", "err", err)
 		return LeaderboardOutput{}, ErrInternal
 	}
 
-	type ranked struct {
-		user   repository.BasicUserRow
-		streak int
-		focus  int64
-	}
-	var rankedUsers []ranked
-	for _, user := range users {
-		stats, err := s.loadStatsForUser(ctx, user.ID, 30)
-		if err != nil {
-			return LeaderboardOutput{}, err
+	myRank, err := s.repo.GetLeaderboardRank(ctx, s.pool, metric, userID)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return LeaderboardOutput{}, fmt.Errorf("%w: user not found", ErrUnauthorized)
 		}
-		rankedUsers = append(rankedUsers, ranked{
-			user:   user,
-			streak: stats.Stats.CurrentStreakDays,
-			focus:  stats.Stats.TotalFocusTimeMS,
+		s.logger.Error("loading leaderboard rank", "err", err)
+		return LeaderboardOutput{}, ErrInternal
+	}
+
+	out := LeaderboardOutput{
+		MyRank: LeaderboardRank{
+			Rank:              myRank.Rank,
+			CurrentStreakDays: myRank.CurrentStreakDays,
+			TotalFocusTimeMS:  myRank.TotalFocusTimeMS,
+		},
+		Pagination: repository.PaginationResult{Page: page, Limit: limit, Total: total},
+	}
+	for _, row := range rows {
+		out.Entries = append(out.Entries, LeaderboardEntry{
+			Rank:              row.Rank,
+			User:              row.User,
+			CurrentStreakDays: row.CurrentStreakDays,
+			TotalFocusTimeMS:  row.TotalFocusTimeMS,
 		})
-	}
-
-	sort.SliceStable(rankedUsers, func(i, j int) bool {
-		if byStreak {
-			if rankedUsers[i].streak == rankedUsers[j].streak {
-				return rankedUsers[i].user.Username < rankedUsers[j].user.Username
-			}
-			return rankedUsers[i].streak > rankedUsers[j].streak
-		}
-		if rankedUsers[i].focus == rankedUsers[j].focus {
-			return rankedUsers[i].user.Username < rankedUsers[j].user.Username
-		}
-		return rankedUsers[i].focus > rankedUsers[j].focus
-	})
-
-	var visible []ranked
-	out := LeaderboardOutput{Pagination: repository.PaginationResult{Page: page, Limit: limit}}
-	for i, item := range rankedUsers {
-		if item.user.ID == userID {
-			out.MyRank.Rank = i + 1
-			out.MyRank.CurrentStreakDays = item.streak
-			out.MyRank.TotalFocusTimeMS = item.focus
-		}
-		if item.user.LeaderboardVisible {
-			visible = append(visible, item)
-		}
-	}
-	out.Pagination.Total = len(visible)
-	start := (page - 1) * limit
-	if start > len(visible) {
-		start = len(visible)
-	}
-	end := start + limit
-	if end > len(visible) {
-		end = len(visible)
-	}
-	for i := start; i < end; i++ {
-		entry := LeaderboardEntry{Rank: i + 1, User: visible[i].user, CurrentStreakDays: visible[i].streak, TotalFocusTimeMS: visible[i].focus}
-		out.Entries = append(out.Entries, entry)
 	}
 	return out, nil
 }

@@ -772,6 +772,7 @@ func (r *PgxSyncRepository) SyncStreakSessionDailyRollups(ctx context.Context, d
 func (r *PgxSyncRepository) SyncStreakDailyAggregates(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.StreakDailyAggregate, string]) (syncmodel.TableChanges[syncmodel.StreakDailyAggregate, string], error) {
 	written := map[string]struct{}{}
 	deleted := map[string]struct{}{}
+	refreshMetrics := false
 
 	for _, rec := range in.Upserts {
 		var serverUpdatedAt int64
@@ -783,6 +784,7 @@ func (r *PgxSyncRepository) SyncStreakDailyAggregates(ctx context.Context, db DB
 				return syncmodel.TableChanges[syncmodel.StreakDailyAggregate, string]{}, fmt.Errorf("inserting streak_daily_aggregate: %w", err)
 			}
 			written[rec.LocalDay] = struct{}{}
+			refreshMetrics = true
 			continue
 		}
 		if err != nil {
@@ -797,6 +799,7 @@ func (r *PgxSyncRepository) SyncStreakDailyAggregates(ctx context.Context, db DB
 			return syncmodel.TableChanges[syncmodel.StreakDailyAggregate, string]{}, fmt.Errorf("updating streak_daily_aggregate: %w", err)
 		}
 		written[rec.LocalDay] = struct{}{}
+		refreshMetrics = true
 	}
 
 	for _, localDay := range in.Deletions {
@@ -811,6 +814,13 @@ func (r *PgxSyncRepository) SyncStreakDailyAggregates(ctx context.Context, db DB
 			return syncmodel.TableChanges[syncmodel.StreakDailyAggregate, string]{}, err
 		}
 		deleted[localDay] = struct{}{}
+		refreshMetrics = true
+	}
+
+	if refreshMetrics {
+		if err := (&SocialRepository{}).RefreshLeaderboardMetrics(ctx, db, userID); err != nil {
+			return syncmodel.TableChanges[syncmodel.StreakDailyAggregate, string]{}, err
+		}
 	}
 
 	rows, err := db.Query(ctx, `SELECT local_day, effective_ms, qualified, source_session_count, updated_at

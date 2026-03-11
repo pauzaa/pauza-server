@@ -166,5 +166,6 @@ func coreTables() []string {
 		"qr_linked_codes",
 		"streak_session_daily_rollups",
 		"streak_daily_aggregates",
+		"leaderboard_metrics",
 	}
 }

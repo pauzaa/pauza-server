@@ -25,13 +25,14 @@ type fakeSocialRepo struct {
 	deletePendingRequestFn      func(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
 	removeFriendFn              func(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
 	searchUsersFn               func(ctx context.Context, db repository.DBTX, prefix, excludeUserID string, limit int) ([]repository.BasicUserRow, error)
-	listUsersFn                 func(ctx context.Context, db repository.DBTX, visibleOnly bool) ([]repository.BasicUserRow, error)
 	loadRecentDailyAggregatesFn func(ctx context.Context, db repository.DBTX, userID string, days int) ([]struct {
 		LocalDay    string
 		EffectiveMS int
 		Qualified   bool
 	}, error)
-	loadTotalFocusTimeFn func(ctx context.Context, db repository.DBTX, userID string) (int64, error)
+	loadTotalFocusTimeFn     func(ctx context.Context, db repository.DBTX, userID string) (int64, error)
+	listLeaderboardEntriesFn func(ctx context.Context, db repository.DBTX, metric repository.LeaderboardMetric, page, limit int) ([]repository.LeaderboardRow, int, error)
+	getLeaderboardRankFn     func(ctx context.Context, db repository.DBTX, metric repository.LeaderboardMetric, userID string) (repository.LeaderboardRow, error)
 }
 
 func (f *fakeSocialRepo) EffectivePremiumActive(ctx context.Context, db repository.DBTX, userID string) (bool, error) {
@@ -73,9 +74,6 @@ func (f *fakeSocialRepo) RemoveFriend(ctx context.Context, db repository.DBTX, f
 func (f *fakeSocialRepo) SearchUsers(ctx context.Context, db repository.DBTX, prefix, excludeUserID string, limit int) ([]repository.BasicUserRow, error) {
 	return f.searchUsersFn(ctx, db, prefix, excludeUserID, limit)
 }
-func (f *fakeSocialRepo) ListUsers(ctx context.Context, db repository.DBTX, visibleOnly bool) ([]repository.BasicUserRow, error) {
-	return f.listUsersFn(ctx, db, visibleOnly)
-}
 func (f *fakeSocialRepo) LoadRecentDailyAggregates(ctx context.Context, db repository.DBTX, userID string, days int) ([]struct {
 	LocalDay    string
 	EffectiveMS int
@@ -85,6 +83,12 @@ func (f *fakeSocialRepo) LoadRecentDailyAggregates(ctx context.Context, db repos
 }
 func (f *fakeSocialRepo) LoadTotalFocusTime(ctx context.Context, db repository.DBTX, userID string) (int64, error) {
 	return f.loadTotalFocusTimeFn(ctx, db, userID)
+}
+func (f *fakeSocialRepo) ListLeaderboardEntries(ctx context.Context, db repository.DBTX, metric repository.LeaderboardMetric, page, limit int) ([]repository.LeaderboardRow, int, error) {
+	return f.listLeaderboardEntriesFn(ctx, db, metric, page, limit)
+}
+func (f *fakeSocialRepo) GetLeaderboardRank(ctx context.Context, db repository.DBTX, metric repository.LeaderboardMetric, userID string) (repository.LeaderboardRow, error) {
+	return f.getLeaderboardRankFn(ctx, db, metric, userID)
 }
 
 type capturePushSender struct {
@@ -136,7 +140,6 @@ func newFakeSocialRepo() *fakeSocialRepo {
 		searchUsersFn: func(context.Context, repository.DBTX, string, string, int) ([]repository.BasicUserRow, error) {
 			return nil, nil
 		},
-		listUsersFn: func(context.Context, repository.DBTX, bool) ([]repository.BasicUserRow, error) { return nil, nil },
 		loadRecentDailyAggregatesFn: func(context.Context, repository.DBTX, string, int) ([]struct {
 			LocalDay    string
 			EffectiveMS int
@@ -145,6 +148,12 @@ func newFakeSocialRepo() *fakeSocialRepo {
 			return nil, nil
 		},
 		loadTotalFocusTimeFn: func(context.Context, repository.DBTX, string) (int64, error) { return 0, nil },
+		listLeaderboardEntriesFn: func(context.Context, repository.DBTX, repository.LeaderboardMetric, int, int) ([]repository.LeaderboardRow, int, error) {
+			return nil, 0, nil
+		},
+		getLeaderboardRankFn: func(context.Context, repository.DBTX, repository.LeaderboardMetric, string) (repository.LeaderboardRow, error) {
+			return repository.LeaderboardRow{}, nil
+		},
 	}
 }
 
@@ -281,5 +290,72 @@ func TestSocialService_RequestFriendPushFailureDoesNotFailRequest(t *testing.T) 
 	}
 	if len(pushSender.calls) != 1 {
 		t.Fatalf("push calls = %d, want 1", len(pushSender.calls))
+	}
+}
+
+func TestSocialService_LeaderboardByStreak_UsesRepositoryRanking(t *testing.T) {
+	repo := newFakeSocialRepo()
+	repo.listLeaderboardEntriesFn = func(_ context.Context, _ repository.DBTX, metric repository.LeaderboardMetric, page, limit int) ([]repository.LeaderboardRow, int, error) {
+		if metric != repository.LeaderboardMetricStreak {
+			t.Fatalf("metric = %q, want %q", metric, repository.LeaderboardMetricStreak)
+		}
+		if page != 2 || limit != 5 {
+			t.Fatalf("page=%d limit=%d, want 2/5", page, limit)
+		}
+		return []repository.LeaderboardRow{
+			{
+				Rank:              4,
+				User:              repository.BasicUserRow{ID: "user-4", Username: "dave", LeaderboardVisible: true},
+				CurrentStreakDays: 7,
+				TotalFocusTimeMS:  900,
+			},
+		}, 3, nil
+	}
+	repo.getLeaderboardRankFn = func(_ context.Context, _ repository.DBTX, metric repository.LeaderboardMetric, userID string) (repository.LeaderboardRow, error) {
+		if metric != repository.LeaderboardMetricStreak {
+			t.Fatalf("metric = %q, want %q", metric, repository.LeaderboardMetricStreak)
+		}
+		if userID != "me" {
+			t.Fatalf("userID = %q, want me", userID)
+		}
+		return repository.LeaderboardRow{
+			Rank:              8,
+			User:              repository.BasicUserRow{ID: "me", Username: "alice", LeaderboardVisible: false},
+			CurrentStreakDays: 3,
+			TotalFocusTimeMS:  400,
+		}, nil
+	}
+
+	svc := NewSocialService(&fakePool{}, repo, &capturePushSender{}, silentLogger())
+
+	out, err := svc.LeaderboardByStreak(context.Background(), "me", 2, 5)
+	if err != nil {
+		t.Fatalf("LeaderboardByStreak error = %v, want nil", err)
+	}
+	if out.Pagination.Page != 2 || out.Pagination.Limit != 5 || out.Pagination.Total != 3 {
+		t.Fatalf("unexpected pagination: %#v", out.Pagination)
+	}
+	if out.MyRank.Rank != 8 || out.MyRank.CurrentStreakDays != 3 || out.MyRank.TotalFocusTimeMS != 400 {
+		t.Fatalf("unexpected my_rank: %#v", out.MyRank)
+	}
+	if len(out.Entries) != 1 {
+		t.Fatalf("entries len = %d, want 1", len(out.Entries))
+	}
+	if out.Entries[0].Rank != 4 || out.Entries[0].User.Username != "dave" || out.Entries[0].CurrentStreakDays != 7 {
+		t.Fatalf("unexpected entry: %#v", out.Entries[0])
+	}
+}
+
+func TestSocialService_LeaderboardByFocusTime_UserNotFound(t *testing.T) {
+	repo := newFakeSocialRepo()
+	repo.getLeaderboardRankFn = func(context.Context, repository.DBTX, repository.LeaderboardMetric, string) (repository.LeaderboardRow, error) {
+		return repository.LeaderboardRow{}, repository.ErrNotFound
+	}
+
+	svc := NewSocialService(&fakePool{}, repo, &capturePushSender{}, silentLogger())
+
+	_, err := svc.LeaderboardByFocusTime(context.Background(), "missing", 1, 20)
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("LeaderboardByFocusTime error = %v, want ErrUnauthorized", err)
 	}
 }
