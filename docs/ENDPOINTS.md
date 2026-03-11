@@ -784,6 +784,10 @@ Push-notification device registration. Requires a user JWT.
 
 Register a device for push notifications.
 
+The backend sends Firebase notifications for friend-request events. If Firebase
+later reports that a registered token is no longer valid, that token is
+automatically removed from the server.
+
 | Property | Value |
 |---|---|
 | **Auth** | User JWT |
@@ -843,6 +847,9 @@ Unregister a device from push notifications.
 | Code | When |
 |---|---|
 | `VALIDATION_ERROR` (422) | Missing fcm_token |
+| `UNAUTHORIZED` (401) | Missing or invalid JWT |
+| `RATE_LIMITED` (429) | Too many requests |
+| `INTERNAL_ERROR` (500) | Transient server error |
 | `UNAUTHORIZED` (401) | Missing or invalid JWT |
 | `RATE_LIMITED` (429) | Too many requests |
 | `INTERNAL_ERROR` (500) | Transient server error |

@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/IsorilovA/pauza-server/internal/apperror"
 	"github.com/IsorilovA/pauza-server/internal/config"
 	"github.com/IsorilovA/pauza-server/internal/handler"
 	"github.com/IsorilovA/pauza-server/internal/mail"
@@ -87,12 +86,13 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 // New creates and configures the HTTP server with all routes and middleware.
 // The mailer parameter allows callers to inject any mail.Sender implementation
 // (e.g. a real SMTP sender in production, or an in-memory stub in tests).
-// The redisClient parameter is explicit: when provided, rate limiters use Redis
-// as the shared backend wrapped in a fail-open layer. When nil, the server uses
-// an in-memory limiter suitable for single-instance deployments.
+// The redisClient parameter is explicit: rate limiters use Redis as the shared
+// backend wrapped in a fail-open layer. Production startup requires Redis; nil
+// is tolerated here only so unit tests can exercise router wiring without a
+// live backend.
 // The returned cleanup function stops background goroutines (e.g. rate-limiter
 // eviction loops) and must be called during graceful shutdown.
-func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mail.Sender, redisClient *redis.Client) (*http.Server, func()) {
+func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mail.Sender, pushSender push.Sender, redisClient *redis.Client) (*http.Server, func()) {
 	r := chi.NewRouter()
 
 	// Base middleware stack.
@@ -114,13 +114,16 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 		pool, authRepo, mailer, cfg.JWTSecret,
 		cfg.JWTAccessTokenTTL, cfg.JWTRefreshTokenTTL, logger,
 	)
-	authHandler := handler.NewAuthHandler(authService, logger)
+	photoStore := photostore.NewFileStore(cfg.PhotoStorageDir, cfg.PhotoPublicBaseURL)
+	authHandler := handler.NewAuthHandlerWithPhotoStore(authService, photoStore, logger)
 	syncRepo := repository.NewPgxSyncRepository()
 	syncService := service.NewSyncService(pool, syncRepo, authRepo, logger)
 	syncHandler := handler.NewSyncHandlerWithLogger(syncService, logger)
 	socialRepo := repository.NewSocialRepository()
-	socialHandler := handler.NewSocialHandler(service.NewSocialService(pool, socialRepo, push.NewNoopSender(logger), logger))
-	photoStore := photostore.NewFileStore(cfg.PhotoStorageDir, cfg.PhotoPublicBaseURL)
+	if pushSender == nil {
+		pushSender = push.NewNoopSender(logger)
+	}
+	socialHandler := handler.NewSocialHandler(service.NewSocialService(pool, socialRepo, pushSender, logger))
 
 	// Admin repository (shared with webhook override checking and admin routes).
 	adminRepo := repository.NewPgxAdminRepository()
@@ -137,15 +140,10 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 	adminService := service.NewAdminService(pool, adminRepo, entitlementRepo, cfg.JWTSecret, cfg.AdminJWTAccessTokenTTL, logger)
 	adminHandler := handler.NewAdminHandler(adminService, logger)
 
-	// newLimiter creates a rate limiter with the given budget. Multi-instance
-	// deployments should provide Redis; single-instance deployments may fall back
-	// to the in-memory limiter.
+	// newLimiter creates a Redis-backed rate limiter with the given budget.
 	newLimiter := func(prefix string, rate int, window time.Duration) ratelimit.Limiter {
-		if redisClient != nil {
-			inner := ratelimit.NewRedisLimiter(redisClient, rate, window, ratelimit.WithPrefix("rl:"+prefix+":"))
-			return ratelimit.NewFailOpen(inner, logger)
-		}
-		return ratelimit.New(rate, window)
+		inner := ratelimit.NewRedisLimiter(redisClient, rate, window, ratelimit.WithPrefix("rl:"+prefix+":"))
+		return ratelimit.NewFailOpen(inner, logger)
 	}
 
 	authLimiter := newLimiter("auth", cfg.AuthRateLimit, cfg.AuthRateWindow)
@@ -212,33 +210,7 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 				r.Get("/me/username-available", authHandler.UsernameAvailable)
 				r.Post("/me/delete/request", authHandler.DeleteRequest)
 				r.Post("/me/delete/confirm", authHandler.DeleteConfirm)
-				r.Post("/me/photo", func(w http.ResponseWriter, r *http.Request) {
-					file, header, err := r.FormFile("photo")
-					if err != nil {
-						apperror.ValidationFieldErrors(w, "Invalid request body", apperror.FieldErrors{"photo": "photo is required"})
-						return
-					}
-					defer file.Close()
-					if header.Size > 5<<20 {
-						apperror.ValidationFieldErrors(w, "Invalid request body", apperror.FieldErrors{"photo": "photo must not exceed 5 MB"})
-						return
-					}
-					if msg := handler.ValidatePhotoUpload(file); msg != "" {
-						apperror.ValidationFieldErrors(w, "Invalid request body", apperror.FieldErrors{"photo": msg})
-						return
-					}
-					ext := ".jpg"
-					if header.Header.Get("Content-Type") == "image/png" {
-						ext = ".png"
-					}
-					url, err := photoStore.Save(r.Context(), file, ext)
-					if err != nil {
-						logger.Error("saving photo upload", "err", err)
-						apperror.InternalError(w)
-						return
-					}
-					authHandler.UploadPhoto(w, r, url)
-				})
+				r.Post("/me/photo", authHandler.UploadPhoto)
 				r.Post("/devices", socialHandler.RegisterDevice)
 				r.Post("/devices/unregister", socialHandler.UnregisterDevice)
 				r.Get("/friends", socialHandler.ListFriends)

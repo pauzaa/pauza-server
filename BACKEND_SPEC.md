@@ -1591,21 +1591,16 @@ Flutter App                    Pauza Backend                Firebase
 
 | Event | Recipient | Payload |
 |---|---|---|
-| Friendship request received | Addressee | `{ "type": "friend_request", "from_username": "...", "friendship_id": "..." }` |
-| Friendship request accepted | Requester | `{ "type": "friend_accepted", "by_username": "...", "friendship_id": "..." }` |
-| Schedule reminder | User | `{ "type": "schedule_reminder", "mode_title": "...", "starts_in_minutes": 15 }` |
+| Friendship request received | Addressee | `{ "type": "friend_request", "actor_user_id": "...", "actor_username": "...", "friendship_id": "..." }` |
+| Friendship request accepted | Requester | `{ "type": "friend_accepted", "actor_user_id": "...", "actor_username": "...", "friendship_id": "..." }` |
 
-### 9.3 Schedule Reminders
+Schedule reminders are deferred and are not part of the current backend implementation.
 
-The backend runs a periodic job (e.g., every minute) that checks replicated `schedules` for upcoming scheduled mode activations. If a schedule is due to start within 15 minutes, and a reminder has not already been sent for this occurrence, a push notification is sent to the user.
-
-To avoid duplicate reminders, the backend tracks sent reminders in memory or in a lightweight table/cache with a TTL.
-
-### 9.4 Token Lifecycle
+### 9.3 Token Lifecycle
 
 - Tokens are registered via `POST /api/v1/devices`.
 - Tokens are unregistered via `POST /api/v1/devices/unregister` with the `fcm_token` in the request body (e.g., on user logout).
-- If Firebase returns a `messaging/registration-token-not-registered` error when sending a notification, the token is automatically deleted from `device_tokens`.
+- If Firebase reports that a token is unregistered when sending a notification, the token is automatically deleted from `device_tokens`.
 - A user may have multiple tokens (e.g., after app reinstall before old token is cleaned up). All valid tokens are targeted when sending a notification.
 
 ---
@@ -1821,6 +1816,10 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api ./p
 | `ADMIN_SEED_PASSWORD` | Initial admin password (used by `cmd/seed-admin`) | For seed command |
 | `PORT` | Server listen port (default `8080`) | No |
 | `LOG_LEVEL` | Logging level: `debug`, `info`, `warn`, `error` (default `info`) | No |
+
+Local development should use a non-delivering SMTP sink such as Mailpit.
+Staging and production should use a real SMTP provider such as Resend with a
+verified sending domain.
 
 ### 12.3 Database Migrations
 

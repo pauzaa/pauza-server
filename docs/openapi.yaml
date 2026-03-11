@@ -2073,7 +2073,7 @@ paths:
       operationId: registerDevice
       tags: [Social]
       summary: Register a push notification device
-      description: Unknown JSON fields are rejected. Requires a user JWT and is rate limited by user ID using the `general-api` tier.
+      description: Unknown JSON fields are rejected. Requires a user JWT and is rate limited by user ID using the `general-api` tier. Tokens that Firebase later reports as unregistered are automatically pruned from the server.
       security:
         - UserJWT: []
       requestBody:

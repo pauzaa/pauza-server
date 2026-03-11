@@ -165,12 +165,12 @@ func TestLoad_MissingRedisURL(t *testing.T) {
 		}
 	})
 
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("expected no error for missing REDIS_URL, got: %v", err)
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for missing REDIS_URL, got nil")
 	}
-	if cfg.RedisURL != "" {
-		t.Errorf("expected empty RedisURL when REDIS_URL is unset, got: %q", cfg.RedisURL)
+	if !strings.Contains(err.Error(), "REDIS_URL") {
+		t.Errorf("expected error to mention REDIS_URL, got: %v", err)
 	}
 }
 

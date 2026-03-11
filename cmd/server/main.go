@@ -14,6 +14,8 @@ import (
 	"github.com/IsorilovA/pauza-server/internal/config"
 	"github.com/IsorilovA/pauza-server/internal/database"
 	"github.com/IsorilovA/pauza-server/internal/mail"
+	"github.com/IsorilovA/pauza-server/internal/push"
+	"github.com/IsorilovA/pauza-server/internal/repository"
 	"github.com/IsorilovA/pauza-server/internal/server"
 
 	"github.com/redis/go-redis/v9"
@@ -56,25 +58,44 @@ func main() {
 		Logger:           logger,
 	})
 
-	// 5. Create Redis client for shared rate limiting when configured.
-	var redisClient *redis.Client
-	if strings.TrimSpace(cfg.RedisURL) != "" {
-		opts, err := redis.ParseURL(cfg.RedisURL)
+	// 5. Create Redis client for shared rate limiting.
+	opts, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		logger.Error("failed to parse REDIS_URL", "err", err)
+		os.Exit(1)
+	}
+	redisClient := redis.NewClient(opts)
+
+	rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer rcancel()
+	if err := redisClient.Ping(rctx).Err(); err != nil {
+		logger.Error("failed to connect to Redis for shared rate limiting", "err", err)
+		_ = redisClient.Close()
+		os.Exit(1)
+	}
+	logger.Info("redis connected for shared rate limiting")
+
+	pushCtx, pushCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer pushCancel()
+
+	var pushSender push.Sender
+	if strings.TrimSpace(cfg.FirebaseServiceAccountJSON) == "" {
+		logger.Info("FIREBASE_SERVICE_ACCOUNT_JSON is not set; push notifications disabled")
+		pushSender = push.NewNoopSender(logger)
+	} else {
+		pushSender, err = push.NewFirebaseSender(
+			pushCtx,
+			pool,
+			repository.NewSocialRepository(),
+			logger,
+			cfg.FirebaseServiceAccountJSON,
+		)
 		if err != nil {
-			logger.Error("failed to parse REDIS_URL", "err", err)
+			logger.Error("failed to initialize firebase push sender", "err", err)
+			_ = redisClient.Close()
+			pool.Close()
 			os.Exit(1)
 		}
-		redisClient = redis.NewClient(opts)
-
-		rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer rcancel()
-		if err := redisClient.Ping(rctx).Err(); err != nil {
-			logger.Warn("redis ping failed on startup; shared rate limiting will fail open until redis recovers", "err", err)
-		} else {
-			logger.Info("redis connected for shared rate limiting")
-		}
-	} else {
-		logger.Info("REDIS_URL is not set; using in-memory rate limiting")
 	}
 
 	// 6. Log effective trusted-proxy configuration.
@@ -89,7 +110,7 @@ func main() {
 	}
 
 	// 7. Create HTTP server
-	srv, cleanup := server.New(cfg, logger, pool, emailSender, redisClient)
+	srv, cleanup := server.New(cfg, logger, pool, emailSender, pushSender, redisClient)
 
 	// 8. Start background cleanup job for stale auth data.
 	// The process context is cancelled during shutdown so the cleanup

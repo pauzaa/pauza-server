@@ -47,10 +47,9 @@ type Config struct {
 	// Firebase (optional; enables push notifications when configured)
 	FirebaseServiceAccountJSON string `envconfig:"FIREBASE_SERVICE_ACCOUNT_JSON"`
 
-	// Redis-backed shared rate limiting for the server runtime. Optional for
-	// single-instance deployments; when unset the server falls back to the
-	// in-memory limiter.
-	RedisURL string `envconfig:"REDIS_URL"`
+	// Redis-backed shared rate limiting for the server runtime. Required in all
+	// environments so request budgets are enforced consistently.
+	RedisURL string `envconfig:"REDIS_URL" required:"true"`
 
 	// Profile photo storage. The backend writes uploads into a
 	// deployment-provided local filesystem path and returns URLs rooted at the

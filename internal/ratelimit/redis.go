@@ -99,6 +99,10 @@ func NewRedisLimiter(client *redis.Client, rate int, window time.Duration, opts 
 // It executes a Lua script atomically in Redis. If Redis is unreachable the
 // error is returned so the caller can decide the fail-open/closed policy.
 func (rl *RedisLimiter) Allow(ctx context.Context, key string) (Result, error) {
+	if rl.client == nil {
+		return Result{}, fmt.Errorf("redis rate limiter client is nil")
+	}
+
 	fullKey := rl.prefix + key
 	windowMS := rl.window.Milliseconds()
 	if windowMS < 1 {

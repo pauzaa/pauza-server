@@ -41,6 +41,11 @@ type PaginationResult struct {
 	Total int
 }
 
+type DeviceTokenRow struct {
+	FCMToken string
+	Platform string
+}
+
 type EntitlementListRow struct {
 	UserID      string
 	Entitlement string
@@ -92,6 +97,36 @@ func (r *SocialRepository) UnregisterDevice(ctx context.Context, db DBTX, userID
 	_, err := db.Exec(ctx, `DELETE FROM device_tokens WHERE user_id = $1 AND fcm_token = $2`, userID, fcmToken)
 	if err != nil {
 		return fmt.Errorf("unregistering device: %w", err)
+	}
+	return nil
+}
+
+func (r *SocialRepository) ListDeviceTokens(ctx context.Context, db DBTX, userID string) ([]DeviceTokenRow, error) {
+	rows, err := db.Query(ctx, `
+		SELECT fcm_token, platform
+		FROM device_tokens
+		WHERE user_id = $1
+		ORDER BY updated_at DESC, created_at DESC, id
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("listing device tokens: %w", err)
+	}
+	defer rows.Close()
+
+	var out []DeviceTokenRow
+	for rows.Next() {
+		var item DeviceTokenRow
+		if err := rows.Scan(&item.FCMToken, &item.Platform); err != nil {
+			return nil, fmt.Errorf("scanning device token: %w", err)
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (r *SocialRepository) DeleteDeviceToken(ctx context.Context, db DBTX, fcmToken string) error {
+	if _, err := db.Exec(ctx, `DELETE FROM device_tokens WHERE fcm_token = $1`, fcmToken); err != nil {
+		return fmt.Errorf("deleting device token: %w", err)
 	}
 	return nil
 }

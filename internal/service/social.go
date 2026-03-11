@@ -16,12 +16,35 @@ import (
 
 type SocialService struct {
 	pool   repository.Pool
-	repo   *repository.SocialRepository
+	repo   socialRepository
 	push   push.Sender
 	logger *slog.Logger
 }
 
-func NewSocialService(pool repository.Pool, repo *repository.SocialRepository, pushSender push.Sender, logger *slog.Logger) *SocialService {
+type socialRepository interface {
+	EffectivePremiumActive(ctx context.Context, db repository.DBTX, userID string) (bool, error)
+	RegisterDevice(ctx context.Context, db repository.DBTX, userID, fcmToken, platform string) error
+	UnregisterDevice(ctx context.Context, db repository.DBTX, userID, fcmToken string) error
+	FindUserByExactUsername(ctx context.Context, db repository.DBTX, username string) (repository.BasicUserRow, error)
+	GetBasicUserByID(ctx context.Context, db repository.DBTX, userID string) (repository.BasicUserRow, error)
+	CreateFriendRequest(ctx context.Context, db repository.DBTX, requesterID, addresseeID string) (string, error)
+	ListFriends(ctx context.Context, db repository.DBTX, userID string, page, limit int) ([]repository.FriendRow, repository.PaginationResult, error)
+	ListFriendRequests(ctx context.Context, db repository.DBTX, userID, direction string) ([]repository.FriendRequestRow, error)
+	GetFriendship(ctx context.Context, db repository.DBTX, friendshipID string) (string, string, string, error)
+	AcceptFriendRequest(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
+	DeletePendingRequest(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
+	RemoveFriend(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
+	SearchUsers(ctx context.Context, db repository.DBTX, prefix, excludeUserID string, limit int) ([]repository.BasicUserRow, error)
+	ListUsers(ctx context.Context, db repository.DBTX, visibleOnly bool) ([]repository.BasicUserRow, error)
+	LoadRecentDailyAggregates(ctx context.Context, db repository.DBTX, userID string, days int) ([]struct {
+		LocalDay    string
+		EffectiveMS int
+		Qualified   bool
+	}, error)
+	LoadTotalFocusTime(ctx context.Context, db repository.DBTX, userID string) (int64, error)
+}
+
+func NewSocialService(pool repository.Pool, repo socialRepository, pushSender push.Sender, logger *slog.Logger) *SocialService {
 	return &SocialService{pool: pool, repo: repo, push: pushSender, logger: logger}
 }
 
@@ -126,10 +149,7 @@ func (s *SocialService) RequestFriend(ctx context.Context, in FriendRequestInput
 		return FriendMutationOutput{}, ErrInternal
 	}
 
-	_ = s.push.Send(ctx, target.ID, map[string]string{
-		"type":          "friend_request",
-		"friendship_id": id,
-	})
+	s.sendFriendNotification(ctx, target.ID, "friend_request", id, in.UserID, "New friend request", "%s sent you a friend request")
 	return FriendMutationOutput{FriendshipID: id, Status: "pending"}, nil
 }
 
@@ -173,10 +193,7 @@ func (s *SocialService) AcceptFriend(ctx context.Context, userID, friendshipID s
 		s.logger.Error("accepting friendship", "err", err)
 		return FriendMutationOutput{}, ErrInternal
 	}
-	_ = s.push.Send(ctx, requesterID, map[string]string{
-		"type":          "friend_accepted",
-		"friendship_id": friendshipID,
-	})
+	s.sendFriendNotification(ctx, requesterID, "friend_accepted", friendshipID, userID, "Friend request accepted", "%s accepted your friend request")
 	return FriendMutationOutput{FriendshipID: friendshipID, Status: "accepted"}, nil
 }
 
@@ -411,4 +428,43 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (s *SocialService) sendFriendNotification(
+	ctx context.Context,
+	recipientUserID string,
+	notificationType string,
+	friendshipID string,
+	actorUserID string,
+	title string,
+	bodyTemplate string,
+) {
+	actor, err := s.repo.GetBasicUserByID(ctx, s.pool, actorUserID)
+	if err != nil {
+		s.logger.Warn("loading actor for friend notification",
+			"actor_user_id", actorUserID,
+			"type", notificationType,
+			"err", err,
+		)
+		return
+	}
+
+	err = s.push.Send(ctx, recipientUserID, push.Notification{
+		Type:  notificationType,
+		Title: title,
+		Body:  fmt.Sprintf(bodyTemplate, actor.Username),
+		Data: map[string]string{
+			"friendship_id":  friendshipID,
+			"actor_user_id":  actor.ID,
+			"actor_username": actor.Username,
+		},
+	})
+	if err != nil {
+		s.logger.Warn("sending friend notification",
+			"recipient_user_id", recipientUserID,
+			"actor_user_id", actorUserID,
+			"type", notificationType,
+			"err", err,
+		)
+	}
 }

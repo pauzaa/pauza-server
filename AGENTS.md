@@ -14,7 +14,8 @@ pauza-server/
 ├── internal/             # app packages; see internal/AGENTS.md
 ├── migrations/           # embedded SQL migrations
 ├── BACKEND_SPEC.md       # API and schema contract
-├── .env.example          # canonical env template
+├── .env.dev.example      # local Docker Compose environment template
+├── .env.prod.example     # production-style Compose environment template
 ├── docker-compose.yml    # shared Compose base for app-facing services
 ├── docker-compose.dev.yml # local dev overlay (Nginx + Postgres + Redis)
 └── docker-compose.prod.yml # production overlay (single-host Nginx + API + DB + Redis)
@@ -54,7 +55,7 @@ Child docs:
 | `StartCleanup` | func | `internal/database/cleanup.go` | background auth-data retention job |
 
 ## CONVENTIONS
-- Env is loaded with `envconfig`; `.env.example` is the canonical list and `internal/config/config.go` owns validation.
+- Env is loaded with `envconfig`; `.env.dev.example` and `.env.prod.example` are the checked-in environment templates, and `internal/config/config.go` owns validation.
 - Migrations are applied with `cmd/migrate`, not at server startup.
 - Health probes stay outside `/api/v1`: `/live` is process-only, `/ready` pings Postgres.
 - `internal/handler` validates and serializes only; `internal/service` owns business rules; `internal/repository` owns SQL.
@@ -62,7 +63,7 @@ Child docs:
 - Integration tests use `//go:build integration`; DB- and Redis-backed suites require dedicated `TEST_DATABASE_URL` / `TEST_REDIS_URL`.
 
 ## ANTI-PATTERNS
-- Never log or commit secrets (`JWT_SECRET`, DB URLs, SMTP creds, webhook secrets, `.env`).
+- Never log or commit secrets (`JWT_SECRET`, DB URLs, SMTP creds, webhook secrets, `.env.dev`, `.env.prod`).
 - Do not widen `TRUSTED_PROXIES` casually; a broad allowlist lets clients spoof IPs and bypass per-IP limits.
 - Do not use `SELECT *`; keep explicit column lists and parameterized SQL.
 - Do not move business logic into handlers or HTTP concerns into repositories.
@@ -80,8 +81,8 @@ Child docs:
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 
-cp .env.example .env
-set -a; source .env; set +a
+cp .env.dev.example .env.dev
+set -a; source .env.dev; set +a
 go run ./cmd/migrate
 go run ./cmd/server
 go run ./cmd/seed-admin

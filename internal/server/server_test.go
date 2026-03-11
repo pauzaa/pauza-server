@@ -60,7 +60,7 @@ func testLogger() *slog.Logger {
 }
 
 func TestNew_LiveEndpoint(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/live", nil)
@@ -92,7 +92,7 @@ func TestNew_LiveEndpoint(t *testing.T) {
 }
 
 func TestNew_ReadyEndpoint(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
@@ -124,7 +124,7 @@ func TestNew_ReadyEndpoint(t *testing.T) {
 }
 
 func TestNew_NotFoundRoute(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/nonexistent", nil)
@@ -138,7 +138,7 @@ func TestNew_NotFoundRoute(t *testing.T) {
 }
 
 func TestNew_LiveMethodNotAllowed(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodPost, "/live", nil)
@@ -152,7 +152,7 @@ func TestNew_LiveMethodNotAllowed(t *testing.T) {
 }
 
 func TestNew_ReadyMethodNotAllowed(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodPost, "/ready", nil)
@@ -166,7 +166,7 @@ func TestNew_ReadyMethodNotAllowed(t *testing.T) {
 }
 
 func TestNew_RequestIDHeader(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/live", nil)
@@ -181,7 +181,7 @@ func TestNew_RequestIDHeader(t *testing.T) {
 }
 
 func TestNew_RequestIDEchoesClientValue(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/live", nil)
@@ -200,7 +200,7 @@ func TestNew_ServerAddr(t *testing.T) {
 	cfg := testConfig()
 	cfg.Port = 9090
 
-	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	if srv.Addr != ":9090" {
@@ -348,7 +348,7 @@ func TestNew_AuthRoutesExist(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
+			srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil, nil)
 			defer cleanup()
 
 			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
@@ -382,7 +382,7 @@ func TestNew_ProtectedMeRoutesExist(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
+			srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil, nil)
 			defer cleanup()
 
 			var bodyReader *strings.Reader
@@ -413,7 +413,7 @@ func TestNew_ProtectedMeRoutesExist(t *testing.T) {
 }
 
 func TestNew_SyncRouteProtected(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(`{"tables":{}}`))
@@ -432,7 +432,7 @@ func TestNew_SyncRouteProtected(t *testing.T) {
 
 func TestNew_SyncRouteWithValidJWTPassesAuth(t *testing.T) {
 	cfg := testConfig()
-	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
@@ -457,7 +457,7 @@ func TestNew_SyncRateLimitPerUser(t *testing.T) {
 	cfg := testConfig()
 	cfg.SyncRateLimit = 1
 	cfg.SyncRateWindow = time.Minute
-	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	token1, err := auth.IssueAccessToken("user-a", "a@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
@@ -504,7 +504,7 @@ func TestNew_SyncAndGeneralAPILimitsAreIndependent(t *testing.T) {
 	cfg.GeneralAPIRateWindow = time.Minute
 	cfg.SyncRateLimit = 1
 	cfg.SyncRateWindow = time.Minute
-	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	token, err := auth.IssueAccessToken("user-a", "a@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
@@ -557,7 +557,7 @@ func TestNew_SyncAndGeneralAPILimitsAreIndependent(t *testing.T) {
 }
 
 func TestNew_ProtectedRouteUnauthorized(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	// GET /api/v1/me is a protected route. Without an Authorization header,
@@ -579,7 +579,7 @@ func TestNew_ProtectedRouteUnauthorized(t *testing.T) {
 // route wiring and the auth middleware pass-through are working.
 func TestNew_MeRouteWithValidJWT(t *testing.T) {
 	cfg := testConfig()
-	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
@@ -625,7 +625,7 @@ func TestNew_RecovererLogsJSONOnPanic(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	srv, cleanup := New(cfg, logger, nil, nil, nil)
+	srv, cleanup := New(cfg, logger, nil, nil, nil, nil)
 	defer cleanup()
 
 	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
@@ -720,7 +720,7 @@ func TestNew_MiddlewareOrdering_RequestLoggerSees500(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	srv, cleanup := New(cfg, logger, nil, nil, nil)
+	srv, cleanup := New(cfg, logger, nil, nil, nil, nil)
 	defer cleanup()
 
 	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
@@ -805,7 +805,7 @@ func TestNew_MiddlewareOrdering_RequestLoggerSees500(t *testing.T) {
 // middleware chain and that recovery does not suppress response headers.
 func TestNew_MiddlewareOrdering_RequestIDInResponse(t *testing.T) {
 	cfg := testConfig()
-	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
@@ -911,7 +911,7 @@ func TestNew_AuthEndpointsShareRateLimitBudget(t *testing.T) {
 	cfg.GeneralAPIRateLimit = 10000
 	cfg.GeneralAPIRateWindow = time.Minute
 
-	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	startBody := `{"email":"bad"}`
@@ -962,7 +962,7 @@ func TestNew_VerifyOTPUsesSharedAuthIPRateLimit(t *testing.T) {
 	cfg.VerifyOTPRateLimit = 10000
 	cfg.VerifyOTPRateWindow = time.Minute
 
-	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	firstReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verify", strings.NewReader(`{"email":"first@example.com","otp":"abc"}`))
@@ -991,7 +991,7 @@ func TestNew_VerifyOTPUsesSharedAuthIPRateLimit(t *testing.T) {
 // handler (which will fail downstream due to nil deps, returning 500).
 func TestNew_WebhookRevenueCatRouteExists(t *testing.T) {
 	cfg := testConfig()
-	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	t.Run("missing_auth_returns_401", func(t *testing.T) {
@@ -1074,7 +1074,7 @@ func TestNew_WebhookRevenueCatRouteExists(t *testing.T) {
 // reachable (non-404) and public (no JWT required). An empty body should get
 // a 422 validation error, not 401 or 404.
 func TestNew_AdminLoginRouteExists(t *testing.T) {
-	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
+	srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/login",
@@ -1113,7 +1113,7 @@ func TestNew_AdminProtectedRoutesRequireAuth(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil)
+			srv, cleanup := New(testConfig(), testLogger(), nil, nil, nil, nil)
 			defer cleanup()
 
 			var bodyReader io.Reader
@@ -1142,7 +1142,7 @@ func TestNew_AdminProtectedRoutesRequireAuth(t *testing.T) {
 // (no role) is rejected by the AdminJWTAuth middleware on protected admin routes.
 func TestNew_AdminProtectedRoutesRejectUserJWT(t *testing.T) {
 	cfg := testConfig()
-	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	// Issue a regular user JWT — no admin role.
@@ -1192,7 +1192,7 @@ func TestNew_AdminProtectedRoutesRejectUserJWT(t *testing.T) {
 // a 500 (panic → Recoverer), which proves route + auth middleware work.
 func TestNew_AdminProtectedRoutesAcceptAdminJWT(t *testing.T) {
 	cfg := testConfig()
-	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	adminToken, err := auth.IssueAdminToken("admin-001", cfg.JWTSecret, cfg.AdminJWTAccessTokenTTL)
@@ -1255,7 +1255,7 @@ func TestNew_VerifyOTPUsesPerEmailRateLimitAcrossIPs(t *testing.T) {
 	cfg.VerifyOTPRateLimit = 1
 	cfg.VerifyOTPRateWindow = time.Minute
 
-	srv, cleanup := New(cfg, testLogger(), nil, nil, nil)
+	srv, cleanup := New(cfg, testLogger(), nil, nil, nil, nil)
 	defer cleanup()
 
 	firstReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verify", strings.NewReader(`{"email":"shared@example.com","otp":"abc"}`))

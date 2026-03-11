@@ -14,6 +14,7 @@ import (
 
 	"github.com/IsorilovA/pauza-server/internal/apperror"
 	"github.com/IsorilovA/pauza-server/internal/middleware"
+	"github.com/IsorilovA/pauza-server/internal/photostore"
 	"github.com/IsorilovA/pauza-server/internal/service"
 	"github.com/IsorilovA/pauza-server/internal/validate"
 )
@@ -33,12 +34,21 @@ type AuthServicer interface {
 var _ AuthServicer = (*service.AuthService)(nil)
 
 type AuthHandler struct {
-	svc    AuthServicer
-	logger *slog.Logger
+	svc        AuthServicer
+	photoStore photostore.Store
+	logger     *slog.Logger
 }
 
 func NewAuthHandler(svc AuthServicer, logger *slog.Logger) *AuthHandler {
-	return &AuthHandler{svc: svc, logger: logger}
+	return NewAuthHandlerWithPhotoStore(svc, nil, logger)
+}
+
+func NewAuthHandlerWithPhotoStore(svc AuthServicer, photoStore photostore.Store, logger *slog.Logger) *AuthHandler {
+	return &AuthHandler{
+		svc:        svc,
+		photoStore: photoStore,
+		logger:     logger,
+	}
 }
 
 type startRequest struct {
@@ -398,10 +408,43 @@ func (h *AuthHandler) UsernameAvailable(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-func (h *AuthHandler) UploadPhoto(w http.ResponseWriter, r *http.Request, photoURL string) {
+func (h *AuthHandler) UploadPhoto(w http.ResponseWriter, r *http.Request) {
 	user, ok := middleware.UserFromContext(r.Context())
 	if !ok || user.UserID == "" {
 		apperror.Unauthorized(w, "Missing or invalid authentication")
+		return
+	}
+	if h.photoStore == nil {
+		h.logger.Error("photo upload requested without configured photo store")
+		apperror.InternalError(w)
+		return
+	}
+
+	file, header, err := r.FormFile("photo")
+	if err != nil {
+		apperror.ValidationFieldErrors(w, "Invalid request body", apperror.FieldErrors{"photo": "photo is required"})
+		return
+	}
+	defer file.Close()
+
+	if header.Size > 5<<20 {
+		apperror.ValidationFieldErrors(w, "Invalid request body", apperror.FieldErrors{"photo": "photo must not exceed 5 MB"})
+		return
+	}
+	if msg := ValidatePhotoUpload(file); msg != "" {
+		apperror.ValidationFieldErrors(w, "Invalid request body", apperror.FieldErrors{"photo": msg})
+		return
+	}
+
+	ext := ".jpg"
+	if header.Header.Get("Content-Type") == "image/png" {
+		ext = ".png"
+	}
+
+	photoURL, err := h.photoStore.Save(r.Context(), file, ext)
+	if err != nil {
+		h.logger.Error("saving photo upload", "err", err)
+		apperror.InternalError(w)
 		return
 	}
 

@@ -1,18 +1,22 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/IsorilovA/pauza-server/internal/apperror"
+	"github.com/IsorilovA/pauza-server/internal/middleware"
 	"github.com/IsorilovA/pauza-server/internal/service"
 )
 
@@ -142,6 +146,14 @@ func (m *mockAuthService) ConfirmAccountDeletion(ctx context.Context, in service
 		return m.confirmDeleteFn(ctx, in)
 	}
 	return service.MessageOutput{}, nil
+}
+
+type fakePhotoStore struct {
+	saveFn func(ctx context.Context, file multipart.File, extension string) (string, error)
+}
+
+func (f *fakePhotoStore) Save(ctx context.Context, file multipart.File, extension string) (string, error) {
+	return f.saveFn(ctx, file, extension)
 }
 
 func TestStart_Success(t *testing.T) {
@@ -307,4 +319,116 @@ func TestRefresh_Success(t *testing.T) {
 	if body.AccessToken != "rotated-access" || body.RefreshToken != "rotated-refresh" {
 		t.Fatalf("body = %+v", body)
 	}
+}
+
+func TestUploadPhoto_Success(t *testing.T) {
+	t.Parallel()
+
+	var gotUserID string
+	var gotURL string
+	h := NewAuthHandlerWithPhotoStore(&mockAuthService{
+		updateProfilePhotoFn: func(_ context.Context, in service.UpdateProfilePhotoInput) (service.UserProfile, error) {
+			gotUserID = in.UserID
+			gotURL = in.ProfilePictureURL
+			return service.UserProfile{ProfilePictureURL: &in.ProfilePictureURL}, nil
+		},
+	}, &fakePhotoStore{
+		saveFn: func(_ context.Context, _ multipart.File, extension string) (string, error) {
+			if extension != ".png" {
+				t.Fatalf("extension = %q, want %q", extension, ".png")
+			}
+			return "https://api.test/photos/uploaded.png", nil
+		},
+	}, noopLogger())
+
+	req := newUploadPhotoRequest(t, "avatar.png", "image/png", []byte{
+		0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0x00, 0x00, 0x00, 0x0d, 'I', 'H', 'D', 'R',
+	})
+	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"}))
+	rec := httptest.NewRecorder()
+
+	h.UploadPhoto(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if gotUserID != "user-123" {
+		t.Fatalf("user_id = %q, want %q", gotUserID, "user-123")
+	}
+	if gotURL != "https://api.test/photos/uploaded.png" {
+		t.Fatalf("profile_picture_url = %q", gotURL)
+	}
+
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["profile_picture_url"] != gotURL {
+		t.Fatalf("response profile_picture_url = %q, want %q", body["profile_picture_url"], gotURL)
+	}
+}
+
+func TestUploadPhoto_ValidationMissingPhoto(t *testing.T) {
+	t.Parallel()
+
+	h := NewAuthHandlerWithPhotoStore(&mockAuthService{}, &fakePhotoStore{
+		saveFn: func(context.Context, multipart.File, string) (string, error) {
+			t.Fatal("photo store should not be called")
+			return "", nil
+		},
+	}, noopLogger())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/me/photo", strings.NewReader(""))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=test")
+	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"}))
+	rec := httptest.NewRecorder()
+
+	h.UploadPhoto(rec, req)
+
+	assertValidationEnvelope(t, rec, []string{"photo"})
+}
+
+func TestUploadPhoto_InternalWhenStoreIsMissing(t *testing.T) {
+	t.Parallel()
+
+	h := NewAuthHandler(&mockAuthService{}, noopLogger())
+	req := newUploadPhotoRequest(t, "avatar.jpg", "image/jpeg", []byte{
+		0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08, 0x07, 0x07,
+	})
+	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"}))
+	rec := httptest.NewRecorder()
+
+	h.UploadPhoto(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
+func newUploadPhotoRequest(t *testing.T, filename, contentType string, payload []byte) *http.Request {
+	t.Helper()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreatePart(uploadPhotoHeader(filename, contentType))
+	if err != nil {
+		t.Fatalf("create multipart part: %v", err)
+	}
+	if _, err := part.Write(payload); err != nil {
+		t.Fatalf("write multipart payload: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/me/photo", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	return req
+}
+
+func uploadPhotoHeader(filename, contentType string) textproto.MIMEHeader {
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", `form-data; name="photo"; filename="`+filename+`"`)
+	header.Set("Content-Type", contentType)
+	return header
 }
