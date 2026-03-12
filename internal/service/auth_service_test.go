@@ -144,6 +144,11 @@ func TestStart_SendFailure_CleansUpOTP(t *testing.T) {
 	if !errors.Is(err, ErrInternal) {
 		t.Fatalf("Start() error = %v, want ErrInternal", err)
 	}
+	// cleanupFailedOTP runs asynchronously; give the goroutine time to complete.
+	deadline := time.Now().Add(2 * time.Second)
+	for !deletedOTP.Load() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if !deletedOTP.Load() {
 		t.Fatal("expected OTP cleanup after email send failure")
 	}
@@ -257,8 +262,9 @@ func TestVerifyOTP_RateLimited(t *testing.T) {
 	if !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("VerifyOTP() error = %v, want ErrRateLimited", err)
 	}
-	if retryAfter, ok := RetryAfter(err); !ok || retryAfter <= 0 {
-		t.Fatalf("RetryAfter(err) = (%v, %v), want positive duration", retryAfter, ok)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.RetryAfter <= 0 {
+		t.Fatalf("RetryAfter = %v, want positive duration", apiErr)
 	}
 }
 

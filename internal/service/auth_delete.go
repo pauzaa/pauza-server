@@ -18,26 +18,6 @@ func (s *AuthService) RequestAccountDeletion(ctx context.Context, in DeleteAccou
 		return MessageOutput{}, ErrInternal
 	}
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		s.logger.Error("beginning delete-request transaction", "err", err)
-		return MessageOutput{}, ErrInternal
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-
-	if _, err := s.users.GetUserByIDForUpdate(ctx, tx, in.UserID); err != nil {
-		if errors.Is(err, repository.ErrNotFound) {
-			return MessageOutput{}, UnauthorizedError("Missing or invalid authentication")
-		}
-		s.logger.Error("locking user for deletion request", "err", err)
-		return MessageOutput{}, ErrInternal
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		s.logger.Error("committing deletion-request user lock", "err", err)
-		return MessageOutput{}, ErrInternal
-	}
-
 	userID := in.UserID
 	if _, err := s.createChallenge(
 		ctx,
@@ -72,7 +52,7 @@ func (s *AuthService) ConfirmAccountDeletion(ctx context.Context, in DeleteAccou
 	}
 
 	userID := in.UserID
-	challenge, err := s.verifyChallenge(
+	challenge, needsCommit, err := s.verifyChallenge(
 		ctx,
 		tx,
 		user.Email,
@@ -84,6 +64,11 @@ func (s *AuthService) ConfirmAccountDeletion(ctx context.Context, in DeleteAccou
 		"recording failed deletion otp attempt",
 	)
 	if err != nil {
+		if needsCommit {
+			if commitErr := tx.Commit(ctx); commitErr != nil {
+				s.logger.Error("committing failed deletion otp attempt", "err", commitErr)
+			}
+		}
 		return MessageOutput{}, err
 	}
 

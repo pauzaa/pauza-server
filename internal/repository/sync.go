@@ -3,8 +3,8 @@ package repository
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -47,34 +47,41 @@ func (r *PgxSyncRepository) SyncModes(ctx context.Context, db DBTX, userID strin
 	written := map[string]struct{}{}
 	deleted := map[string]struct{}{}
 
-	for _, rec := range in.Upserts {
-		var serverUpdatedAt int64
-		err := db.QueryRow(ctx, "SELECT updated_at FROM modes WHERE user_id = $1 AND id = $2", userID, rec.ID).Scan(&serverUpdatedAt)
-		if errors.Is(err, pgx.ErrNoRows) {
-			_, err = db.Exec(ctx, `INSERT INTO modes (user_id, id, title, text_on_screen, description, allowed_pauses_count, minimum_duration_ms, ending_pausing_scenario, icon_token, created_at, updated_at)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-				userID, rec.ID, rec.Title, rec.TextOnScreen, rec.Description, rec.AllowedPausesCount, rec.MinimumDurationMS, rec.EndingPausingScenario, rec.IconToken, rec.CreatedAt, rec.UpdatedAt,
-			)
-			if err != nil {
-				return syncmodel.TableChanges[syncmodel.Mode, string]{}, fmt.Errorf("inserting mode: %w", err)
+	if len(in.Upserts) > 0 {
+		var sb strings.Builder
+		args := []any{userID}
+		sb.WriteString(`INSERT INTO modes (user_id, id, title, text_on_screen, description, allowed_pauses_count, minimum_duration_ms, ending_pausing_scenario, icon_token, created_at, updated_at) VALUES `)
+		for i, rec := range in.Upserts {
+			if i > 0 {
+				sb.WriteString(", ")
 			}
-			written[rec.ID] = struct{}{}
-			continue
+			base := len(args) + 1
+			fmt.Fprintf(&sb, "($1, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+				base, base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9)
+			args = append(args, rec.ID, rec.Title, rec.TextOnScreen, rec.Description, rec.AllowedPausesCount, rec.MinimumDurationMS, rec.EndingPausingScenario, rec.IconToken, rec.CreatedAt, rec.UpdatedAt)
 		}
+		sb.WriteString(` ON CONFLICT (user_id, id) DO UPDATE SET
+			title = EXCLUDED.title, text_on_screen = EXCLUDED.text_on_screen, description = EXCLUDED.description,
+			allowed_pauses_count = EXCLUDED.allowed_pauses_count, minimum_duration_ms = EXCLUDED.minimum_duration_ms,
+			ending_pausing_scenario = EXCLUDED.ending_pausing_scenario, icon_token = EXCLUDED.icon_token,
+			created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at
+			WHERE EXCLUDED.updated_at > modes.updated_at
+			RETURNING id`)
+		rows, err := db.Query(ctx, sb.String(), args...)
 		if err != nil {
-			return syncmodel.TableChanges[syncmodel.Mode, string]{}, fmt.Errorf("looking up mode: %w", err)
+			return syncmodel.TableChanges[syncmodel.Mode, string]{}, fmt.Errorf("upserting modes: %w", err)
 		}
-		if rec.UpdatedAt <= serverUpdatedAt {
-			continue
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return syncmodel.TableChanges[syncmodel.Mode, string]{}, fmt.Errorf("scanning upserted mode id: %w", err)
+			}
+			written[id] = struct{}{}
 		}
-		_, err = db.Exec(ctx, `UPDATE modes SET title = $3, text_on_screen = $4, description = $5, allowed_pauses_count = $6, minimum_duration_ms = $7, ending_pausing_scenario = $8, icon_token = $9, created_at = $10, updated_at = $11
-			WHERE user_id = $1 AND id = $2`,
-			userID, rec.ID, rec.Title, rec.TextOnScreen, rec.Description, rec.AllowedPausesCount, rec.MinimumDurationMS, rec.EndingPausingScenario, rec.IconToken, rec.CreatedAt, rec.UpdatedAt,
-		)
-		if err != nil {
-			return syncmodel.TableChanges[syncmodel.Mode, string]{}, fmt.Errorf("updating mode: %w", err)
+		if err := rows.Err(); err != nil {
+			return syncmodel.TableChanges[syncmodel.Mode, string]{}, fmt.Errorf("iterating upserted mode ids: %w", err)
 		}
-		written[rec.ID] = struct{}{}
 	}
 
 	for _, id := range in.Deletions {
@@ -145,34 +152,44 @@ func (r *PgxSyncRepository) SyncModeBlockedApps(ctx context.Context, db DBTX, us
 	written := map[string]struct{}{}
 	deleted := map[string]struct{}{}
 
-	for _, rec := range in.Upserts {
-		key, err := encodeModeBlockedAppKey(syncmodel.ModeBlockedAppKey{ModeID: rec.ModeID, Platform: rec.Platform, AppIdentifier: rec.AppIdentifier})
-		if err != nil {
-			return syncmodel.TableChanges[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]{}, err
+	if len(in.Upserts) > 0 {
+		var sb strings.Builder
+		args := []any{userID}
+		sb.WriteString(`INSERT INTO mode_blocked_apps (user_id, mode_id, platform, app_identifier, created_at, updated_at) VALUES `)
+		for i, rec := range in.Upserts {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			base := len(args) + 1
+			fmt.Fprintf(&sb, "($1, $%d, $%d, $%d, $%d, $%d)",
+				base, base+1, base+2, base+3, base+4)
+			args = append(args, rec.ModeID, rec.Platform, rec.AppIdentifier, rec.CreatedAt, rec.UpdatedAt)
 		}
-		var serverUpdatedAt int64
-		err = db.QueryRow(ctx, "SELECT updated_at FROM mode_blocked_apps WHERE user_id = $1 AND mode_id = $2 AND platform = $3 AND app_identifier = $4", userID, rec.ModeID, rec.Platform, rec.AppIdentifier).Scan(&serverUpdatedAt)
-		if errors.Is(err, pgx.ErrNoRows) {
-			_, err = db.Exec(ctx, `INSERT INTO mode_blocked_apps (user_id, mode_id, platform, app_identifier, created_at, updated_at)
-				VALUES ($1, $2, $3, $4, $5, $6)`, userID, rec.ModeID, rec.Platform, rec.AppIdentifier, rec.CreatedAt, rec.UpdatedAt)
+		sb.WriteString(` ON CONFLICT (user_id, mode_id, platform, app_identifier) DO UPDATE SET
+			created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at
+			WHERE EXCLUDED.updated_at > mode_blocked_apps.updated_at
+			RETURNING mode_id, platform, app_identifier`)
+		rows, err := db.Query(ctx, sb.String(), args...)
+		if err != nil {
+			return syncmodel.TableChanges[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]{}, fmt.Errorf("upserting mode_blocked_apps: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var modeID string
+			var platform syncmodel.DevicePlatform
+			var appIdentifier string
+			if err := rows.Scan(&modeID, &platform, &appIdentifier); err != nil {
+				return syncmodel.TableChanges[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]{}, fmt.Errorf("scanning upserted mode_blocked_app key: %w", err)
+			}
+			key, err := encodeModeBlockedAppKey(syncmodel.ModeBlockedAppKey{ModeID: modeID, Platform: platform, AppIdentifier: appIdentifier})
 			if err != nil {
-				return syncmodel.TableChanges[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]{}, fmt.Errorf("inserting mode_blocked_app: %w", err)
+				return syncmodel.TableChanges[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]{}, err
 			}
 			written[key] = struct{}{}
-			continue
 		}
-		if err != nil {
-			return syncmodel.TableChanges[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]{}, fmt.Errorf("looking up mode_blocked_app: %w", err)
+		if err := rows.Err(); err != nil {
+			return syncmodel.TableChanges[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]{}, fmt.Errorf("iterating upserted mode_blocked_app keys: %w", err)
 		}
-		if rec.UpdatedAt <= serverUpdatedAt {
-			continue
-		}
-		_, err = db.Exec(ctx, `UPDATE mode_blocked_apps SET created_at = $5, updated_at = $6
-			WHERE user_id = $1 AND mode_id = $2 AND platform = $3 AND app_identifier = $4`, userID, rec.ModeID, rec.Platform, rec.AppIdentifier, rec.CreatedAt, rec.UpdatedAt)
-		if err != nil {
-			return syncmodel.TableChanges[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]{}, fmt.Errorf("updating mode_blocked_app: %w", err)
-		}
-		written[key] = struct{}{}
 	}
 
 	for _, keyObj := range in.Deletions {
@@ -244,30 +261,40 @@ func (r *PgxSyncRepository) SyncSchedules(ctx context.Context, db DBTX, userID s
 	written := map[string]struct{}{}
 	deleted := map[string]struct{}{}
 
-	for _, rec := range in.Upserts {
-		var serverUpdatedAt int64
-		err := db.QueryRow(ctx, "SELECT updated_at FROM schedules WHERE user_id = $1 AND id = $2", userID, rec.ID).Scan(&serverUpdatedAt)
-		if errors.Is(err, pgx.ErrNoRows) {
-			_, err = db.Exec(ctx, `INSERT INTO schedules (user_id, id, mode_id, days, start_minute, end_minute, enabled, created_at, updated_at)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, userID, rec.ID, rec.ModeID, rec.Days, rec.StartMinute, rec.EndMinute, rec.Enabled, rec.CreatedAt, rec.UpdatedAt)
-			if err != nil {
-				return syncmodel.TableChanges[syncmodel.Schedule, string]{}, fmt.Errorf("inserting schedule: %w", err)
+	if len(in.Upserts) > 0 {
+		var sb strings.Builder
+		args := []any{userID}
+		sb.WriteString(`INSERT INTO schedules (user_id, id, mode_id, days, start_minute, end_minute, enabled, created_at, updated_at) VALUES `)
+		for i, rec := range in.Upserts {
+			if i > 0 {
+				sb.WriteString(", ")
 			}
-			written[rec.ID] = struct{}{}
-			continue
+			base := len(args) + 1
+			fmt.Fprintf(&sb, "($1, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+				base, base+1, base+2, base+3, base+4, base+5, base+6, base+7)
+			args = append(args, rec.ID, rec.ModeID, rec.Days, rec.StartMinute, rec.EndMinute, rec.Enabled, rec.CreatedAt, rec.UpdatedAt)
 		}
+		sb.WriteString(` ON CONFLICT (user_id, id) DO UPDATE SET
+			mode_id = EXCLUDED.mode_id, days = EXCLUDED.days, start_minute = EXCLUDED.start_minute,
+			end_minute = EXCLUDED.end_minute, enabled = EXCLUDED.enabled,
+			created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at
+			WHERE EXCLUDED.updated_at > schedules.updated_at
+			RETURNING id`)
+		rows, err := db.Query(ctx, sb.String(), args...)
 		if err != nil {
-			return syncmodel.TableChanges[syncmodel.Schedule, string]{}, fmt.Errorf("looking up schedule: %w", err)
+			return syncmodel.TableChanges[syncmodel.Schedule, string]{}, fmt.Errorf("upserting schedules: %w", err)
 		}
-		if rec.UpdatedAt <= serverUpdatedAt {
-			continue
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return syncmodel.TableChanges[syncmodel.Schedule, string]{}, fmt.Errorf("scanning upserted schedule id: %w", err)
+			}
+			written[id] = struct{}{}
 		}
-		_, err = db.Exec(ctx, `UPDATE schedules SET mode_id = $3, days = $4, start_minute = $5, end_minute = $6, enabled = $7, created_at = $8, updated_at = $9
-			WHERE user_id = $1 AND id = $2`, userID, rec.ID, rec.ModeID, rec.Days, rec.StartMinute, rec.EndMinute, rec.Enabled, rec.CreatedAt, rec.UpdatedAt)
-		if err != nil {
-			return syncmodel.TableChanges[syncmodel.Schedule, string]{}, fmt.Errorf("updating schedule: %w", err)
+		if err := rows.Err(); err != nil {
+			return syncmodel.TableChanges[syncmodel.Schedule, string]{}, fmt.Errorf("iterating upserted schedule ids: %w", err)
 		}
-		written[rec.ID] = struct{}{}
 	}
 
 	for _, id := range in.Deletions {
@@ -327,33 +354,42 @@ func (r *PgxSyncRepository) SyncRestrictionSessions(ctx context.Context, db DBTX
 	written := map[string]struct{}{}
 	deleted := map[string]struct{}{}
 
-	for _, rec := range in.Upserts {
-		var serverUpdatedAt int64
-		err := db.QueryRow(ctx, "SELECT updated_at FROM restriction_sessions WHERE user_id = $1 AND session_id = $2", userID, rec.SessionID).Scan(&serverUpdatedAt)
-		if errors.Is(err, pgx.ErrNoRows) {
-			_, err = db.Exec(ctx, `INSERT INTO restriction_sessions (user_id, session_id, mode_id, source, started_at, ended_at, pause_count, total_paused_ms, last_paused_at, integrity_status, last_anomaly_reason, last_event_id, created_at, updated_at)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-				userID, rec.SessionID, rec.ModeID, rec.Source, rec.StartedAt, rec.EndedAt, rec.PauseCount, rec.TotalPausedMS, rec.LastPausedAt, rec.IntegrityStatus, rec.LastAnomalyReason, rec.LastEventID, rec.CreatedAt, rec.UpdatedAt)
-			if err != nil {
-				return syncmodel.TableChanges[syncmodel.RestrictionSession, string]{}, fmt.Errorf("inserting restriction_session: %w", err)
+	if len(in.Upserts) > 0 {
+		var sb strings.Builder
+		args := []any{userID}
+		sb.WriteString(`INSERT INTO restriction_sessions (user_id, session_id, mode_id, source, started_at, ended_at, pause_count, total_paused_ms, last_paused_at, integrity_status, last_anomaly_reason, last_event_id, created_at, updated_at) VALUES `)
+		for i, rec := range in.Upserts {
+			if i > 0 {
+				sb.WriteString(", ")
 			}
-			written[rec.SessionID] = struct{}{}
-			continue
+			base := len(args) + 1
+			fmt.Fprintf(&sb, "($1, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+				base, base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10, base+11, base+12)
+			args = append(args, rec.SessionID, rec.ModeID, rec.Source, rec.StartedAt, rec.EndedAt, rec.PauseCount, rec.TotalPausedMS, rec.LastPausedAt, rec.IntegrityStatus, rec.LastAnomalyReason, rec.LastEventID, rec.CreatedAt, rec.UpdatedAt)
 		}
+		sb.WriteString(` ON CONFLICT (user_id, session_id) DO UPDATE SET
+			mode_id = EXCLUDED.mode_id, source = EXCLUDED.source, started_at = EXCLUDED.started_at,
+			ended_at = EXCLUDED.ended_at, pause_count = EXCLUDED.pause_count, total_paused_ms = EXCLUDED.total_paused_ms,
+			last_paused_at = EXCLUDED.last_paused_at, integrity_status = EXCLUDED.integrity_status,
+			last_anomaly_reason = EXCLUDED.last_anomaly_reason, last_event_id = EXCLUDED.last_event_id,
+			created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at
+			WHERE EXCLUDED.updated_at > restriction_sessions.updated_at
+			RETURNING session_id`)
+		rows, err := db.Query(ctx, sb.String(), args...)
 		if err != nil {
-			return syncmodel.TableChanges[syncmodel.RestrictionSession, string]{}, fmt.Errorf("looking up restriction_session: %w", err)
+			return syncmodel.TableChanges[syncmodel.RestrictionSession, string]{}, fmt.Errorf("upserting restriction_sessions: %w", err)
 		}
-		if rec.UpdatedAt <= serverUpdatedAt {
-			continue
+		defer rows.Close()
+		for rows.Next() {
+			var sessionID string
+			if err := rows.Scan(&sessionID); err != nil {
+				return syncmodel.TableChanges[syncmodel.RestrictionSession, string]{}, fmt.Errorf("scanning upserted restriction_session id: %w", err)
+			}
+			written[sessionID] = struct{}{}
 		}
-		_, err = db.Exec(ctx, `UPDATE restriction_sessions
-			SET mode_id = $3, source = $4, started_at = $5, ended_at = $6, pause_count = $7, total_paused_ms = $8, last_paused_at = $9, integrity_status = $10, last_anomaly_reason = $11, last_event_id = $12, created_at = $13, updated_at = $14
-			WHERE user_id = $1 AND session_id = $2`,
-			userID, rec.SessionID, rec.ModeID, rec.Source, rec.StartedAt, rec.EndedAt, rec.PauseCount, rec.TotalPausedMS, rec.LastPausedAt, rec.IntegrityStatus, rec.LastAnomalyReason, rec.LastEventID, rec.CreatedAt, rec.UpdatedAt)
-		if err != nil {
-			return syncmodel.TableChanges[syncmodel.RestrictionSession, string]{}, fmt.Errorf("updating restriction_session: %w", err)
+		if err := rows.Err(); err != nil {
+			return syncmodel.TableChanges[syncmodel.RestrictionSession, string]{}, fmt.Errorf("iterating upserted restriction_session ids: %w", err)
 		}
-		written[rec.SessionID] = struct{}{}
 	}
 
 	for _, sessionID := range in.Deletions {
@@ -424,31 +460,40 @@ func (r *PgxSyncRepository) SyncRestrictionLifecycleEvents(ctx context.Context, 
 	written := map[string]struct{}{}
 	deleted := map[string]struct{}{}
 
-	for _, rec := range in.Upserts {
-		var serverCreatedAt int64
-		err := db.QueryRow(ctx, "SELECT created_at FROM restriction_lifecycle_events WHERE user_id = $1 AND id = $2", userID, rec.ID).Scan(&serverCreatedAt)
-		if errors.Is(err, pgx.ErrNoRows) {
-			_, err = db.Exec(ctx, `INSERT INTO restriction_lifecycle_events (user_id, id, session_id, mode_id, action, source, reason, occurred_at, created_at)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, userID, rec.ID, rec.SessionID, rec.ModeID, rec.Action, rec.Source, rec.Reason, rec.OccurredAt, rec.CreatedAt)
-			if err != nil {
-				return syncmodel.TableChanges[syncmodel.RestrictionLifecycleEvent, string]{}, fmt.Errorf("inserting restriction_lifecycle_event: %w", err)
+	if len(in.Upserts) > 0 {
+		var sb strings.Builder
+		args := []any{userID}
+		sb.WriteString(`INSERT INTO restriction_lifecycle_events (user_id, id, session_id, mode_id, action, source, reason, occurred_at, created_at) VALUES `)
+		for i, rec := range in.Upserts {
+			if i > 0 {
+				sb.WriteString(", ")
 			}
-			written[rec.ID] = struct{}{}
-			continue
+			base := len(args) + 1
+			fmt.Fprintf(&sb, "($1, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+				base, base+1, base+2, base+3, base+4, base+5, base+6, base+7)
+			args = append(args, rec.ID, rec.SessionID, rec.ModeID, rec.Action, rec.Source, rec.Reason, rec.OccurredAt, rec.CreatedAt)
 		}
+		sb.WriteString(` ON CONFLICT (user_id, id) DO UPDATE SET
+			session_id = EXCLUDED.session_id, mode_id = EXCLUDED.mode_id, action = EXCLUDED.action,
+			source = EXCLUDED.source, reason = EXCLUDED.reason, occurred_at = EXCLUDED.occurred_at,
+			created_at = EXCLUDED.created_at
+			WHERE EXCLUDED.created_at > restriction_lifecycle_events.created_at
+			RETURNING id`)
+		rows, err := db.Query(ctx, sb.String(), args...)
 		if err != nil {
-			return syncmodel.TableChanges[syncmodel.RestrictionLifecycleEvent, string]{}, fmt.Errorf("looking up restriction_lifecycle_event: %w", err)
+			return syncmodel.TableChanges[syncmodel.RestrictionLifecycleEvent, string]{}, fmt.Errorf("upserting restriction_lifecycle_events: %w", err)
 		}
-		if rec.CreatedAt <= serverCreatedAt {
-			continue
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return syncmodel.TableChanges[syncmodel.RestrictionLifecycleEvent, string]{}, fmt.Errorf("scanning upserted restriction_lifecycle_event id: %w", err)
+			}
+			written[id] = struct{}{}
 		}
-		_, err = db.Exec(ctx, `UPDATE restriction_lifecycle_events
-			SET session_id = $3, mode_id = $4, action = $5, source = $6, reason = $7, occurred_at = $8, created_at = $9
-			WHERE user_id = $1 AND id = $2`, userID, rec.ID, rec.SessionID, rec.ModeID, rec.Action, rec.Source, rec.Reason, rec.OccurredAt, rec.CreatedAt)
-		if err != nil {
-			return syncmodel.TableChanges[syncmodel.RestrictionLifecycleEvent, string]{}, fmt.Errorf("updating restriction_lifecycle_event: %w", err)
+		if err := rows.Err(); err != nil {
+			return syncmodel.TableChanges[syncmodel.RestrictionLifecycleEvent, string]{}, fmt.Errorf("iterating upserted restriction_lifecycle_event ids: %w", err)
 		}
-		written[rec.ID] = struct{}{}
 	}
 
 	for _, id := range in.Deletions {
@@ -508,30 +553,39 @@ func (r *PgxSyncRepository) SyncNFCLinkedChips(ctx context.Context, db DBTX, use
 	written := map[string]struct{}{}
 	deleted := map[string]struct{}{}
 
-	for _, rec := range in.Upserts {
-		var serverUpdatedAt int64
-		err := db.QueryRow(ctx, "SELECT updated_at FROM nfc_linked_chips WHERE user_id = $1 AND id = $2", userID, rec.ID).Scan(&serverUpdatedAt)
-		if errors.Is(err, pgx.ErrNoRows) {
-			_, err = db.Exec(ctx, `INSERT INTO nfc_linked_chips (user_id, id, chip_identifier, name, created_at, updated_at)
-				VALUES ($1, $2, $3, $4, $5, $6)`, userID, rec.ID, rec.ChipIdentifier, rec.Name, rec.CreatedAt, rec.UpdatedAt)
-			if err != nil {
-				return syncmodel.TableChanges[syncmodel.NFCLinkedChip, string]{}, fmt.Errorf("inserting nfc_linked_chip: %w", err)
+	if len(in.Upserts) > 0 {
+		var sb strings.Builder
+		args := []any{userID}
+		sb.WriteString(`INSERT INTO nfc_linked_chips (user_id, id, chip_identifier, name, created_at, updated_at) VALUES `)
+		for i, rec := range in.Upserts {
+			if i > 0 {
+				sb.WriteString(", ")
 			}
-			written[rec.ID] = struct{}{}
-			continue
+			base := len(args) + 1
+			fmt.Fprintf(&sb, "($1, $%d, $%d, $%d, $%d, $%d)",
+				base, base+1, base+2, base+3, base+4)
+			args = append(args, rec.ID, rec.ChipIdentifier, rec.Name, rec.CreatedAt, rec.UpdatedAt)
 		}
+		sb.WriteString(` ON CONFLICT (user_id, id) DO UPDATE SET
+			chip_identifier = EXCLUDED.chip_identifier, name = EXCLUDED.name,
+			created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at
+			WHERE EXCLUDED.updated_at > nfc_linked_chips.updated_at
+			RETURNING id`)
+		rows, err := db.Query(ctx, sb.String(), args...)
 		if err != nil {
-			return syncmodel.TableChanges[syncmodel.NFCLinkedChip, string]{}, fmt.Errorf("looking up nfc_linked_chip: %w", err)
+			return syncmodel.TableChanges[syncmodel.NFCLinkedChip, string]{}, fmt.Errorf("upserting nfc_linked_chips: %w", err)
 		}
-		if rec.UpdatedAt <= serverUpdatedAt {
-			continue
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return syncmodel.TableChanges[syncmodel.NFCLinkedChip, string]{}, fmt.Errorf("scanning upserted nfc_linked_chip id: %w", err)
+			}
+			written[id] = struct{}{}
 		}
-		_, err = db.Exec(ctx, `UPDATE nfc_linked_chips SET chip_identifier = $3, name = $4, created_at = $5, updated_at = $6
-			WHERE user_id = $1 AND id = $2`, userID, rec.ID, rec.ChipIdentifier, rec.Name, rec.CreatedAt, rec.UpdatedAt)
-		if err != nil {
-			return syncmodel.TableChanges[syncmodel.NFCLinkedChip, string]{}, fmt.Errorf("updating nfc_linked_chip: %w", err)
+		if err := rows.Err(); err != nil {
+			return syncmodel.TableChanges[syncmodel.NFCLinkedChip, string]{}, fmt.Errorf("iterating upserted nfc_linked_chip ids: %w", err)
 		}
-		written[rec.ID] = struct{}{}
 	}
 
 	for _, id := range in.Deletions {
@@ -591,30 +645,39 @@ func (r *PgxSyncRepository) SyncQRLinkedCodes(ctx context.Context, db DBTX, user
 	written := map[string]struct{}{}
 	deleted := map[string]struct{}{}
 
-	for _, rec := range in.Upserts {
-		var serverUpdatedAt int64
-		err := db.QueryRow(ctx, "SELECT updated_at FROM qr_linked_codes WHERE user_id = $1 AND id = $2", userID, rec.ID).Scan(&serverUpdatedAt)
-		if errors.Is(err, pgx.ErrNoRows) {
-			_, err = db.Exec(ctx, `INSERT INTO qr_linked_codes (user_id, id, scan_value, name, created_at, updated_at)
-				VALUES ($1, $2, $3, $4, $5, $6)`, userID, rec.ID, rec.ScanValue, rec.Name, rec.CreatedAt, rec.UpdatedAt)
-			if err != nil {
-				return syncmodel.TableChanges[syncmodel.QRLinkedCode, string]{}, fmt.Errorf("inserting qr_linked_code: %w", err)
+	if len(in.Upserts) > 0 {
+		var sb strings.Builder
+		args := []any{userID}
+		sb.WriteString(`INSERT INTO qr_linked_codes (user_id, id, scan_value, name, created_at, updated_at) VALUES `)
+		for i, rec := range in.Upserts {
+			if i > 0 {
+				sb.WriteString(", ")
 			}
-			written[rec.ID] = struct{}{}
-			continue
+			base := len(args) + 1
+			fmt.Fprintf(&sb, "($1, $%d, $%d, $%d, $%d, $%d)",
+				base, base+1, base+2, base+3, base+4)
+			args = append(args, rec.ID, rec.ScanValue, rec.Name, rec.CreatedAt, rec.UpdatedAt)
 		}
+		sb.WriteString(` ON CONFLICT (user_id, id) DO UPDATE SET
+			scan_value = EXCLUDED.scan_value, name = EXCLUDED.name,
+			created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at
+			WHERE EXCLUDED.updated_at > qr_linked_codes.updated_at
+			RETURNING id`)
+		rows, err := db.Query(ctx, sb.String(), args...)
 		if err != nil {
-			return syncmodel.TableChanges[syncmodel.QRLinkedCode, string]{}, fmt.Errorf("looking up qr_linked_code: %w", err)
+			return syncmodel.TableChanges[syncmodel.QRLinkedCode, string]{}, fmt.Errorf("upserting qr_linked_codes: %w", err)
 		}
-		if rec.UpdatedAt <= serverUpdatedAt {
-			continue
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return syncmodel.TableChanges[syncmodel.QRLinkedCode, string]{}, fmt.Errorf("scanning upserted qr_linked_code id: %w", err)
+			}
+			written[id] = struct{}{}
 		}
-		_, err = db.Exec(ctx, `UPDATE qr_linked_codes SET scan_value = $3, name = $4, created_at = $5, updated_at = $6
-			WHERE user_id = $1 AND id = $2`, userID, rec.ID, rec.ScanValue, rec.Name, rec.CreatedAt, rec.UpdatedAt)
-		if err != nil {
-			return syncmodel.TableChanges[syncmodel.QRLinkedCode, string]{}, fmt.Errorf("updating qr_linked_code: %w", err)
+		if err := rows.Err(); err != nil {
+			return syncmodel.TableChanges[syncmodel.QRLinkedCode, string]{}, fmt.Errorf("iterating upserted qr_linked_code ids: %w", err)
 		}
-		written[rec.ID] = struct{}{}
 	}
 
 	for _, id := range in.Deletions {
@@ -674,34 +737,42 @@ func (r *PgxSyncRepository) SyncStreakSessionDailyRollups(ctx context.Context, d
 	written := map[string]struct{}{}
 	deleted := map[string]struct{}{}
 
-	for _, rec := range in.Upserts {
-		key, err := encodeStreakSessionDailyRollupKey(syncmodel.StreakSessionDailyRollupKey{SessionID: rec.SessionID, LocalDay: rec.LocalDay})
-		if err != nil {
-			return syncmodel.TableChanges[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]{}, err
+	if len(in.Upserts) > 0 {
+		var sb strings.Builder
+		args := []any{userID}
+		sb.WriteString(`INSERT INTO streak_session_daily_rollups (user_id, session_id, local_day, effective_ms, updated_at) VALUES `)
+		for i, rec := range in.Upserts {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			base := len(args) + 1
+			fmt.Fprintf(&sb, "($1, $%d, $%d, $%d, $%d)",
+				base, base+1, base+2, base+3)
+			args = append(args, rec.SessionID, rec.LocalDay, rec.EffectiveMS, rec.UpdatedAt)
 		}
-		var serverUpdatedAt int64
-		err = db.QueryRow(ctx, "SELECT updated_at FROM streak_session_daily_rollups WHERE user_id = $1 AND session_id = $2 AND local_day = $3", userID, rec.SessionID, rec.LocalDay).Scan(&serverUpdatedAt)
-		if errors.Is(err, pgx.ErrNoRows) {
-			_, err = db.Exec(ctx, `INSERT INTO streak_session_daily_rollups (user_id, session_id, local_day, effective_ms, updated_at)
-				VALUES ($1, $2, $3, $4, $5)`, userID, rec.SessionID, rec.LocalDay, rec.EffectiveMS, rec.UpdatedAt)
+		sb.WriteString(` ON CONFLICT (user_id, session_id, local_day) DO UPDATE SET
+			effective_ms = EXCLUDED.effective_ms, updated_at = EXCLUDED.updated_at
+			WHERE EXCLUDED.updated_at > streak_session_daily_rollups.updated_at
+			RETURNING session_id, local_day`)
+		rows, err := db.Query(ctx, sb.String(), args...)
+		if err != nil {
+			return syncmodel.TableChanges[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]{}, fmt.Errorf("upserting streak_session_daily_rollups: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var sessionID, localDay string
+			if err := rows.Scan(&sessionID, &localDay); err != nil {
+				return syncmodel.TableChanges[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]{}, fmt.Errorf("scanning upserted streak_session_daily_rollup key: %w", err)
+			}
+			key, err := encodeStreakSessionDailyRollupKey(syncmodel.StreakSessionDailyRollupKey{SessionID: sessionID, LocalDay: localDay})
 			if err != nil {
-				return syncmodel.TableChanges[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]{}, fmt.Errorf("inserting streak_session_daily_rollup: %w", err)
+				return syncmodel.TableChanges[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]{}, err
 			}
 			written[key] = struct{}{}
-			continue
 		}
-		if err != nil {
-			return syncmodel.TableChanges[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]{}, fmt.Errorf("looking up streak_session_daily_rollup: %w", err)
+		if err := rows.Err(); err != nil {
+			return syncmodel.TableChanges[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]{}, fmt.Errorf("iterating upserted streak_session_daily_rollup keys: %w", err)
 		}
-		if rec.UpdatedAt <= serverUpdatedAt {
-			continue
-		}
-		_, err = db.Exec(ctx, `UPDATE streak_session_daily_rollups SET effective_ms = $4, updated_at = $5
-			WHERE user_id = $1 AND session_id = $2 AND local_day = $3`, userID, rec.SessionID, rec.LocalDay, rec.EffectiveMS, rec.UpdatedAt)
-		if err != nil {
-			return syncmodel.TableChanges[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]{}, fmt.Errorf("updating streak_session_daily_rollup: %w", err)
-		}
-		written[key] = struct{}{}
 	}
 
 	for _, keyObj := range in.Deletions {
@@ -774,32 +845,40 @@ func (r *PgxSyncRepository) SyncStreakDailyAggregates(ctx context.Context, db DB
 	deleted := map[string]struct{}{}
 	refreshMetrics := false
 
-	for _, rec := range in.Upserts {
-		var serverUpdatedAt int64
-		err := db.QueryRow(ctx, "SELECT updated_at FROM streak_daily_aggregates WHERE user_id = $1 AND local_day = $2", userID, rec.LocalDay).Scan(&serverUpdatedAt)
-		if errors.Is(err, pgx.ErrNoRows) {
-			_, err = db.Exec(ctx, `INSERT INTO streak_daily_aggregates (user_id, local_day, effective_ms, qualified, source_session_count, updated_at)
-				VALUES ($1, $2, $3, $4, $5, $6)`, userID, rec.LocalDay, rec.EffectiveMS, rec.Qualified, rec.SourceSessionCount, rec.UpdatedAt)
-			if err != nil {
-				return syncmodel.TableChanges[syncmodel.StreakDailyAggregate, string]{}, fmt.Errorf("inserting streak_daily_aggregate: %w", err)
+	if len(in.Upserts) > 0 {
+		var sb strings.Builder
+		args := []any{userID}
+		sb.WriteString(`INSERT INTO streak_daily_aggregates (user_id, local_day, effective_ms, qualified, source_session_count, updated_at) VALUES `)
+		for i, rec := range in.Upserts {
+			if i > 0 {
+				sb.WriteString(", ")
 			}
-			written[rec.LocalDay] = struct{}{}
+			base := len(args) + 1
+			fmt.Fprintf(&sb, "($1, $%d, $%d, $%d, $%d, $%d)",
+				base, base+1, base+2, base+3, base+4)
+			args = append(args, rec.LocalDay, rec.EffectiveMS, rec.Qualified, rec.SourceSessionCount, rec.UpdatedAt)
+		}
+		sb.WriteString(` ON CONFLICT (user_id, local_day) DO UPDATE SET
+			effective_ms = EXCLUDED.effective_ms, qualified = EXCLUDED.qualified,
+			source_session_count = EXCLUDED.source_session_count, updated_at = EXCLUDED.updated_at
+			WHERE EXCLUDED.updated_at > streak_daily_aggregates.updated_at
+			RETURNING local_day`)
+		rows, err := db.Query(ctx, sb.String(), args...)
+		if err != nil {
+			return syncmodel.TableChanges[syncmodel.StreakDailyAggregate, string]{}, fmt.Errorf("upserting streak_daily_aggregates: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var localDay string
+			if err := rows.Scan(&localDay); err != nil {
+				return syncmodel.TableChanges[syncmodel.StreakDailyAggregate, string]{}, fmt.Errorf("scanning upserted streak_daily_aggregate key: %w", err)
+			}
+			written[localDay] = struct{}{}
 			refreshMetrics = true
-			continue
 		}
-		if err != nil {
-			return syncmodel.TableChanges[syncmodel.StreakDailyAggregate, string]{}, fmt.Errorf("looking up streak_daily_aggregate: %w", err)
+		if err := rows.Err(); err != nil {
+			return syncmodel.TableChanges[syncmodel.StreakDailyAggregate, string]{}, fmt.Errorf("iterating upserted streak_daily_aggregate keys: %w", err)
 		}
-		if rec.UpdatedAt <= serverUpdatedAt {
-			continue
-		}
-		_, err = db.Exec(ctx, `UPDATE streak_daily_aggregates SET effective_ms = $3, qualified = $4, source_session_count = $5, updated_at = $6
-			WHERE user_id = $1 AND local_day = $2`, userID, rec.LocalDay, rec.EffectiveMS, rec.Qualified, rec.SourceSessionCount, rec.UpdatedAt)
-		if err != nil {
-			return syncmodel.TableChanges[syncmodel.StreakDailyAggregate, string]{}, fmt.Errorf("updating streak_daily_aggregate: %w", err)
-		}
-		written[rec.LocalDay] = struct{}{}
-		refreshMetrics = true
 	}
 
 	for _, localDay := range in.Deletions {

@@ -27,16 +27,24 @@ func respondRequestID(next http.Handler) http.Handler {
 	})
 }
 
-// maxBodySize is the defense-in-depth limit for request bodies (1 MiB).
-const maxBodySize = 1 << 20
+// defaultMaxBodySize is the defense-in-depth limit for request bodies (1 MiB).
+const defaultMaxBodySize = 1 << 20
 
-// limitBody returns a middleware that caps request bodies to maxBodySize bytes.
+// limitBody returns a middleware that caps request bodies to defaultMaxBodySize bytes.
 // Handlers that read past the limit will receive an io error from the reader.
 func limitBody(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
-		next.ServeHTTP(w, r)
-	})
+	return limitBodySize(defaultMaxBodySize)(next)
+}
+
+// limitBodySize returns a middleware that caps request bodies to the given
+// number of bytes. Use this for routes that need a non-default limit.
+func limitBodySize(size int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Body = http.MaxBytesReader(w, r.Body, size)
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // requestLogger returns a middleware that logs every HTTP request using the
@@ -94,7 +102,6 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 	r.Use(authmw.TrustedRealIP(cfg.ParseTrustedProxies())) // extract real client IP only from trusted proxies
 	r.Use(requestLogger(logger))                           // log each request with structured fields
 	r.Use(authmw.Recoverer(logger))                        // recover from panics with structured logging
-	r.Use(limitBody)                                       // defense-in-depth: cap request bodies
 
 	deps := buildDependencies(cfg, logger, pool, mailer, pushSender)
 	limiters, cleanup := buildLimiters(cfg, logger, redisClient)

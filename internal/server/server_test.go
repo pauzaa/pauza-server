@@ -853,7 +853,7 @@ func TestNew_MiddlewareOrdering_RequestIDInResponse(t *testing.T) {
 }
 
 // TestLimitBody_RejectsOversizedBody verifies the limitBody middleware caps
-// request bodies at maxBodySize. A handler reading past the limit should
+// request bodies at defaultMaxBodySize. A handler reading past the limit should
 // receive an error from the reader.
 func TestLimitBody_RejectsOversizedBody(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -866,8 +866,8 @@ func TestLimitBody_RejectsOversizedBody(t *testing.T) {
 	})
 	h := limitBody(inner)
 
-	// maxBodySize is 1 MiB; send 1 MiB + 1 byte.
-	oversized := make([]byte, maxBodySize+1)
+	// defaultMaxBodySize is 1 MiB; send 1 MiB + 1 byte.
+	oversized := make([]byte, defaultMaxBodySize+1)
 	req := httptest.NewRequest(http.MethodPost, "/test", bytes.NewReader(oversized))
 	rec := httptest.NewRecorder()
 

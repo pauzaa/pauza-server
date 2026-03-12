@@ -3,6 +3,8 @@ package syncmodel
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/IsorilovA/pauza-server/internal/domain"
 )
 
 type ModeEndingPausingScenario string
@@ -35,34 +37,9 @@ func (s *ModeEndingPausingScenario) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type DevicePlatform string
-
-const (
-	DevicePlatformAndroid DevicePlatform = "android"
-	DevicePlatformIOS     DevicePlatform = "ios"
-)
-
-func parseDevicePlatform(raw string) (DevicePlatform, error) {
-	switch DevicePlatform(raw) {
-	case DevicePlatformAndroid, DevicePlatformIOS:
-		return DevicePlatform(raw), nil
-	default:
-		return "", fmt.Errorf("invalid platform %q", raw)
-	}
-}
-
-func (p *DevicePlatform) UnmarshalJSON(data []byte) error {
-	var raw string
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	value, err := parseDevicePlatform(raw)
-	if err != nil {
-		return err
-	}
-	*p = value
-	return nil
-}
+// DevicePlatform is an alias for domain.DevicePlatform so that existing
+// syncmodel field types remain compatible without changing every struct.
+type DevicePlatform = domain.DevicePlatform
 
 type RestrictionSessionSource string
 

@@ -16,6 +16,8 @@ func mountRoutes(r chi.Router, cfg *config.Config, logger *slog.Logger, pool *pg
 	r.Get("/ready", handler.Ready(pool, logger))
 
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Use(limitBody) // defense-in-depth: cap request bodies to 1 MiB by default
+
 		r.Route("/auth", func(r chi.Router) {
 			r.Group(func(r chi.Router) {
 				r.Use(authmw.RateLimit(limiters.auth, cfg.AuthRateLimit, authmw.IPKey))
@@ -63,7 +65,7 @@ func mountRoutes(r chi.Router, cfg *config.Config, logger *slog.Logger, pool *pg
 				r.Get("/me/username-available", deps.authHandler.UsernameAvailable)
 				r.Post("/me/delete/request", deps.authHandler.DeleteRequest)
 				r.Post("/me/delete/confirm", deps.authHandler.DeleteConfirm)
-				r.Post("/me/photo", deps.authHandler.UploadPhoto)
+				r.With(limitBodySize(5 << 20)).Post("/me/photo", deps.authHandler.UploadPhoto)
 				r.Post("/devices", deps.socialHandler.RegisterDevice)
 				r.Post("/devices/unregister", deps.socialHandler.UnregisterDevice)
 				r.Get("/friends", deps.socialHandler.ListFriends)

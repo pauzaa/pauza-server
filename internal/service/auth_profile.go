@@ -51,9 +51,6 @@ func (s *AuthService) UpdateMe(ctx context.Context, in UpdateMeInput) (UserProfi
 func (s *AuthService) CheckUsernameAvailable(ctx context.Context, in UsernameAvailableInput) (UsernameAvailableOutput, error) {
 	taken, err := s.users.IsUsernameTaken(ctx, s.pool, in.Username, in.UserID)
 	if err != nil {
-		if errors.Is(err, repository.ErrNotFound) {
-			return UsernameAvailableOutput{}, UnauthorizedError("Missing or invalid authentication")
-		}
 		s.logger.Error("checking username availability", "err", err)
 		return UsernameAvailableOutput{}, ErrInternal
 	}

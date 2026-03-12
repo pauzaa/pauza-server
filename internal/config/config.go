@@ -117,7 +117,7 @@ func (c *Config) validate() error {
 	if len(c.JWTSecret) < minJWTSecretLen {
 		return fmt.Errorf("JWT_SECRET must be at least %d characters", minJWTSecretLen)
 	}
-	if err := validateEnum("LOG_LEVEL", c.LogLevel, validLogLevels); err != nil {
+	if err := validateEnum("LOG_LEVEL", c.LogLevel, validLogLevels, []string{"debug", "info", "warn", "error"}); err != nil {
 		return err
 	}
 	if err := validatePositiveDurationFields([]durationField{
@@ -163,7 +163,7 @@ func (c *Config) validate() error {
 	}
 
 	c.SMTPTLSPolicy = strings.ToLower(c.SMTPTLSPolicy)
-	if err := validateEnum("SMTP_TLS_POLICY", c.SMTPTLSPolicy, validSMTPTLSPolicies); err != nil {
+	if err := validateEnum("SMTP_TLS_POLICY", c.SMTPTLSPolicy, validSMTPTLSPolicies, []string{"mandatory", "opportunistic", "none"}); err != nil {
 		return err
 	}
 	if err := validateTrustedProxies(c.TrustedProxies); err != nil {
@@ -228,21 +228,15 @@ func validateNonEmptyTrimmed(name, value string) error {
 	return nil
 }
 
-func validateEnum(name, value string, allowed map[string]bool) error {
+func validateEnum(name, value string, allowed map[string]bool, ordered []string) error {
 	if !allowed[strings.ToLower(value)] {
-		return fmt.Errorf("%s must be one of %s; got %q", name, enumValues(allowed), value)
+		return fmt.Errorf("%s must be one of %s; got %q", name, enumValues(ordered), value)
 	}
 	return nil
 }
 
-func enumValues(allowed map[string]bool) string {
-	values := make([]string, 0, len(allowed))
-	for _, value := range []string{"debug", "info", "warn", "error", "mandatory", "opportunistic", "none"} {
-		if allowed[value] {
-			values = append(values, value)
-		}
-	}
-	return strings.Join(values, ", ")
+func enumValues(ordered []string) string {
+	return strings.Join(ordered, ", ")
 }
 
 func validateTrustedProxies(value string) error {

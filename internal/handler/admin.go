@@ -11,8 +11,8 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/IsorilovA/pauza-server/internal/apperror"
+	"github.com/IsorilovA/pauza-server/internal/domain"
 	"github.com/IsorilovA/pauza-server/internal/pagination"
-	"github.com/IsorilovA/pauza-server/internal/repository"
 	"github.com/IsorilovA/pauza-server/internal/service"
 )
 
@@ -124,9 +124,9 @@ type adminStatsResponse struct {
 }
 
 type manageEntitlementRequest struct {
-	Action      repository.AdminOverrideAction `json:"action"`
-	Entitlement repository.Entitlement         `json:"entitlement"`
-	ExpiresAt   *string                        `json:"expires_at"`
+	Action      domain.AdminOverrideAction `json:"action"`
+	Entitlement domain.Entitlement         `json:"entitlement"`
+	ExpiresAt   *string                    `json:"expires_at"`
 }
 
 type adminEntitlementItemResponse struct {
@@ -296,10 +296,10 @@ func (h *AdminHandler) ManageEntitlement(w http.ResponseWriter, r *http.Request)
 	}
 
 	fields := make(apperror.FieldErrors)
-	if req.Action == repository.AdminOverrideActionUnknown {
+	if req.Action == domain.AdminOverrideActionUnknown {
 		fields["action"] = "action must be grant or revoke"
 	}
-	if req.Entitlement == repository.EntitlementUnknown {
+	if req.Entitlement == domain.EntitlementUnknown {
 		fields["entitlement"] = "entitlement must be premium"
 	}
 	var expiresAt *time.Time
@@ -336,7 +336,7 @@ func (h *AdminHandler) ManageEntitlement(w http.ResponseWriter, r *http.Request)
 // ListEntitlements handles GET /api/v1/admin/entitlements.
 func (h *AdminHandler) ListEntitlements(w http.ResponseWriter, r *http.Request) {
 	page, limit := pagination.FromRequest(r)
-	entitlement, err := repository.ParseEntitlement(r.URL.Query().Get("entitlement"))
+	entitlement, err := domain.ParseEntitlement(r.URL.Query().Get("entitlement"))
 	if err != nil {
 		apperror.ValidationFieldErrors(w, "Invalid query parameter", apperror.FieldErrors{
 			"entitlement": "entitlement must be premium",

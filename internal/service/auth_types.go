@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/IsorilovA/pauza-server/internal/apperror"
+	"github.com/IsorilovA/pauza-server/internal/domain"
 	"github.com/IsorilovA/pauza-server/internal/repository"
 )
 
@@ -128,7 +129,7 @@ type UserProfile struct {
 }
 
 type EntitlementInfo struct {
-	Entitlement      string
+	Entitlement      domain.Entitlement
 	IsActive         bool
 	CurrentPeriodEnd *time.Time
 }
@@ -147,11 +148,11 @@ type MessageOutput struct {
 }
 
 type NotificationPreferences struct {
-	PushEnabled bool `json:"push_enabled"`
+	PushEnabled bool
 }
 
 type PrivacyPreferences struct {
-	LeaderboardVisible bool `json:"leaderboard_visible"`
+	LeaderboardVisible bool
 }
 
 type GetMeInput struct {

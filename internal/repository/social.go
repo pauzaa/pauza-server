@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/IsorilovA/pauza-server/internal/domain"
 )
 
 type SocialRepository struct{}
@@ -35,11 +37,8 @@ type FriendRequestRow struct {
 	CreatedAt    time.Time
 }
 
-type PaginationResult struct {
-	Page  int
-	Limit int
-	Total int
-}
+// PaginationResult is an alias for domain.PaginationResult.
+type PaginationResult = domain.PaginationResult
 
 type LeaderboardMetric string
 
@@ -371,6 +370,43 @@ func (r *SocialRepository) LoadRecentDailyAggregates(ctx context.Context, db DBT
 	return out, rows.Err()
 }
 
+func (r *SocialRepository) LoadAllDailyAggregates(ctx context.Context, db DBTX, userID string) ([]struct {
+	LocalDay    string
+	EffectiveMS int
+	Qualified   bool
+}, error) {
+	rows, err := db.Query(ctx, `
+		SELECT local_day, effective_ms, qualified
+		FROM streak_daily_aggregates
+		WHERE user_id = $1
+		ORDER BY local_day DESC
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("loading all daily aggregates: %w", err)
+	}
+	defer rows.Close()
+
+	var out []struct {
+		LocalDay    string
+		EffectiveMS int
+		Qualified   bool
+	}
+	for rows.Next() {
+		var item struct {
+			LocalDay    string
+			EffectiveMS int
+			Qualified   bool
+		}
+		var qualifiedInt int
+		if err := rows.Scan(&item.LocalDay, &item.EffectiveMS, &qualifiedInt); err != nil {
+			return nil, fmt.Errorf("scanning daily aggregate: %w", err)
+		}
+		item.Qualified = qualifiedInt == 1
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (r *SocialRepository) LoadTotalFocusTime(ctx context.Context, db DBTX, userID string) (int64, error) {
 	var total int64
 	if err := db.QueryRow(ctx, `SELECT COALESCE(sum(effective_ms), 0) FROM streak_daily_aggregates WHERE user_id = $1`, userID).Scan(&total); err != nil {
@@ -492,10 +528,10 @@ func leaderboardEntriesQuery(metric LeaderboardMetric) string {
 			       COALESCE(m.total_focus_time_ms, 0) AS total_focus_time_ms
 			FROM users u
 			LEFT JOIN leaderboard_metrics m ON m.user_id = u.id
+			WHERE u.leaderboard_visible = true
 		)
 		SELECT rank, id, name, username, profile_picture_url, leaderboard_visible, current_streak_days, total_focus_time_ms
 		FROM ranked
-		WHERE leaderboard_visible = true
 		ORDER BY rank
 		LIMIT $1 OFFSET $2
 	`, leaderboardMetricOrderExpr(metric))

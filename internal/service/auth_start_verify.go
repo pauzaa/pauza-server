@@ -36,7 +36,7 @@ func (s *AuthService) VerifyOTP(ctx context.Context, in VerifyOTPInput) (AuthOut
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	challenge, err := s.verifyChallenge(
+	challenge, needsCommit, err := s.verifyChallenge(
 		ctx,
 		tx,
 		email,
@@ -48,6 +48,11 @@ func (s *AuthService) VerifyOTP(ctx context.Context, in VerifyOTPInput) (AuthOut
 		"recording failed verify-otp attempt",
 	)
 	if err != nil {
+		if needsCommit {
+			if commitErr := tx.Commit(ctx); commitErr != nil {
+				s.logger.Error("committing failed otp attempt", "err", commitErr)
+			}
+		}
 		return AuthOutput{}, err
 	}
 

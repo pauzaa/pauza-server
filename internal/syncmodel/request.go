@@ -3,6 +3,7 @@ package syncmodel
 import (
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/IsorilovA/pauza-server/internal/apperror"
 )
@@ -526,21 +527,8 @@ func convertStreakDailyAggregates(fields apperror.FieldErrors, in RequestTableSy
 }
 
 func isLocalDay(v string) bool {
-	if len(v) != 10 {
-		return false
-	}
-	if v[4] != '-' || v[7] != '-' {
-		return false
-	}
-	for i := range v {
-		if i == 4 || i == 7 {
-			continue
-		}
-		if v[i] < '0' || v[i] > '9' {
-			return false
-		}
-	}
-	return true
+	_, err := time.Parse("2006-01-02", v)
+	return err == nil
 }
 
 func itoa(i int) string {

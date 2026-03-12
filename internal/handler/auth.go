@@ -200,7 +200,7 @@ func userProfileToResponse(p service.UserProfile) userResponse {
 
 func subscriptionInfoToResponse(info *service.EntitlementInfo) *subscriptionResponse {
 	resp := &subscriptionResponse{
-		Entitlement: info.Entitlement,
+		Entitlement: info.Entitlement.String(),
 		IsActive:    info.IsActive,
 	}
 	if info.CurrentPeriodEnd != nil {

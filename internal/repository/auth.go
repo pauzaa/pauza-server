@@ -280,20 +280,9 @@ func (r *PgxAuthRepository) UpdatePushEnabled(ctx context.Context, db DBTX, user
 func (r *PgxAuthRepository) IsUsernameTaken(ctx context.Context, db DBTX, username string, excludeUserID string) (bool, error) {
 	var exists bool
 	err := db.QueryRow(ctx,
-		`SELECT EXISTS(
-			SELECT 1
-			FROM users AS other
-			WHERE auth_user.id = $2
-			  AND lower(other.username) = lower($1)
-			  AND other.id != auth_user.id
-		)
-		FROM users AS auth_user
-		WHERE auth_user.id = $2`,
+		`SELECT EXISTS(SELECT 1 FROM users WHERE lower(username) = lower($1) AND id != $2)`,
 		username, excludeUserID,
 	).Scan(&exists)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, ErrNotFound
-	}
 	if err != nil {
 		return false, fmt.Errorf("checking username availability: %w", err)
 	}

@@ -9,8 +9,8 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/IsorilovA/pauza-server/internal/apperror"
+	"github.com/IsorilovA/pauza-server/internal/domain"
 	"github.com/IsorilovA/pauza-server/internal/pagination"
-	"github.com/IsorilovA/pauza-server/internal/repository"
 	"github.com/IsorilovA/pauza-server/internal/service"
 	"github.com/IsorilovA/pauza-server/internal/validate"
 )
@@ -23,11 +23,11 @@ type SocialDeviceService interface {
 type SocialFriendService interface {
 	RequestFriend(ctx context.Context, in service.FriendRequestInput) (service.FriendMutationOutput, error)
 	ListFriends(ctx context.Context, userID string, page, limit int) (service.FriendListOutput, error)
-	ListFriendRequests(ctx context.Context, userID string, direction repository.FriendRequestDirection) (service.FriendRequestsOutput, error)
+	ListFriendRequests(ctx context.Context, userID string, direction domain.FriendRequestDirection) (service.FriendRequestsOutput, error)
 	AcceptFriend(ctx context.Context, userID, friendshipID string) (service.FriendMutationOutput, error)
 	DeclineFriend(ctx context.Context, userID, friendshipID string) (service.MessageOutput, error)
 	RemoveFriend(ctx context.Context, userID, friendshipID string) (service.MessageOutput, error)
-	SearchUsers(ctx context.Context, userID, prefix string) ([]repository.BasicUserRow, error)
+	SearchUsers(ctx context.Context, userID, prefix string) ([]domain.BasicUser, error)
 	FriendStats(ctx context.Context, userID, friendshipID string, days int) (service.FriendStatsOutput, error)
 }
 
@@ -58,8 +58,8 @@ func NewSocialHandler(svc SocialService, logger *slog.Logger) *SocialHandler {
 }
 
 type deviceRequest struct {
-	FCMToken string                    `json:"fcm_token"`
-	Platform repository.DevicePlatform `json:"platform"`
+	FCMToken string                `json:"fcm_token"`
+	Platform domain.DevicePlatform `json:"platform"`
 }
 
 type unregisterDeviceRequest struct {
@@ -71,7 +71,45 @@ type friendRequestRequest struct {
 }
 
 type searchUsersResponse struct {
-	Users []repository.BasicUserRow `json:"users"`
+	Users []domain.BasicUser `json:"users"`
+}
+
+type friendStatsResponse struct {
+	User  domain.BasicUser           `json:"user"`
+	Stats friendStatsResponseStats   `json:"stats"`
+}
+
+type friendStatsResponseStats struct {
+	CurrentStreakDays int                        `json:"current_streak_days"`
+	LongestStreakDays int                        `json:"longest_streak_days"`
+	TotalFocusTimeMS  int64                      `json:"total_focus_time_ms"`
+	DailyTrends       []friendStatsDailyTrend    `json:"daily_trends"`
+}
+
+type friendStatsDailyTrend struct {
+	LocalDay     string `json:"local_day"`
+	EffectiveMS  int    `json:"effective_ms"`
+	Qualified    bool   `json:"qualified"`
+	SessionCount int    `json:"session_count"`
+}
+
+type leaderboardEntryResponse struct {
+	Rank              int              `json:"rank"`
+	User              domain.BasicUser `json:"user"`
+	CurrentStreakDays int              `json:"current_streak_days,omitempty"`
+	TotalFocusTimeMS  int64            `json:"total_focus_time_ms,omitempty"`
+}
+
+type leaderboardRankResponse struct {
+	Rank              int   `json:"rank"`
+	CurrentStreakDays int   `json:"current_streak_days,omitempty"`
+	TotalFocusTimeMS  int64 `json:"total_focus_time_ms,omitempty"`
+}
+
+type leaderboardResponse struct {
+	Entries    []leaderboardEntryResponse `json:"entries"`
+	MyRank     leaderboardRankResponse    `json:"my_rank"`
+	Pagination domain.PaginationResult    `json:"pagination"`
 }
 
 func (h *SocialHandler) RegisterDevice(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +125,7 @@ func (h *SocialHandler) RegisterDevice(w http.ResponseWriter, r *http.Request) {
 	if req.FCMToken == "" {
 		fields["fcm_token"] = "fcm_token is required"
 	}
-	if req.Platform == repository.DevicePlatformUnknown {
+	if req.Platform == domain.DevicePlatformUnknown {
 		fields["platform"] = "platform must be one of: android, ios"
 	}
 	if len(fields) > 0 {
@@ -159,13 +197,13 @@ func (h *SocialHandler) RequestFriend(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *SocialHandler) ListIncomingRequests(w http.ResponseWriter, r *http.Request) {
-	h.listRequests(w, r, repository.FriendRequestIncoming)
+	h.listRequests(w, r, domain.FriendRequestIncoming)
 }
 func (h *SocialHandler) ListOutgoingRequests(w http.ResponseWriter, r *http.Request) {
-	h.listRequests(w, r, repository.FriendRequestOutgoing)
+	h.listRequests(w, r, domain.FriendRequestOutgoing)
 }
 
-func (h *SocialHandler) listRequests(w http.ResponseWriter, r *http.Request, direction repository.FriendRequestDirection) {
+func (h *SocialHandler) listRequests(w http.ResponseWriter, r *http.Request, direction domain.FriendRequestDirection) {
 	userID, ok := requireUser(w, r)
 	if !ok {
 		return
@@ -227,6 +265,10 @@ func (h *SocialHandler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 		apperror.ValidationFieldErrors(w, "Invalid request body", apperror.FieldErrors{"q": "q must be at least 3 characters"})
 		return
 	}
+	if len(q) > 50 {
+		apperror.ValidationFieldErrors(w, "Invalid request body", apperror.FieldErrors{"q": "q must not exceed 50 characters"})
+		return
+	}
 	users, err := h.svc.SearchUsers(r.Context(), userID, q)
 	if err != nil {
 		writeServiceError(w, err)
@@ -251,7 +293,23 @@ func (h *SocialHandler) FriendStats(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, h.logger, http.StatusOK, out, "friend-stats")
+	resp := friendStatsResponse{
+		User: out.User,
+		Stats: friendStatsResponseStats{
+			CurrentStreakDays: out.Stats.CurrentStreakDays,
+			LongestStreakDays: out.Stats.LongestStreakDays,
+			TotalFocusTimeMS:  out.Stats.TotalFocusTimeMS,
+		},
+	}
+	for _, t := range out.Stats.DailyTrends {
+		resp.Stats.DailyTrends = append(resp.Stats.DailyTrends, friendStatsDailyTrend{
+			LocalDay:     t.LocalDay,
+			EffectiveMS:  t.EffectiveMS,
+			Qualified:    t.Qualified,
+			SessionCount: t.SessionCount,
+		})
+	}
+	writeJSON(w, h.logger, http.StatusOK, resp, "friend-stats")
 }
 
 func (h *SocialHandler) LeaderboardStreaks(w http.ResponseWriter, r *http.Request) {
@@ -280,5 +338,21 @@ func (h *SocialHandler) leaderboard(w http.ResponseWriter, r *http.Request, bySt
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, h.logger, http.StatusOK, out, "leaderboard")
+	resp := leaderboardResponse{
+		MyRank: leaderboardRankResponse{
+			Rank:              out.MyRank.Rank,
+			CurrentStreakDays: out.MyRank.CurrentStreakDays,
+			TotalFocusTimeMS:  out.MyRank.TotalFocusTimeMS,
+		},
+		Pagination: out.Pagination,
+	}
+	for _, e := range out.Entries {
+		resp.Entries = append(resp.Entries, leaderboardEntryResponse{
+			Rank:              e.Rank,
+			User:              e.User,
+			CurrentStreakDays: e.CurrentStreakDays,
+			TotalFocusTimeMS:  e.TotalFocusTimeMS,
+		})
+	}
+	writeJSON(w, h.logger, http.StatusOK, resp, "leaderboard")
 }

@@ -30,7 +30,12 @@ type fakeSocialRepo struct {
 		EffectiveMS int
 		Qualified   bool
 	}, error)
-	loadTotalFocusTimeFn     func(ctx context.Context, db repository.DBTX, userID string) (int64, error)
+	loadAllDailyAggregatesFn func(ctx context.Context, db repository.DBTX, userID string) ([]struct {
+		LocalDay    string
+		EffectiveMS int
+		Qualified   bool
+	}, error)
+	loadTotalFocusTimeFn func(ctx context.Context, db repository.DBTX, userID string) (int64, error)
 	listLeaderboardEntriesFn func(ctx context.Context, db repository.DBTX, metric repository.LeaderboardMetric, page, limit int) ([]repository.LeaderboardRow, int, error)
 	getLeaderboardRankFn     func(ctx context.Context, db repository.DBTX, metric repository.LeaderboardMetric, userID string) (repository.LeaderboardRow, error)
 }
@@ -80,6 +85,13 @@ func (f *fakeSocialRepo) LoadRecentDailyAggregates(ctx context.Context, db repos
 	Qualified   bool
 }, error) {
 	return f.loadRecentDailyAggregatesFn(ctx, db, userID, days)
+}
+func (f *fakeSocialRepo) LoadAllDailyAggregates(ctx context.Context, db repository.DBTX, userID string) ([]struct {
+	LocalDay    string
+	EffectiveMS int
+	Qualified   bool
+}, error) {
+	return f.loadAllDailyAggregatesFn(ctx, db, userID)
 }
 func (f *fakeSocialRepo) LoadTotalFocusTime(ctx context.Context, db repository.DBTX, userID string) (int64, error) {
 	return f.loadTotalFocusTimeFn(ctx, db, userID)
@@ -141,6 +153,13 @@ func newFakeSocialRepo() *fakeSocialRepo {
 			return nil, nil
 		},
 		loadRecentDailyAggregatesFn: func(context.Context, repository.DBTX, string, int) ([]struct {
+			LocalDay    string
+			EffectiveMS int
+			Qualified   bool
+		}, error) {
+			return nil, nil
+		},
+		loadAllDailyAggregatesFn: func(context.Context, repository.DBTX, string) ([]struct {
 			LocalDay    string
 			EffectiveMS int
 			Qualified   bool

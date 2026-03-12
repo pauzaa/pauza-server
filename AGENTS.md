@@ -58,7 +58,7 @@ Child docs:
 - Env is loaded with `envconfig`; `.env.dev.example` and `.env.prod.example` are the checked-in environment templates, and `internal/config/config.go` owns validation.
 - Migrations are applied with `cmd/migrate`, not at server startup.
 - Health probes stay outside `/api/v1`: `/live` is process-only, `/ready` pings Postgres.
-- `internal/handler` validates and serializes only; `internal/service` owns business rules; `internal/repository` owns SQL.
+- `internal/domain` defines shared types (enums, `BasicUser`, `PaginationResult`) imported by all layers; `internal/handler` validates and serializes only; `internal/service` owns business rules; `internal/repository` owns SQL.
 - Rate limiting is per auth endpoint class and should use Redis + fail-open semantics in multi-instance deployments.
 - Integration tests use `//go:build integration`; DB- and Redis-backed suites require dedicated `TEST_DATABASE_URL` / `TEST_REDIS_URL`.
 

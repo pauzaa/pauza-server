@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/IsorilovA/pauza-server/internal/domain"
 	"github.com/IsorilovA/pauza-server/internal/push"
 	"github.com/IsorilovA/pauza-server/internal/repository"
 )
@@ -35,6 +36,11 @@ type socialRepository interface {
 	RemoveFriend(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
 	SearchUsers(ctx context.Context, db repository.DBTX, prefix, excludeUserID string, limit int) ([]repository.BasicUserRow, error)
 	LoadRecentDailyAggregates(ctx context.Context, db repository.DBTX, userID string, days int) ([]struct {
+		LocalDay    string
+		EffectiveMS int
+		Qualified   bool
+	}, error)
+	LoadAllDailyAggregates(ctx context.Context, db repository.DBTX, userID string) ([]struct {
 		LocalDay    string
 		EffectiveMS int
 		Qualified   bool
@@ -66,7 +72,7 @@ type FriendMutationOutput struct {
 
 type FriendListOutput struct {
 	Friends    []repository.FriendRow
-	Pagination repository.PaginationResult
+	Pagination domain.PaginationResult
 }
 
 type FriendRequestsOutput struct {
@@ -74,37 +80,37 @@ type FriendRequestsOutput struct {
 }
 
 type FriendStatsOutput struct {
-	User  repository.BasicUserRow
+	User  domain.BasicUser
 	Stats struct {
-		CurrentStreakDays int   `json:"current_streak_days"`
-		LongestStreakDays int   `json:"longest_streak_days"`
-		TotalFocusTimeMS  int64 `json:"total_focus_time_ms"`
+		CurrentStreakDays int
+		LongestStreakDays int
+		TotalFocusTimeMS  int64
 		DailyTrends       []struct {
-			LocalDay     string `json:"local_day"`
-			EffectiveMS  int    `json:"effective_ms"`
-			Qualified    bool   `json:"qualified"`
-			SessionCount int    `json:"session_count"`
-		} `json:"daily_trends"`
+			LocalDay     string
+			EffectiveMS  int
+			Qualified    bool
+			SessionCount int
+		}
 	}
 }
 
 type LeaderboardEntry struct {
-	Rank              int                     `json:"rank"`
-	User              repository.BasicUserRow `json:"user"`
-	CurrentStreakDays int                     `json:"current_streak_days,omitempty"`
-	TotalFocusTimeMS  int64                   `json:"total_focus_time_ms,omitempty"`
+	Rank              int
+	User              domain.BasicUser
+	CurrentStreakDays int
+	TotalFocusTimeMS  int64
 }
 
 type LeaderboardRank struct {
-	Rank              int   `json:"rank"`
-	CurrentStreakDays int   `json:"current_streak_days,omitempty"`
-	TotalFocusTimeMS  int64 `json:"total_focus_time_ms,omitempty"`
+	Rank              int
+	CurrentStreakDays int
+	TotalFocusTimeMS  int64
 }
 
 type LeaderboardOutput struct {
-	Entries    []LeaderboardEntry          `json:"entries"`
-	MyRank     LeaderboardRank             `json:"my_rank"`
-	Pagination repository.PaginationResult `json:"pagination"`
+	Entries    []LeaderboardEntry
+	MyRank     LeaderboardRank
+	Pagination domain.PaginationResult
 }
 
 func (s *SocialService) RegisterDevice(ctx context.Context, in DeviceInput) (MessageOutput, error) {
@@ -182,7 +188,9 @@ func (s *SocialService) AcceptFriend(ctx context.Context, userID, friendshipID s
 		return FriendMutationOutput{}, err
 	}
 	requesterID, _, _, err := s.repo.GetFriendship(ctx, s.pool, friendshipID)
-	if err != nil && !errors.Is(err, repository.ErrNotFound) {
+	if errors.Is(err, repository.ErrNotFound) {
+		requesterID = ""
+	} else if err != nil {
 		s.logger.Error("loading friendship before accept", "err", err)
 		return FriendMutationOutput{}, ErrInternal
 	}
@@ -193,7 +201,9 @@ func (s *SocialService) AcceptFriend(ctx context.Context, userID, friendshipID s
 		s.logger.Error("accepting friendship", "err", err)
 		return FriendMutationOutput{}, ErrInternal
 	}
-	s.sendFriendNotification(ctx, requesterID, "friend_accepted", friendshipID, userID, "Friend request accepted", "%s accepted your friend request")
+	if requesterID != "" {
+		s.sendFriendNotification(ctx, requesterID, "friend_accepted", friendshipID, userID, "Friend request accepted", "%s accepted your friend request")
+	}
 	return FriendMutationOutput{FriendshipID: friendshipID, Status: repository.FriendshipStatusAccepted}, nil
 }
 
@@ -225,14 +235,18 @@ func (s *SocialService) RemoveFriend(ctx context.Context, userID, friendshipID s
 	return MessageOutput{Message: "Friend removed"}, nil
 }
 
-func (s *SocialService) SearchUsers(ctx context.Context, userID, prefix string) ([]repository.BasicUserRow, error) {
+func (s *SocialService) SearchUsers(ctx context.Context, userID, prefix string) ([]domain.BasicUser, error) {
 	if err := s.requirePremium(ctx, userID); err != nil {
 		return nil, err
 	}
-	users, err := s.repo.SearchUsers(ctx, s.pool, prefix, userID, 20)
+	rows, err := s.repo.SearchUsers(ctx, s.pool, prefix, userID, 20)
 	if err != nil {
 		s.logger.Error("searching users", "err", err)
 		return nil, ErrInternal
+	}
+	users := make([]domain.BasicUser, len(rows))
+	for i, r := range rows {
+		users[i] = basicUserFromRow(r)
 	}
 	return users, nil
 }
@@ -306,12 +320,12 @@ func (s *SocialService) buildLeaderboard(ctx context.Context, userID string, pag
 			CurrentStreakDays: myRank.CurrentStreakDays,
 			TotalFocusTimeMS:  myRank.TotalFocusTimeMS,
 		},
-		Pagination: repository.PaginationResult{Page: page, Limit: limit, Total: total},
+		Pagination: domain.PaginationResult{Page: page, Limit: limit, Total: total},
 	}
 	for _, row := range rows {
 		out.Entries = append(out.Entries, LeaderboardEntry{
 			Rank:              row.Rank,
-			User:              row.User,
+			User:              basicUserFromRow(row.User),
 			CurrentStreakDays: row.CurrentStreakDays,
 			TotalFocusTimeMS:  row.TotalFocusTimeMS,
 		})
@@ -328,9 +342,18 @@ func (s *SocialService) loadStatsForUser(ctx context.Context, userID string, day
 		s.logger.Error("loading user for stats", "err", err)
 		return FriendStatsOutput{}, ErrInternal
 	}
-	aggregates, err := s.repo.LoadRecentDailyAggregates(ctx, s.pool, userID, max(days, 90))
+	recentDays := days
+	if recentDays < 90 {
+		recentDays = 90
+	}
+	aggregates, err := s.repo.LoadRecentDailyAggregates(ctx, s.pool, userID, recentDays)
 	if err != nil {
 		s.logger.Error("loading aggregates for stats", "err", err)
+		return FriendStatsOutput{}, ErrInternal
+	}
+	allAggregates, err := s.repo.LoadAllDailyAggregates(ctx, s.pool, userID)
+	if err != nil {
+		s.logger.Error("loading all aggregates for longest streak", "err", err)
 		return FriendStatsOutput{}, ErrInternal
 	}
 	totalFocus, err := s.repo.LoadTotalFocusTime(ctx, s.pool, userID)
@@ -339,19 +362,19 @@ func (s *SocialService) loadStatsForUser(ctx context.Context, userID string, day
 		return FriendStatsOutput{}, ErrInternal
 	}
 
-	out := FriendStatsOutput{User: user}
+	out := FriendStatsOutput{User: basicUserFromRow(user)}
 	out.Stats.CurrentStreakDays = consecutiveQualified(aggregates)
-	out.Stats.LongestStreakDays = longestQualified(aggregates)
+	out.Stats.LongestStreakDays = longestQualified(allAggregates)
 	out.Stats.TotalFocusTimeMS = totalFocus
 	for i, item := range aggregates {
 		if i >= days {
 			break
 		}
 		out.Stats.DailyTrends = append(out.Stats.DailyTrends, struct {
-			LocalDay     string `json:"local_day"`
-			EffectiveMS  int    `json:"effective_ms"`
-			Qualified    bool   `json:"qualified"`
-			SessionCount int    `json:"session_count"`
+			LocalDay     string
+			EffectiveMS  int
+			Qualified    bool
+			SessionCount int
 		}{
 			LocalDay:     item.LocalDay,
 			EffectiveMS:  item.EffectiveMS,
@@ -397,11 +420,13 @@ func longestQualified(days []struct {
 	return longest
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
+func basicUserFromRow(r repository.BasicUserRow) domain.BasicUser {
+	return domain.BasicUser{
+		ID:                r.ID,
+		Name:              r.Name,
+		Username:          r.Username,
+		ProfilePictureURL: r.ProfilePictureURL,
 	}
-	return b
 }
 
 func (s *SocialService) sendFriendNotification(

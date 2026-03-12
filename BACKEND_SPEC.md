@@ -1172,7 +1172,7 @@ Search for users to add as friends.
 
 **Auth:** Required (JWT). **Subscription:** Premium.
 
-**Query parameters:** `q` (required, min 3 characters).
+**Query parameters:** `q` (required, min 3 characters, max 50 characters).
 
 Searches by username only (prefix match, case-insensitive). Does not return the current user.
 
