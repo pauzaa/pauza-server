@@ -115,4 +115,4 @@ jobs:
             cd ${{ secrets.DEPLOY_PATH }}
             docker compose -f docker-compose.yml -f docker-compose.prod.yml pull api
             docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api ./pauza-migrate
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d api nginx
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d api traefik

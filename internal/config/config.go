@@ -52,9 +52,8 @@ type Config struct {
 	RedisURL string `envconfig:"REDIS_URL" required:"true"`
 
 	// Profile photo storage. The backend writes uploads into a
-	// deployment-provided local filesystem path and returns URLs rooted at the
-	// configured public base URL. A reverse proxy such as Nginx is expected to
-	// serve that directory at the matching public path.
+	// deployment-provided local filesystem path and serves them directly at the
+	// configured public base URL via the /photos/* route.
 	PhotoStorageDir    string `envconfig:"PHOTO_STORAGE_DIR" required:"true"`
 	PhotoPublicBaseURL string `envconfig:"PHOTO_PUBLIC_BASE_URL" required:"true"`
 

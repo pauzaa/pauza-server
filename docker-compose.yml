@@ -8,11 +8,23 @@ services:
       timeout: 5s
       retries: 3
     restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.services.api.loadbalancer.server.port=8080"
+      - "traefik.http.routers.api.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.api.entrypoints=websecure"
+      - "traefik.http.routers.api.tls.certresolver=letsencrypt"
+      # Security headers
+      - "traefik.http.middlewares.security-headers.headers.stsSeconds=63072000"
+      - "traefik.http.middlewares.security-headers.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.security-headers.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.security-headers.headers.frameDeny=true"
+      # 6MB request size limit
+      - "traefik.http.middlewares.body-limit.buffering.maxRequestBodyBytes=6291456"
+      - "traefik.http.routers.api.middlewares=security-headers,body-limit"
 
-  nginx:
-    image: nginx:1.27-alpine
-    volumes:
-      - photodata:/var/lib/pauza/photos:ro
+  traefik:
+    image: traefik:v3.3
     depends_on:
       api:
         condition: service_healthy

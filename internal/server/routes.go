@@ -2,6 +2,7 @@ package server
 
 import (
 	"log/slog"
+	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -14,6 +15,9 @@ import (
 func mountRoutes(r chi.Router, cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, deps appDependencies, limiters appLimiters) {
 	r.Get("/live", handler.Live(logger))
 	r.Get("/ready", handler.Ready(pool, logger))
+
+	photosDir := http.Dir(cfg.PhotoStorageDir)
+	r.Get("/photos/*", photosHandler(photosDir))
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(limitBody) // defense-in-depth: cap request bodies to 1 MiB by default

@@ -2,7 +2,7 @@
 
 Complete instructions for deploying the Pauza API server on a fresh Ubuntu VPS.
 
-**Stack:** Go API + Nginx (reverse proxy & TLS) + PostgreSQL 16 + Redis 7 + Certbot (Let's Encrypt)
+**Stack:** Go API + Traefik (reverse proxy & automatic TLS) + PostgreSQL 16 + Redis 7
 **Orchestration:** Docker Compose
 **CI/CD:** GitHub Actions → GHCR → SSH deploy
 **Registry:** `ghcr.io/pauzaa/pauza-server`
@@ -243,7 +243,7 @@ PORT=8080
 LOG_LEVEL=info
 TRUSTED_PROXIES=172.30.0.0/24
 
-# Your actual domain (must match DNS)
+# Your actual domain (must match DNS) — used by Traefik for routing and ACME
 PUBLIC_DOMAIN=api.pauza.dev
 LETSENCRYPT_EMAIL=admin@pauza.dev
 
@@ -334,7 +334,6 @@ If the image has not been pushed yet (first-time setup), this will fail — that
 
 The first deployment must be done manually because:
 - The database needs to be initialized
-- Let's Encrypt needs to issue the first TLS certificate
 - You need to verify everything works before enabling CI/CD
 
 ### 8.1 If CI has already pushed an image
@@ -387,19 +386,17 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 1. **db** and **redis** start and become healthy
 2. **api** starts, connects to db and redis, exposes port 8080 on localhost
-3. **nginx** starts with the **bootstrap** config (HTTP only — no TLS cert yet)
-4. **certbot** starts, requests a TLS certificate from Let's Encrypt via HTTP-01 challenge
-5. Once the certificate is issued, certbot writes a reload flag
-6. **nginx** detects the flag, switches to the **TLS config**, and reloads
-7. HTTPS is now live
+3. **traefik** starts, discovers the api service via Docker labels
+4. Traefik automatically requests a TLS certificate from Let's Encrypt via HTTP-01 challenge
+5. HTTPS is live once the certificate is issued (typically within seconds)
 
-This process takes 1–2 minutes. Watch the logs:
+Watch the logs:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f certbot nginx
+docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f traefik
 ```
 
-You should see certbot successfully obtain the certificate and nginx reload with TLS.
+You should see Traefik successfully obtain the certificate via ACME.
 
 ---
 
@@ -416,10 +413,9 @@ All services should show `Up (healthy)` or `Up`:
 ```
 NAME          STATUS
 api           Up (healthy)
-nginx         Up
+traefik       Up
 db            Up (healthy)
 redis         Up (healthy)
-certbot       Up
 ```
 
 ### 9.2 Test the health endpoint
@@ -562,7 +558,7 @@ push to main
           - SSHes into production server
           - Pulls the new image
           - Runs database migrations
-          - Restarts api + nginx
+          - Restarts api + traefik
 ```
 
 On **pull requests**, only the unit and integration test jobs run (no build/push/deploy).
@@ -582,30 +578,29 @@ Go to the repository **Actions** tab to see the pipeline status. Each run shows 
 
 ## 12. TLS Certificate Management
 
-TLS certificates are managed automatically by the **certbot** container.
+TLS certificates are managed automatically by **Traefik** using the ACME protocol (Let's Encrypt).
 
 ### How it works
 
-- On **first start**: certbot requests a new certificate from Let's Encrypt
-- **Every 12 hours**: certbot checks if the certificate needs renewal (Let's Encrypt certs expire after 90 days, renewal happens at 60 days)
-- After renewal, certbot signals nginx to reload the new certificate
+- On **first start**: Traefik requests a new certificate from Let's Encrypt via HTTP-01 challenge
+- **Automatic renewal**: Traefik monitors certificate expiry and renews automatically (Let's Encrypt certs expire after 90 days, Traefik renews well before expiry)
+- Certificates are stored in the `traefik-certs` Docker volume as `acme.json`
 
-### Manual certificate check
+### Check certificate status
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml exec certbot \
-  certbot certificates
+# View Traefik logs for ACME activity
+docker compose -f docker-compose.yml -f docker-compose.prod.yml logs traefik | grep -i acme
 ```
 
-### Force renewal
+### Force certificate renewal
+
+Traefik handles renewals automatically. If you need to force a fresh certificate (e.g. after a domain change), remove the ACME storage and restart:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml exec certbot \
-  certbot renew --force-renewal
-
-# Then reload nginx
-docker compose -f docker-compose.yml -f docker-compose.prod.yml exec nginx \
-  nginx -s reload
+docker compose -f docker-compose.yml -f docker-compose.prod.yml down traefik
+docker volume rm $(docker volume ls -q | grep traefik-certs)
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d traefik
 ```
 
 ---
@@ -659,7 +654,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api ./p
 cd /opt/pauza-server
 docker compose -f docker-compose.yml -f docker-compose.prod.yml pull api
 docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api ./pauza-migrate
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d api nginx
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d api traefik
 ```
 
 ### Update the repo on the server (for compose/config changes)
@@ -700,20 +695,22 @@ docker image prune -af
 
 ## 14. Troubleshooting
 
-### Certbot fails to get a certificate
+### Traefik fails to get a certificate
 
-**Symptoms:** nginx stays on HTTP, no HTTPS available.
+**Symptoms:** HTTPS not working, browser shows certificate error.
 
 **Check:**
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml logs certbot
+docker compose -f docker-compose.yml -f docker-compose.prod.yml logs traefik
 ```
 
 **Common causes:**
 - DNS not pointing to the server — verify with `dig +short api.pauza.dev`
 - Port 80 blocked by firewall — verify with `sudo ufw status`
 - `PUBLIC_DOMAIN` in `.env.prod` doesn't match your DNS record
+- `LETSENCRYPT_EMAIL` not set in `.env.prod`
+- Let's Encrypt rate limit hit — check logs for rate limit errors (wait 1 hour and retry)
 
 ### API container keeps restarting
 
@@ -783,4 +780,14 @@ docker system prune -af
 
 # Remove unused volumes (CAREFUL: won't touch named volumes in use)
 docker volume prune -f
+```
+
+### Migrating from nginx+certbot to Traefik
+
+If deploying on a server that previously ran the nginx+certbot stack, the existing `letsencrypt` Docker volume contains certbot's directory structure (not Traefik's `acme.json`). Remove it before the first Traefik deploy:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml down
+docker volume rm $(docker volume ls -q | grep traefik-certs)
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```

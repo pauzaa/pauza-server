@@ -11,37 +11,21 @@ services:
         condition: service_healthy
     ports:
       - "127.0.0.1:8080:8080"
+    labels:
+      - "traefik.http.routers.api.rule=Host(`${PUBLIC_DOMAIN}`)"
 
-  nginx:
-    image: nginx:1.27-alpine
+  traefik:
+    image: traefik:v3.3
     pull_policy: always
-    env_file:
-      - ./.env.prod
-    command: ["/bin/sh", "/opt/pauza/start-prod-nginx.sh"]
+    command:
+      - "--certificatesresolvers.letsencrypt.acme.email=${LETSENCRYPT_EMAIL}"
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ./deploy/nginx/production-bootstrap.conf.template:/etc/nginx/templates/production-bootstrap.conf.template:ro
-      - ./deploy/nginx/production-tls.conf.template:/etc/nginx/templates/production-tls.conf.template:ro
-      - ./deploy/nginx/start-prod-nginx.sh:/opt/pauza/start-prod-nginx.sh:ro
-      - letsencrypt:/etc/letsencrypt
-      - certbot-webroot:/var/www/certbot
-
-  certbot:
-    image: certbot/certbot:latest
-    pull_policy: always
-    env_file:
-      - ./.env.prod
-    command: ["/bin/sh", "/opt/pauza/run-certbot.sh"]
-    depends_on:
-      nginx:
-        condition: service_started
-    volumes:
-      - ./deploy/certbot/run-certbot.sh:/opt/pauza/run-certbot.sh:ro
-      - letsencrypt:/etc/letsencrypt
-      - certbot-webroot:/var/www/certbot
-    restart: unless-stopped
+      - ./deploy/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - traefik-certs:/traefik-certs
+      - /var/run/docker.sock:/var/run/docker.sock:ro
 
   db:
     image: postgres:16-alpine
@@ -73,7 +57,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  letsencrypt:
+  traefik-certs:
   pgdata-prod:
-  certbot-webroot:
   redisdata-prod:
