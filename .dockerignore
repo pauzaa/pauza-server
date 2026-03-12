@@ -1,0 +1,15 @@
+.git/
+.github/
+.env*
+.idea/
+.vscode/
+deploy/
+docs/
+docker-compose*.yml
+*.md
+.DS_Store
+.gitignore
+.dockerignore
+coverage.html
+*.test
+*.out

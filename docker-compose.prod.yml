@@ -1,6 +1,6 @@
 services:
   api:
-    image: docker.io/your-dockerhub-user/pauza-server:latest
+    image: ghcr.io/pauzaa/pauza-server:latest
     pull_policy: always
     env_file:
       - ./.env.prod
@@ -60,11 +60,13 @@ services:
   redis:
     image: redis:7-alpine
     pull_policy: always
-    command: ["redis-server", "--appendonly", "yes"]
+    env_file:
+      - ./.env.prod
+    command: ["sh", "-c", "redis-server --appendonly yes --requirepass $REDIS_PASSWORD"]
     volumes:
       - redisdata-prod:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping"]
       interval: 10s
       timeout: 5s
       retries: 5
