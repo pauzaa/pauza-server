@@ -100,15 +100,19 @@ func TestRefresh_Validation(t *testing.T) {
 }
 
 type mockAuthService struct {
-	startFn                  func(ctx context.Context, in service.StartAuthInput) (service.StartAuthOutput, error)
-	verifyOTPFn              func(ctx context.Context, in service.VerifyOTPInput) (service.AuthOutput, error)
-	refreshFn                func(ctx context.Context, in service.RefreshInput) (service.RefreshOutput, error)
-	getMeFn                  func(ctx context.Context, in service.GetMeInput) (service.UserProfile, error)
-	updateMeFn               func(ctx context.Context, in service.UpdateMeInput) (service.UserProfile, error)
-	updateProfilePhotoFn     func(ctx context.Context, in service.UpdateProfilePhotoInput) (service.UserProfile, error)
-	checkUsernameAvailableFn func(ctx context.Context, in service.UsernameAvailableInput) (service.UsernameAvailableOutput, error)
-	requestDeleteFn          func(ctx context.Context, in service.DeleteAccountRequestInput) (service.MessageOutput, error)
-	confirmDeleteFn          func(ctx context.Context, in service.DeleteAccountConfirmInput) (service.MessageOutput, error)
+	startFn                   func(ctx context.Context, in service.StartAuthInput) (service.StartAuthOutput, error)
+	verifyOTPFn               func(ctx context.Context, in service.VerifyOTPInput) (service.AuthOutput, error)
+	refreshFn                 func(ctx context.Context, in service.RefreshInput) (service.RefreshOutput, error)
+	getMeFn                   func(ctx context.Context, in service.GetMeInput) (service.UserProfile, error)
+	updateMeFn                func(ctx context.Context, in service.UpdateMeInput) (service.UserProfile, error)
+	updateProfilePhotoFn      func(ctx context.Context, in service.UpdateProfilePhotoInput) (service.UserProfile, error)
+	getNotificationPrefsFn    func(ctx context.Context, in service.GetNotificationPreferencesInput) (service.NotificationPreferences, error)
+	updateNotificationPrefsFn func(ctx context.Context, in service.UpdateNotificationPreferencesInput) (service.NotificationPreferences, error)
+	getPrivacyPrefsFn         func(ctx context.Context, in service.GetPrivacyPreferencesInput) (service.PrivacyPreferences, error)
+	updatePrivacyPrefsFn      func(ctx context.Context, in service.UpdatePrivacyPreferencesInput) (service.PrivacyPreferences, error)
+	checkUsernameAvailableFn  func(ctx context.Context, in service.UsernameAvailableInput) (service.UsernameAvailableOutput, error)
+	requestDeleteFn           func(ctx context.Context, in service.DeleteAccountRequestInput) (service.MessageOutput, error)
+	confirmDeleteFn           func(ctx context.Context, in service.DeleteAccountConfirmInput) (service.MessageOutput, error)
 }
 
 func (m *mockAuthService) Start(ctx context.Context, in service.StartAuthInput) (service.StartAuthOutput, error) {
@@ -131,6 +135,18 @@ func (m *mockAuthService) UpdateProfilePhoto(ctx context.Context, in service.Upd
 		return m.updateProfilePhotoFn(ctx, in)
 	}
 	return service.UserProfile{}, nil
+}
+func (m *mockAuthService) GetNotificationPreferences(ctx context.Context, in service.GetNotificationPreferencesInput) (service.NotificationPreferences, error) {
+	return m.getNotificationPrefsFn(ctx, in)
+}
+func (m *mockAuthService) UpdateNotificationPreferences(ctx context.Context, in service.UpdateNotificationPreferencesInput) (service.NotificationPreferences, error) {
+	return m.updateNotificationPrefsFn(ctx, in)
+}
+func (m *mockAuthService) GetPrivacyPreferences(ctx context.Context, in service.GetPrivacyPreferencesInput) (service.PrivacyPreferences, error) {
+	return m.getPrivacyPrefsFn(ctx, in)
+}
+func (m *mockAuthService) UpdatePrivacyPreferences(ctx context.Context, in service.UpdatePrivacyPreferencesInput) (service.PrivacyPreferences, error) {
+	return m.updatePrivacyPrefsFn(ctx, in)
 }
 func (m *mockAuthService) CheckUsernameAvailable(ctx context.Context, in service.UsernameAvailableInput) (service.UsernameAvailableOutput, error) {
 	return m.checkUsernameAvailableFn(ctx, in)
@@ -208,6 +224,7 @@ func TestVerifyOTP_Success(t *testing.T) {
 					Name:               "Test User",
 					Username:           "test_user",
 					ProfilePictureURL:  &profilePictureURL,
+					PushEnabled:        true,
 					LeaderboardVisible: true,
 					CreatedAt:          createdAt,
 					Subscription: &service.EntitlementInfo{
@@ -318,6 +335,159 @@ func TestRefresh_Success(t *testing.T) {
 	}
 	if body.AccessToken != "rotated-access" || body.RefreshToken != "rotated-refresh" {
 		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestGetNotificationPreferences_Success(t *testing.T) {
+	t.Parallel()
+
+	h := NewAuthHandler(&mockAuthService{
+		getNotificationPrefsFn: func(_ context.Context, in service.GetNotificationPreferencesInput) (service.NotificationPreferences, error) {
+			if in.UserID != "user-123" {
+				t.Fatalf("user_id = %q", in.UserID)
+			}
+			return service.NotificationPreferences{PushEnabled: false}, nil
+		},
+	}, noopLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me/notification-preferences", nil)
+	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"}))
+	rec := httptest.NewRecorder()
+
+	h.GetNotificationPreferences(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body notificationPreferencesResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.PushEnabled {
+		t.Fatal("push_enabled = true, want false")
+	}
+}
+
+func TestUpdateNotificationPreferences_Success(t *testing.T) {
+	t.Parallel()
+
+	h := NewAuthHandler(&mockAuthService{
+		updateNotificationPrefsFn: func(_ context.Context, in service.UpdateNotificationPreferencesInput) (service.NotificationPreferences, error) {
+			if in.UserID != "user-123" {
+				t.Fatalf("user_id = %q", in.UserID)
+			}
+			if in.PushEnabled == nil || *in.PushEnabled {
+				t.Fatalf("push_enabled = %v, want false", in.PushEnabled)
+			}
+			return service.NotificationPreferences{PushEnabled: false}, nil
+		},
+	}, noopLogger())
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/me/notification-preferences", strings.NewReader(`{"push_enabled":false}`))
+	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"}))
+	rec := httptest.NewRecorder()
+
+	h.UpdateNotificationPreferences(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body notificationPreferencesResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.PushEnabled {
+		t.Fatal("push_enabled = true, want false")
+	}
+}
+
+func TestGetPrivacyPreferences_Success(t *testing.T) {
+	t.Parallel()
+
+	h := NewAuthHandler(&mockAuthService{
+		getPrivacyPrefsFn: func(_ context.Context, in service.GetPrivacyPreferencesInput) (service.PrivacyPreferences, error) {
+			if in.UserID != "user-123" {
+				t.Fatalf("user_id = %q", in.UserID)
+			}
+			return service.PrivacyPreferences{LeaderboardVisible: false}, nil
+		},
+	}, noopLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me/privacy", nil)
+	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"}))
+	rec := httptest.NewRecorder()
+
+	h.GetPrivacyPreferences(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body privacyPreferencesResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.LeaderboardVisible {
+		t.Fatal("leaderboard_visible = true, want false")
+	}
+}
+
+func TestUpdatePrivacyPreferences_Success(t *testing.T) {
+	t.Parallel()
+
+	h := NewAuthHandler(&mockAuthService{
+		updatePrivacyPrefsFn: func(_ context.Context, in service.UpdatePrivacyPreferencesInput) (service.PrivacyPreferences, error) {
+			if in.UserID != "user-123" {
+				t.Fatalf("user_id = %q", in.UserID)
+			}
+			if in.LeaderboardVisible == nil || *in.LeaderboardVisible {
+				t.Fatalf("leaderboard_visible = %v, want false", in.LeaderboardVisible)
+			}
+			return service.PrivacyPreferences{LeaderboardVisible: false}, nil
+		},
+	}, noopLogger())
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/me/privacy", strings.NewReader(`{"leaderboard_visible":false}`))
+	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"}))
+	rec := httptest.NewRecorder()
+
+	h.UpdatePrivacyPreferences(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body privacyPreferencesResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.LeaderboardVisible {
+		t.Fatal("leaderboard_visible = true, want false")
+	}
+}
+
+func TestUpdateMe_RejectsRemovedPreferenceFields(t *testing.T) {
+	t.Parallel()
+
+	h := NewAuthHandler(&mockAuthService{
+		updateMeFn: func(context.Context, service.UpdateMeInput) (service.UserProfile, error) {
+			t.Fatal("updateMe should not be called")
+			return service.UserProfile{}, nil
+		},
+	}, noopLogger())
+
+	for _, body := range []string{`{"leaderboard_visible":false}`, `{"push_enabled":false}`} {
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/me", strings.NewReader(body))
+		req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"}))
+		rec := httptest.NewRecorder()
+
+		h.UpdateMe(rec, req)
+
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422 for body %s", rec.Code, body)
+		}
 	}
 }
 

@@ -51,6 +51,7 @@ type UserProfile struct {
 	Name               string
 	Username           string
 	ProfilePictureURL  *string
+	PushEnabled        bool
 	LeaderboardVisible bool
 	CreatedAt          time.Time
 	Subscription       *EntitlementInfo
@@ -75,20 +76,45 @@ type MessageOutput struct {
 	Message string
 }
 
+type NotificationPreferences struct {
+	PushEnabled bool `json:"push_enabled"`
+}
+
+type PrivacyPreferences struct {
+	LeaderboardVisible bool `json:"leaderboard_visible"`
+}
+
 type GetMeInput struct {
 	UserID string
 }
 
 type UpdateMeInput struct {
-	UserID             string
-	Name               *string
-	Username           *string
-	LeaderboardVisible *bool
+	UserID   string
+	Name     *string
+	Username *string
 }
 
 type UpdateProfilePhotoInput struct {
 	UserID            string
 	ProfilePictureURL string
+}
+
+type GetNotificationPreferencesInput struct {
+	UserID string
+}
+
+type UpdateNotificationPreferencesInput struct {
+	UserID      string
+	PushEnabled *bool
+}
+
+type GetPrivacyPreferencesInput struct {
+	UserID string
+}
+
+type UpdatePrivacyPreferencesInput struct {
+	UserID             string
+	LeaderboardVisible *bool
 }
 
 type UsernameAvailableInput struct {
@@ -368,7 +394,7 @@ func (s *AuthService) GetMe(ctx context.Context, in GetMeInput) (UserProfile, er
 }
 
 func (s *AuthService) UpdateMe(ctx context.Context, in UpdateMeInput) (UserProfile, error) {
-	updated, err := s.repo.UpdateUser(ctx, s.pool, in.UserID, in.Name, in.Username, in.LeaderboardVisible, nil)
+	updated, err := s.repo.UpdateUser(ctx, s.pool, in.UserID, in.Name, in.Username, nil, nil)
 	if errors.Is(err, repository.ErrNotFound) {
 		return UserProfile{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
 	}
@@ -418,6 +444,62 @@ func (s *AuthService) UpdateProfilePhoto(ctx context.Context, in UpdateProfilePh
 	}
 
 	return userProfileFromRow(updated, subscription), nil
+}
+
+func (s *AuthService) GetNotificationPreferences(ctx context.Context, in GetNotificationPreferencesInput) (NotificationPreferences, error) {
+	pushEnabled, err := s.repo.GetPushEnabled(ctx, s.pool, in.UserID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return NotificationPreferences{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+	}
+	if err != nil {
+		s.logger.Error("querying notification preferences", "err", err)
+		return NotificationPreferences{}, ErrInternal
+	}
+	return NotificationPreferences{PushEnabled: pushEnabled}, nil
+}
+
+func (s *AuthService) UpdateNotificationPreferences(ctx context.Context, in UpdateNotificationPreferencesInput) (NotificationPreferences, error) {
+	if in.PushEnabled == nil {
+		return s.GetNotificationPreferences(ctx, GetNotificationPreferencesInput{UserID: in.UserID})
+	}
+
+	pushEnabled, err := s.repo.UpdatePushEnabled(ctx, s.pool, in.UserID, *in.PushEnabled)
+	if errors.Is(err, repository.ErrNotFound) {
+		return NotificationPreferences{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+	}
+	if err != nil {
+		s.logger.Error("updating notification preferences", "err", err)
+		return NotificationPreferences{}, ErrInternal
+	}
+	return NotificationPreferences{PushEnabled: pushEnabled}, nil
+}
+
+func (s *AuthService) GetPrivacyPreferences(ctx context.Context, in GetPrivacyPreferencesInput) (PrivacyPreferences, error) {
+	user, err := s.repo.GetUserByID(ctx, s.pool, in.UserID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return PrivacyPreferences{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+	}
+	if err != nil {
+		s.logger.Error("querying privacy preferences", "err", err)
+		return PrivacyPreferences{}, ErrInternal
+	}
+	return PrivacyPreferences{LeaderboardVisible: user.LeaderboardVisible}, nil
+}
+
+func (s *AuthService) UpdatePrivacyPreferences(ctx context.Context, in UpdatePrivacyPreferencesInput) (PrivacyPreferences, error) {
+	if in.LeaderboardVisible == nil {
+		return s.GetPrivacyPreferences(ctx, GetPrivacyPreferencesInput{UserID: in.UserID})
+	}
+
+	updated, err := s.repo.UpdateUser(ctx, s.pool, in.UserID, nil, nil, in.LeaderboardVisible, nil)
+	if errors.Is(err, repository.ErrNotFound) {
+		return PrivacyPreferences{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+	}
+	if err != nil {
+		s.logger.Error("updating privacy preferences", "err", err)
+		return PrivacyPreferences{}, ErrInternal
+	}
+	return PrivacyPreferences{LeaderboardVisible: updated.LeaderboardVisible}, nil
 }
 
 func (s *AuthService) RequestAccountDeletion(ctx context.Context, in DeleteAccountRequestInput) (MessageOutput, error) {
@@ -708,6 +790,7 @@ func userProfileFromRow(user repository.UserRow, subscription *EntitlementInfo) 
 		Name:               user.Name,
 		Username:           user.Username,
 		ProfilePictureURL:  user.ProfilePictureURL,
+		PushEnabled:        user.PushEnabled,
 		LeaderboardVisible: user.LeaderboardVisible,
 		CreatedAt:          user.CreatedAt,
 		Subscription:       subscription,

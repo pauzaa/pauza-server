@@ -222,7 +222,7 @@ components:
     # -- User profile -------------------------------------------------------
     UserResponse:
       type: object
-      required: [id, email, name, username, profile_picture_url, leaderboard_visible, created_at, subscription]
+      required: [id, email, name, username, profile_picture_url, push_enabled, leaderboard_visible, created_at, subscription]
       properties:
         id:
           type: string
@@ -237,6 +237,8 @@ components:
         profile_picture_url:
           type: string
           nullable: true
+        push_enabled:
+          type: boolean
         leaderboard_visible:
           type: boolean
         created_at:
@@ -272,7 +274,34 @@ components:
           type: string
           pattern: '^[A-Za-z0-9_]{3,30}$'
           description: 3-30 characters; letters, digits, and underscores only.
+    PrivacyPreferencesResponse:
+      type: object
+      required: [leaderboard_visible]
+      properties:
         leaderboard_visible:
+          type: boolean
+
+    UpdatePrivacyPreferencesRequest:
+      type: object
+      additionalProperties: false
+      description: Unknown JSON fields are rejected. All fields are optional.
+      properties:
+        leaderboard_visible:
+          type: boolean
+
+    NotificationPreferencesResponse:
+      type: object
+      required: [push_enabled]
+      properties:
+        push_enabled:
+          type: boolean
+
+    UpdateNotificationPreferencesRequest:
+      type: object
+      additionalProperties: false
+      description: Unknown JSON fields are rejected. All fields are optional.
+      properties:
+        push_enabled:
           type: boolean
 
     UsernameAvailableResponse:
@@ -1903,6 +1932,144 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "409":
           $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/me/notification-preferences:
+    get:
+      operationId: getNotificationPreferences
+      tags: [Profile]
+      summary: Get current user notification preferences
+      description: Requires a user JWT. Rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      responses:
+        "200":
+          description: Notification preferences returned.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationPreferencesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    patch:
+      operationId: updateNotificationPreferences
+      tags: [Profile]
+      summary: Update current user notification preferences
+      description: Requires a user JWT. Unknown JSON fields are rejected. Rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateNotificationPreferencesRequest"
+      responses:
+        "200":
+          description: Updated notification preferences returned.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationPreferencesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/me/privacy:
+    get:
+      operationId: getPrivacyPreferences
+      tags: [Profile]
+      summary: Get current user privacy preferences
+      description: Requires a user JWT. Rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      responses:
+        "200":
+          description: Privacy preferences returned.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrivacyPreferencesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    patch:
+      operationId: updatePrivacyPreferences
+      tags: [Profile]
+      summary: Update current user privacy preferences
+      description: Requires a user JWT. Unknown JSON fields are rejected. Rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePrivacyPreferencesRequest"
+      responses:
+        "200":
+          description: Updated privacy preferences returned.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrivacyPreferencesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "422":
           $ref: "#/components/responses/ValidationError"
         "429":

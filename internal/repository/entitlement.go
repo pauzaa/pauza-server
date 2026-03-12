@@ -125,7 +125,7 @@ func (r *PgxEntitlementRepository) GetUsersByRevenueCatID(ctx context.Context, d
 	for rows.Next() {
 		var u UserRow
 		if err := rows.Scan(&u.ID, &u.Email, &u.Name, &u.Username, &u.ProfilePictureURL,
-			&u.LeaderboardVisible, &u.CreatedAt); err != nil {
+			&u.PushEnabled, &u.LeaderboardVisible, &u.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scanning user by revenuecat id: %w", err)
 		}
 		users = append(users, u)

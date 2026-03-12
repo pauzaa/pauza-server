@@ -50,6 +50,7 @@ type authEnvelope struct {
 		Name               string  `json:"name"`
 		Username           string  `json:"username"`
 		ProfilePictureURL  *string `json:"profile_picture_url"`
+		PushEnabled        bool    `json:"push_enabled"`
 		LeaderboardVisible bool    `json:"leaderboard_visible"`
 		CreatedAt          string  `json:"created_at"`
 		Subscription       any     `json:"subscription"`

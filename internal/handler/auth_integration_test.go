@@ -5,6 +5,7 @@ package handler_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -175,6 +176,196 @@ func TestIntegration_UploadPhotoStoresFileAndReturnsConfiguredPublicURL(t *testi
 	}
 	if _, err := os.Stat(filepath.Join(photoDir, filename)); err != nil {
 		t.Fatalf("expected uploaded file on disk: %v", err)
+	}
+}
+
+func TestIntegration_NotificationPreferencesReadAndUpdate(t *testing.T) {
+	ts, pool, sender, _ := setupTestServer(t)
+
+	auth := startAndVerifyAuth(t, ts.URL, sender, "prefs@example.com")
+
+	getReq, err := http.NewRequest(http.MethodGet, tsJoin(ts.URL, "/api/v1/me/notification-preferences"), nil)
+	if err != nil {
+		t.Fatalf("create get request: %v", err)
+	}
+	getReq.Header.Set("Authorization", "Bearer "+auth.AccessToken)
+
+	getResp, err := http.DefaultClient.Do(getReq)
+	if err != nil {
+		t.Fatalf("GET notification preferences: %v", err)
+	}
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d: %s", getResp.StatusCode, string(readBody(t, getResp)))
+	}
+
+	var initial struct {
+		PushEnabled bool `json:"push_enabled"`
+	}
+	decodeJSON(t, getResp, &initial)
+	if !initial.PushEnabled {
+		t.Fatal("initial push_enabled = false, want true")
+	}
+
+	body, err := json.Marshal(map[string]bool{"push_enabled": false})
+	if err != nil {
+		t.Fatalf("marshal patch body: %v", err)
+	}
+	patchReq, err := http.NewRequest(http.MethodPatch, tsJoin(ts.URL, "/api/v1/me/notification-preferences"), bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("create patch request: %v", err)
+	}
+	patchReq.Header.Set("Authorization", "Bearer "+auth.AccessToken)
+	patchReq.Header.Set("Content-Type", "application/json")
+
+	patchResp, err := http.DefaultClient.Do(patchReq)
+	if err != nil {
+		t.Fatalf("PATCH notification preferences: %v", err)
+	}
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("patch status = %d: %s", patchResp.StatusCode, string(readBody(t, patchResp)))
+	}
+
+	var updated struct {
+		PushEnabled bool `json:"push_enabled"`
+	}
+	decodeJSON(t, patchResp, &updated)
+	if updated.PushEnabled {
+		t.Fatal("updated push_enabled = true, want false")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var stored bool
+	if err := pool.QueryRow(ctx, `SELECT push_enabled FROM users WHERE id = $1`, auth.User.ID).Scan(&stored); err != nil {
+		t.Fatalf("query push_enabled: %v", err)
+	}
+	if stored {
+		t.Fatal("stored push_enabled = true, want false")
+	}
+}
+
+func TestIntegration_GetMeIncludesPushEnabled(t *testing.T) {
+	ts, pool, sender, _ := setupTestServer(t)
+
+	auth := startAndVerifyAuth(t, ts.URL, sender, "me-push@example.com")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := pool.Exec(ctx, `UPDATE users SET push_enabled = false WHERE id = $1`, auth.User.ID); err != nil {
+		t.Fatalf("update push_enabled: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, tsJoin(ts.URL, "/api/v1/me"), nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+auth.AccessToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /me: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /me status = %d: %s", resp.StatusCode, string(readBody(t, resp)))
+	}
+
+	var body struct {
+		PushEnabled bool `json:"push_enabled"`
+	}
+	decodeJSON(t, resp, &body)
+	if body.PushEnabled {
+		t.Fatal("push_enabled = true, want false")
+	}
+}
+
+func TestIntegration_PrivacyPreferencesReadAndUpdate(t *testing.T) {
+	ts, pool, sender, _ := setupTestServer(t)
+
+	auth := startAndVerifyAuth(t, ts.URL, sender, "privacy@example.com")
+
+	getReq, err := http.NewRequest(http.MethodGet, tsJoin(ts.URL, "/api/v1/me/privacy"), nil)
+	if err != nil {
+		t.Fatalf("create get request: %v", err)
+	}
+	getReq.Header.Set("Authorization", "Bearer "+auth.AccessToken)
+
+	getResp, err := http.DefaultClient.Do(getReq)
+	if err != nil {
+		t.Fatalf("GET privacy preferences: %v", err)
+	}
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d: %s", getResp.StatusCode, string(readBody(t, getResp)))
+	}
+
+	var initial struct {
+		LeaderboardVisible bool `json:"leaderboard_visible"`
+	}
+	decodeJSON(t, getResp, &initial)
+	if !initial.LeaderboardVisible {
+		t.Fatal("initial leaderboard_visible = false, want true")
+	}
+
+	body, err := json.Marshal(map[string]bool{"leaderboard_visible": false})
+	if err != nil {
+		t.Fatalf("marshal patch body: %v", err)
+	}
+	patchReq, err := http.NewRequest(http.MethodPatch, tsJoin(ts.URL, "/api/v1/me/privacy"), bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("create patch request: %v", err)
+	}
+	patchReq.Header.Set("Authorization", "Bearer "+auth.AccessToken)
+	patchReq.Header.Set("Content-Type", "application/json")
+
+	patchResp, err := http.DefaultClient.Do(patchReq)
+	if err != nil {
+		t.Fatalf("PATCH privacy preferences: %v", err)
+	}
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("patch status = %d: %s", patchResp.StatusCode, string(readBody(t, patchResp)))
+	}
+
+	var updated struct {
+		LeaderboardVisible bool `json:"leaderboard_visible"`
+	}
+	decodeJSON(t, patchResp, &updated)
+	if updated.LeaderboardVisible {
+		t.Fatal("updated leaderboard_visible = true, want false")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var stored bool
+	if err := pool.QueryRow(ctx, `SELECT leaderboard_visible FROM users WHERE id = $1`, auth.User.ID).Scan(&stored); err != nil {
+		t.Fatalf("query leaderboard_visible: %v", err)
+	}
+	if stored {
+		t.Fatal("stored leaderboard_visible = true, want false")
+	}
+}
+
+func TestIntegration_UpdateMeRejectsRemovedPreferenceFields(t *testing.T) {
+	ts, _, sender, _ := setupTestServer(t)
+
+	auth := startAndVerifyAuth(t, ts.URL, sender, "me-reject@example.com")
+
+	for _, body := range []string{`{"leaderboard_visible":false}`, `{"push_enabled":false}`} {
+		req, err := http.NewRequest(http.MethodPatch, tsJoin(ts.URL, "/api/v1/me"), bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatalf("create patch request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+auth.AccessToken)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("PATCH /me: %v", err)
+		}
+		if resp.StatusCode != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422 for body %s", resp.StatusCode, body)
+		}
+		discardBody(t, resp)
 	}
 }
 

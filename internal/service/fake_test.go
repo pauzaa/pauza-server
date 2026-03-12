@@ -69,6 +69,8 @@ type fakeAuthRepo struct {
 	getUserByIDForUpdateFn                    func(ctx context.Context, db repository.DBTX, userID string) (repository.UserRow, error)
 	insertUserFn                              func(ctx context.Context, db repository.DBTX, email, username string) (string, error)
 	updateUserFn                              func(ctx context.Context, db repository.DBTX, userID string, name *string, username *string, leaderboardVisible *bool, profilePictureURL *string) (repository.UserRow, error)
+	getPushEnabledFn                          func(ctx context.Context, db repository.DBTX, userID string) (bool, error)
+	updatePushEnabledFn                       func(ctx context.Context, db repository.DBTX, userID string, pushEnabled bool) (bool, error)
 	isUsernameTakenFn                         func(ctx context.Context, db repository.DBTX, username string, excludeUserID string) (bool, error)
 	deleteUserFn                              func(ctx context.Context, db repository.DBTX, userID string) error
 	insertOTPFn                               func(ctx context.Context, db repository.DBTX, email string, userID *string, codeHash, purpose string, expiresAt time.Time) (string, error)
@@ -106,6 +108,12 @@ func (f *fakeAuthRepo) InsertUser(ctx context.Context, db repository.DBTX, email
 }
 func (f *fakeAuthRepo) UpdateUser(ctx context.Context, db repository.DBTX, userID string, name *string, username *string, leaderboardVisible *bool, profilePictureURL *string) (repository.UserRow, error) {
 	return f.updateUserFn(ctx, db, userID, name, username, leaderboardVisible, profilePictureURL)
+}
+func (f *fakeAuthRepo) GetPushEnabled(ctx context.Context, db repository.DBTX, userID string) (bool, error) {
+	return f.getPushEnabledFn(ctx, db, userID)
+}
+func (f *fakeAuthRepo) UpdatePushEnabled(ctx context.Context, db repository.DBTX, userID string, pushEnabled bool) (bool, error) {
+	return f.updatePushEnabledFn(ctx, db, userID, pushEnabled)
 }
 func (f *fakeAuthRepo) IsUsernameTaken(ctx context.Context, db repository.DBTX, username string, excludeUserID string) (bool, error) {
 	return f.isUsernameTakenFn(ctx, db, username, excludeUserID)

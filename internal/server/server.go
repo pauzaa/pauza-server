@@ -123,6 +123,7 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 	if pushSender == nil {
 		pushSender = push.NewNoopSender(logger)
 	}
+	pushSender = push.NewPreferenceSender(pool, authRepo, pushSender, logger)
 	socialHandler := handler.NewSocialHandler(service.NewSocialService(pool, socialRepo, pushSender, logger))
 
 	// Admin repository (shared with webhook override checking and admin routes).
@@ -207,6 +208,10 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 
 				r.Get("/me", authHandler.GetMe)
 				r.Patch("/me", authHandler.UpdateMe)
+				r.Get("/me/notification-preferences", authHandler.GetNotificationPreferences)
+				r.Patch("/me/notification-preferences", authHandler.UpdateNotificationPreferences)
+				r.Get("/me/privacy", authHandler.GetPrivacyPreferences)
+				r.Patch("/me/privacy", authHandler.UpdatePrivacyPreferences)
 				r.Get("/me/username-available", authHandler.UsernameAvailable)
 				r.Post("/me/delete/request", authHandler.DeleteRequest)
 				r.Post("/me/delete/confirm", authHandler.DeleteConfirm)

@@ -2,7 +2,10 @@ package push
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+
+	"github.com/IsorilovA/pauza-server/internal/repository"
 )
 
 type Notification struct {
@@ -14,6 +17,10 @@ type Notification struct {
 
 type Sender interface {
 	Send(ctx context.Context, userID string, notification Notification) error
+}
+
+type PreferenceStore interface {
+	GetPushEnabled(ctx context.Context, db repository.DBTX, userID string) (bool, error)
 }
 
 type NoopSender struct {
@@ -32,4 +39,40 @@ func (s *NoopSender) Send(ctx context.Context, userID string, notification Notif
 		)
 	}
 	return nil
+}
+
+type PreferenceSender struct {
+	pool   repository.Pool
+	store  PreferenceStore
+	next   Sender
+	logger *slog.Logger
+}
+
+func NewPreferenceSender(pool repository.Pool, store PreferenceStore, next Sender, logger *slog.Logger) *PreferenceSender {
+	return &PreferenceSender{
+		pool:   pool,
+		store:  store,
+		next:   next,
+		logger: logger,
+	}
+}
+
+func (s *PreferenceSender) Send(ctx context.Context, userID string, notification Notification) error {
+	pushEnabled, err := s.store.GetPushEnabled(ctx, s.pool, userID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !pushEnabled {
+		if s.logger != nil {
+			s.logger.InfoContext(ctx, "push disabled for user; skipping send",
+				"user_id", userID,
+				"type", notification.Type,
+			)
+		}
+		return nil
+	}
+	return s.next.Send(ctx, userID, notification)
 }

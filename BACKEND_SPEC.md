@@ -800,6 +800,7 @@ Returns the authenticated user's profile and current subscription status.
   "name": "John Doe",
   "username": "johndoe",
   "profile_picture_url": "https://api.example.com/photos/uuid.jpg",
+  "push_enabled": true,
   "leaderboard_visible": true,
   "created_at": "2024-01-15T10:30:00Z",
   "subscription": {
@@ -823,8 +824,7 @@ Update profile fields.
 ```json
 {
   "name": "Jane Doe",
-  "username": "janedoe",
-  "leaderboard_visible": false
+  "username": "janedoe"
 }
 ```
 
@@ -834,7 +834,6 @@ All fields are optional. Only provided fields are updated.
 
 - `name`: max 100 characters.
 - `username`: 3-30 characters, alphanumeric + underscores only, case-insensitive unique.
-- `leaderboard_visible`: boolean.
 
 **Responses:**
 
@@ -843,6 +842,66 @@ All fields are optional. Only provided fields are updated.
 | `200` | Updated user object (same format as `GET /me`) | Success |
 | `409` | Error with code `CONFLICT` | Username already taken |
 | `422` | Error with code `VALIDATION_ERROR` | Invalid input |
+
+#### `GET /api/v1/me/privacy`
+
+Returns the authenticated user's privacy preferences.
+
+**Auth:** Required (JWT).
+
+**Response (`200`):**
+
+```json
+{
+  "leaderboard_visible": true
+}
+```
+
+#### `PATCH /api/v1/me/privacy`
+
+Update privacy preferences for the authenticated user.
+
+**Auth:** Required (JWT).
+
+**Request:**
+
+```json
+{
+  "leaderboard_visible": false
+}
+```
+
+All fields are optional. Only provided fields are updated.
+
+#### `GET /api/v1/me/notification-preferences`
+
+Returns the authenticated user's notification preferences.
+
+**Auth:** Required (JWT).
+
+**Response (`200`):**
+
+```json
+{
+  "push_enabled": true
+}
+```
+
+#### `PATCH /api/v1/me/notification-preferences`
+
+Update notification preferences for the authenticated user.
+
+**Auth:** Required (JWT).
+
+**Request:**
+
+```json
+{
+  "push_enabled": false
+}
+```
+
+All fields are optional. Only provided fields are updated.
 
 #### `POST /api/v1/me/photo`
 
@@ -1537,7 +1596,7 @@ Two independent leaderboards rank users based on different metrics:
 ### 8.2 Visibility
 
 - Users are visible on leaderboards by default (`leaderboard_visible = true` in `users` table).
-- Users can opt out by setting `leaderboard_visible = false` via `PATCH /api/v1/me`.
+- Users can opt out by setting `leaderboard_visible = false` via `PATCH /api/v1/me/privacy`.
 - Opted-out users do not appear in leaderboard listings but can still see their own rank via the `my_rank` field in the response.
 
 ### 8.3 Computation
@@ -1602,6 +1661,7 @@ Schedule reminders are deferred and are not part of the current backend implemen
 - Tokens are unregistered via `POST /api/v1/devices/unregister` with the `fcm_token` in the request body (e.g., on user logout).
 - If Firebase reports that a token is unregistered when sending a notification, the token is automatically deleted from `device_tokens`.
 - A user may have multiple tokens (e.g., after app reinstall before old token is cleaned up). All valid tokens are targeted when sending a notification.
+- User-level push delivery can be disabled via `push_enabled`. When disabled, the backend skips notification sends without deleting stored device tokens.
 
 ---
 
@@ -1844,7 +1904,7 @@ The following items are intentionally excluded from this specification:
 | **Specific premium feature definitions** | Which exact product capabilities are included in free vs premium is a product decision outside this backend contract. This spec only defines entitlement enforcement boundaries. |
 | **User blocking** | The ability to block other users (preventing friend requests, hiding from search) is deferred to a future iteration. |
 | **Contact-based friend discovery** | Syncing phone contacts to find existing Pauza users is deferred to a future iteration. |
-| **Push notification preferences** | Per-notification-type opt-in/opt-out settings are deferred. All notification types are sent to all users initially. |
+| **Granular push notification categories** | Per-notification-type opt-in/opt-out settings are deferred. The backend currently supports only a single user-level `push_enabled` toggle. |
 | **File/photo storage infrastructure** | Profile photos are stored on local disk on the deployed machine. The deployment must expose `PHOTO_STORAGE_DIR` at the same public path configured by `PHOTO_PUBLIC_BASE_URL`, typically via Nginx. |
 | **Web frontend for admin panel** | This spec covers the admin REST API only. The admin web UI is a separate project that consumes these endpoints. |
 

@@ -86,6 +86,31 @@ func (fakePool) Query(context.Context, string, ...any) (pgx.Rows, error) {
 	return nil, errors.New("unexpected Query call")
 }
 
+type fakePreferenceStore struct {
+	pushEnabled bool
+	err         error
+}
+
+func (f *fakePreferenceStore) GetPushEnabled(context.Context, repository.DBTX, string) (bool, error) {
+	return f.pushEnabled, f.err
+}
+
+type captureSender struct {
+	calls []struct {
+		userID       string
+		notification Notification
+	}
+	err error
+}
+
+func (c *captureSender) Send(_ context.Context, userID string, notification Notification) error {
+	c.calls = append(c.calls, struct {
+		userID       string
+		notification Notification
+	}{userID: userID, notification: notification})
+	return c.err
+}
+
 func TestNewFirebaseSenderUsesInjectedMessagingClient(t *testing.T) {
 	prev := newMessagingClient
 	t.Cleanup(func() { newMessagingClient = prev })
@@ -220,5 +245,34 @@ func TestFirebaseSenderKeepsTransientFailures(t *testing.T) {
 	}
 	if len(store.deletedTokens) != 0 {
 		t.Fatalf("deleted tokens = %#v, want none", store.deletedTokens)
+	}
+}
+
+func TestPreferenceSenderSkipsDisabledUsers(t *testing.T) {
+	next := &captureSender{}
+	sender := NewPreferenceSender(fakePool{}, &fakePreferenceStore{pushEnabled: false}, next, testLogger())
+
+	err := sender.Send(context.Background(), "user-1", Notification{Type: "friend_request"})
+	if err != nil {
+		t.Fatalf("Send error = %v, want nil", err)
+	}
+	if len(next.calls) != 0 {
+		t.Fatalf("next sender calls = %d, want 0", len(next.calls))
+	}
+}
+
+func TestPreferenceSenderDelegatesEnabledUsers(t *testing.T) {
+	next := &captureSender{}
+	sender := NewPreferenceSender(fakePool{}, &fakePreferenceStore{pushEnabled: true}, next, testLogger())
+
+	err := sender.Send(context.Background(), "user-1", Notification{Type: "friend_request"})
+	if err != nil {
+		t.Fatalf("Send error = %v, want nil", err)
+	}
+	if len(next.calls) != 1 {
+		t.Fatalf("next sender calls = %d, want 1", len(next.calls))
+	}
+	if next.calls[0].userID != "user-1" {
+		t.Fatalf("user_id = %q, want user-1", next.calls[0].userID)
 	}
 }

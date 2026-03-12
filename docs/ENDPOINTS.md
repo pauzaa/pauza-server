@@ -590,6 +590,7 @@ Get the authenticated user's profile.
   "name": "Jane",
   "username": "jane42",
   "profile_picture_url": null,
+  "push_enabled": true,
   "leaderboard_visible": true,
   "created_at": "2025-01-15T08:30:00Z",
   "subscription": null
@@ -622,7 +623,6 @@ updated.
 |---|---|---|---|
 | `name` | string | no | Max 100 characters |
 | `username` | string | no | 3–30 chars, alphanumeric + underscore |
-| `leaderboard_visible` | bool | no | — |
 
 **Success — 200 OK**
 
@@ -635,6 +635,112 @@ Returns the full updated user profile (same shape as `GET /api/v1/me`).
 | `VALIDATION_ERROR` (422) | Invalid name or username |
 | `UNAUTHORIZED` (401) | Missing or invalid JWT |
 | `CONFLICT` (409) | Username already taken |
+| `RATE_LIMITED` (429) | Too many requests |
+| `INTERNAL_ERROR` (500) | Transient server error |
+
+---
+
+### `GET /api/v1/me/notification-preferences`
+
+Get the authenticated user's notification preferences.
+
+| Property | Value |
+|---|---|
+| **Auth** | User JWT |
+| **Rate limit** | `general-api` tier — per user ID (default 60 req/min) |
+
+**Success — 200 OK**
+
+```json
+{
+  "push_enabled": true
+}
+```
+
+---
+
+### `PATCH /api/v1/me/notification-preferences`
+
+Update the authenticated user's notification preferences.
+
+| Property | Value |
+|---|---|
+| **Auth** | User JWT |
+| **Rate limit** | `general-api` tier — per user ID (default 60 req/min) |
+
+**Request body**
+
+| Field | Type | Required | Validation |
+|---|---|---|---|
+| `push_enabled` | bool | no | — |
+
+**Success — 200 OK**
+
+```json
+{
+  "push_enabled": false
+}
+```
+
+**Errors**
+
+| Code | When |
+|---|---|
+| `VALIDATION_ERROR` (422) | Invalid JSON body |
+| `UNAUTHORIZED` (401) | Missing or invalid JWT |
+| `RATE_LIMITED` (429) | Too many requests |
+| `INTERNAL_ERROR` (500) | Transient server error |
+
+---
+
+### `GET /api/v1/me/privacy`
+
+Get the authenticated user's privacy preferences.
+
+| Property | Value |
+|---|---|
+| **Auth** | User JWT |
+| **Rate limit** | `general-api` tier — per user ID (default 60 req/min) |
+
+**Success — 200 OK**
+
+```json
+{
+  "leaderboard_visible": true
+}
+```
+
+---
+
+### `PATCH /api/v1/me/privacy`
+
+Update the authenticated user's privacy preferences.
+
+| Property | Value |
+|---|---|
+| **Auth** | User JWT |
+| **Rate limit** | `general-api` tier — per user ID (default 60 req/min) |
+
+**Request body**
+
+| Field | Type | Required | Validation |
+|---|---|---|---|
+| `leaderboard_visible` | bool | no | — |
+
+**Success — 200 OK**
+
+```json
+{
+  "leaderboard_visible": false
+}
+```
+
+**Errors**
+
+| Code | When |
+|---|---|
+| `VALIDATION_ERROR` (422) | Invalid JSON body |
+| `UNAUTHORIZED` (401) | Missing or invalid JWT |
 | `RATE_LIMITED` (429) | Too many requests |
 | `INTERNAL_ERROR` (500) | Transient server error |
 
@@ -787,6 +893,8 @@ Register a device for push notifications.
 The backend sends Firebase notifications for friend-request events. If Firebase
 later reports that a registered token is no longer valid, that token is
 automatically removed from the server.
+User-level delivery is additionally controlled by `push_enabled`; disabled
+users keep their registered tokens, but the backend skips sends for them.
 
 | Property | Value |
 |---|---|

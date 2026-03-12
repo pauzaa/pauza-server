@@ -360,6 +360,151 @@ func TestRefresh_RevokedToken_RevokesAll(t *testing.T) {
 	}
 }
 
+func TestGetNotificationPreferences_Success(t *testing.T) {
+	t.Parallel()
+
+	repo := &fakeAuthRepo{
+		getPushEnabledFn: func(_ context.Context, _ repository.DBTX, userID string) (bool, error) {
+			if userID != "user-001" {
+				t.Fatalf("userID = %q, want user-001", userID)
+			}
+			return false, nil
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+
+	out, err := svc.GetNotificationPreferences(context.Background(), GetNotificationPreferencesInput{UserID: "user-001"})
+	if err != nil {
+		t.Fatalf("GetNotificationPreferences() unexpected error: %v", err)
+	}
+	if out.PushEnabled {
+		t.Fatal("PushEnabled = true, want false")
+	}
+}
+
+func TestUpdateNotificationPreferences_NoPatchReturnsCurrentState(t *testing.T) {
+	t.Parallel()
+
+	repo := &fakeAuthRepo{
+		getPushEnabledFn: func(context.Context, repository.DBTX, string) (bool, error) {
+			return true, nil
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+
+	out, err := svc.UpdateNotificationPreferences(context.Background(), UpdateNotificationPreferencesInput{UserID: "user-001"})
+	if err != nil {
+		t.Fatalf("UpdateNotificationPreferences() unexpected error: %v", err)
+	}
+	if !out.PushEnabled {
+		t.Fatal("PushEnabled = false, want true")
+	}
+}
+
+func TestUpdateNotificationPreferences_Success(t *testing.T) {
+	t.Parallel()
+
+	var got bool
+	repo := &fakeAuthRepo{
+		updatePushEnabledFn: func(_ context.Context, _ repository.DBTX, userID string, pushEnabled bool) (bool, error) {
+			if userID != "user-001" {
+				t.Fatalf("userID = %q, want user-001", userID)
+			}
+			got = pushEnabled
+			return pushEnabled, nil
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+	disabled := false
+
+	out, err := svc.UpdateNotificationPreferences(context.Background(), UpdateNotificationPreferencesInput{
+		UserID:      "user-001",
+		PushEnabled: &disabled,
+	})
+	if err != nil {
+		t.Fatalf("UpdateNotificationPreferences() unexpected error: %v", err)
+	}
+	if got {
+		t.Fatal("repository received true, want false")
+	}
+	if out.PushEnabled {
+		t.Fatal("PushEnabled = true, want false")
+	}
+}
+
+func TestGetPrivacyPreferences_Success(t *testing.T) {
+	t.Parallel()
+
+	repo := &fakeAuthRepo{
+		getUserByIDFn: func(_ context.Context, _ repository.DBTX, userID string) (repository.UserRow, error) {
+			if userID != "user-001" {
+				t.Fatalf("userID = %q, want user-001", userID)
+			}
+			return repository.UserRow{ID: userID, LeaderboardVisible: false}, nil
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+
+	out, err := svc.GetPrivacyPreferences(context.Background(), GetPrivacyPreferencesInput{UserID: "user-001"})
+	if err != nil {
+		t.Fatalf("GetPrivacyPreferences() unexpected error: %v", err)
+	}
+	if out.LeaderboardVisible {
+		t.Fatal("LeaderboardVisible = true, want false")
+	}
+}
+
+func TestUpdatePrivacyPreferences_NoPatchReturnsCurrentState(t *testing.T) {
+	t.Parallel()
+
+	repo := &fakeAuthRepo{
+		getUserByIDFn: func(context.Context, repository.DBTX, string) (repository.UserRow, error) {
+			return repository.UserRow{LeaderboardVisible: true}, nil
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+
+	out, err := svc.UpdatePrivacyPreferences(context.Background(), UpdatePrivacyPreferencesInput{UserID: "user-001"})
+	if err != nil {
+		t.Fatalf("UpdatePrivacyPreferences() unexpected error: %v", err)
+	}
+	if !out.LeaderboardVisible {
+		t.Fatal("LeaderboardVisible = false, want true")
+	}
+}
+
+func TestUpdatePrivacyPreferences_Success(t *testing.T) {
+	t.Parallel()
+
+	repo := &fakeAuthRepo{
+		updateUserFn: func(_ context.Context, _ repository.DBTX, userID string, name *string, username *string, leaderboardVisible *bool, profilePictureURL *string) (repository.UserRow, error) {
+			if userID != "user-001" {
+				t.Fatalf("userID = %q, want user-001", userID)
+			}
+			if name != nil || username != nil || profilePictureURL != nil {
+				t.Fatal("unexpected profile fields passed to UpdateUser")
+			}
+			if leaderboardVisible == nil || *leaderboardVisible {
+				t.Fatalf("leaderboardVisible = %v, want false", leaderboardVisible)
+			}
+			return repository.UserRow{LeaderboardVisible: *leaderboardVisible}, nil
+		},
+	}
+	svc := newTestService(repo, &fakeSender{})
+	hidden := false
+
+	out, err := svc.UpdatePrivacyPreferences(context.Background(), UpdatePrivacyPreferencesInput{
+		UserID:             "user-001",
+		LeaderboardVisible: &hidden,
+	})
+	if err != nil {
+		t.Fatalf("UpdatePrivacyPreferences() unexpected error: %v", err)
+	}
+	if out.LeaderboardVisible {
+		t.Fatal("LeaderboardVisible = true, want false")
+	}
+}
+
 func mustHashOTP(code string) string {
 	h, err := auth.HashOTP(code)
 	if err != nil {

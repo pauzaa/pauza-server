@@ -26,6 +26,10 @@ type AuthServicer interface {
 	GetMe(ctx context.Context, in service.GetMeInput) (service.UserProfile, error)
 	UpdateMe(ctx context.Context, in service.UpdateMeInput) (service.UserProfile, error)
 	UpdateProfilePhoto(ctx context.Context, in service.UpdateProfilePhotoInput) (service.UserProfile, error)
+	GetNotificationPreferences(ctx context.Context, in service.GetNotificationPreferencesInput) (service.NotificationPreferences, error)
+	UpdateNotificationPreferences(ctx context.Context, in service.UpdateNotificationPreferencesInput) (service.NotificationPreferences, error)
+	GetPrivacyPreferences(ctx context.Context, in service.GetPrivacyPreferencesInput) (service.PrivacyPreferences, error)
+	UpdatePrivacyPreferences(ctx context.Context, in service.UpdatePrivacyPreferencesInput) (service.PrivacyPreferences, error)
 	CheckUsernameAvailable(ctx context.Context, in service.UsernameAvailableInput) (service.UsernameAvailableOutput, error)
 	RequestAccountDeletion(ctx context.Context, in service.DeleteAccountRequestInput) (service.MessageOutput, error)
 	ConfirmAccountDeletion(ctx context.Context, in service.DeleteAccountConfirmInput) (service.MessageOutput, error)
@@ -76,6 +80,7 @@ type userResponse struct {
 	Name               string                `json:"name"`
 	Username           string                `json:"username"`
 	ProfilePictureURL  *string               `json:"profile_picture_url"`
+	PushEnabled        bool                  `json:"push_enabled"`
 	LeaderboardVisible bool                  `json:"leaderboard_visible"`
 	CreatedAt          string                `json:"created_at"`
 	Subscription       *subscriptionResponse `json:"subscription"`
@@ -97,13 +102,28 @@ type refreshResponse struct {
 }
 
 type updateMeRequest struct {
-	Name               *string `json:"name"`
-	Username           *string `json:"username"`
-	LeaderboardVisible *bool   `json:"leaderboard_visible"`
+	Name     *string `json:"name"`
+	Username *string `json:"username"`
 }
 
 type usernameAvailableResponse struct {
 	Available bool `json:"available"`
+}
+
+type notificationPreferencesRequest struct {
+	PushEnabled *bool `json:"push_enabled"`
+}
+
+type notificationPreferencesResponse struct {
+	PushEnabled bool `json:"push_enabled"`
+}
+
+type privacyPreferencesRequest struct {
+	LeaderboardVisible *bool `json:"leaderboard_visible"`
+}
+
+type privacyPreferencesResponse struct {
+	LeaderboardVisible bool `json:"leaderboard_visible"`
 }
 
 type messageResponse struct {
@@ -184,6 +204,7 @@ func userProfileToResponse(p service.UserProfile) userResponse {
 		Name:               p.Name,
 		Username:           p.Username,
 		ProfilePictureURL:  p.ProfilePictureURL,
+		PushEnabled:        p.PushEnabled,
 		LeaderboardVisible: p.LeaderboardVisible,
 		CreatedAt:          p.CreatedAt.UTC().Format(time.RFC3339),
 	}
@@ -218,6 +239,14 @@ func refreshOutputToResponse(out service.RefreshOutput) refreshResponse {
 		AccessToken:  out.AccessToken,
 		RefreshToken: out.RefreshToken,
 	}
+}
+
+func notificationPreferencesToResponse(p service.NotificationPreferences) notificationPreferencesResponse {
+	return notificationPreferencesResponse{PushEnabled: p.PushEnabled}
+}
+
+func privacyPreferencesToResponse(p service.PrivacyPreferences) privacyPreferencesResponse {
+	return privacyPreferencesResponse{LeaderboardVisible: p.LeaderboardVisible}
 }
 
 // Start handles POST /api/v1/auth/start.
@@ -360,10 +389,9 @@ func (h *AuthHandler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out, err := h.svc.UpdateMe(r.Context(), service.UpdateMeInput{
-		UserID:             user.UserID,
-		Name:               req.Name,
-		Username:           req.Username,
-		LeaderboardVisible: req.LeaderboardVisible,
+		UserID:   user.UserID,
+		Name:     req.Name,
+		Username: req.Username,
 	})
 	if err != nil {
 		writeServiceError(w, err)
@@ -405,6 +433,102 @@ func (h *AuthHandler) UsernameAvailable(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(usernameAvailableResponse{Available: out.Available}); err != nil {
 		h.logger.Error("encoding username-available response", "err", err)
+	}
+}
+
+func (h *AuthHandler) GetNotificationPreferences(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok || user.UserID == "" {
+		apperror.Unauthorized(w, "Missing or invalid authentication")
+		return
+	}
+
+	out, err := h.svc.GetNotificationPreferences(r.Context(), service.GetNotificationPreferencesInput{UserID: user.UserID})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(notificationPreferencesToResponse(out)); err != nil {
+		h.logger.Error("encoding get-notification-preferences response", "err", err)
+	}
+}
+
+func (h *AuthHandler) UpdateNotificationPreferences(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok || user.UserID == "" {
+		apperror.Unauthorized(w, "Missing or invalid authentication")
+		return
+	}
+
+	var req notificationPreferencesRequest
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
+
+	out, err := h.svc.UpdateNotificationPreferences(r.Context(), service.UpdateNotificationPreferencesInput{
+		UserID:      user.UserID,
+		PushEnabled: req.PushEnabled,
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(notificationPreferencesToResponse(out)); err != nil {
+		h.logger.Error("encoding update-notification-preferences response", "err", err)
+	}
+}
+
+func (h *AuthHandler) GetPrivacyPreferences(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok || user.UserID == "" {
+		apperror.Unauthorized(w, "Missing or invalid authentication")
+		return
+	}
+
+	out, err := h.svc.GetPrivacyPreferences(r.Context(), service.GetPrivacyPreferencesInput{UserID: user.UserID})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(privacyPreferencesToResponse(out)); err != nil {
+		h.logger.Error("encoding get-privacy-preferences response", "err", err)
+	}
+}
+
+func (h *AuthHandler) UpdatePrivacyPreferences(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok || user.UserID == "" {
+		apperror.Unauthorized(w, "Missing or invalid authentication")
+		return
+	}
+
+	var req privacyPreferencesRequest
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
+
+	out, err := h.svc.UpdatePrivacyPreferences(r.Context(), service.UpdatePrivacyPreferencesInput{
+		UserID:             user.UserID,
+		LeaderboardVisible: req.LeaderboardVisible,
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(privacyPreferencesToResponse(out)); err != nil {
+		h.logger.Error("encoding update-privacy-preferences response", "err", err)
 	}
 }
 

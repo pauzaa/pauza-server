@@ -33,6 +33,7 @@ type UserRow struct {
 	Name               string
 	Username           string
 	ProfilePictureURL  *string
+	PushEnabled        bool
 	LeaderboardVisible bool
 	CreatedAt          time.Time
 }
@@ -68,6 +69,8 @@ type AuthRepository interface {
 	GetUserByIDForUpdate(ctx context.Context, db DBTX, userID string) (UserRow, error)
 	InsertUser(ctx context.Context, db DBTX, email, username string) (string, error)
 	UpdateUser(ctx context.Context, db DBTX, userID string, name *string, username *string, leaderboardVisible *bool, profilePictureURL *string) (UserRow, error)
+	GetPushEnabled(ctx context.Context, db DBTX, userID string) (bool, error)
+	UpdatePushEnabled(ctx context.Context, db DBTX, userID string, pushEnabled bool) (bool, error)
 	IsUsernameTaken(ctx context.Context, db DBTX, username string, excludeUserID string) (bool, error)
 	DeleteUser(ctx context.Context, db DBTX, userID string) error
 
@@ -104,12 +107,12 @@ func NewPgxAuthRepository() *PgxAuthRepository {
 }
 
 const userColumns = `id, email, name, username, profile_picture_url,
-		        leaderboard_visible, created_at`
+		        push_enabled, leaderboard_visible, created_at`
 
 func scanUserRow(row pgx.Row) (UserRow, error) {
 	var u UserRow
 	err := row.Scan(&u.ID, &u.Email, &u.Name, &u.Username, &u.ProfilePictureURL,
-		&u.LeaderboardVisible, &u.CreatedAt)
+		&u.PushEnabled, &u.LeaderboardVisible, &u.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return UserRow{}, ErrNotFound
 	}
@@ -231,6 +234,35 @@ func (r *PgxAuthRepository) UpdateUser(ctx context.Context, db DBTX, userID stri
 		return UserRow{}, fmt.Errorf("updating user: %w", err)
 	}
 	return u, err
+}
+
+func (r *PgxAuthRepository) GetPushEnabled(ctx context.Context, db DBTX, userID string) (bool, error) {
+	var pushEnabled bool
+	err := db.QueryRow(ctx, `SELECT push_enabled FROM users WHERE id = $1`, userID).Scan(&pushEnabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("getting push preference: %w", err)
+	}
+	return pushEnabled, nil
+}
+
+func (r *PgxAuthRepository) UpdatePushEnabled(ctx context.Context, db DBTX, userID string, pushEnabled bool) (bool, error) {
+	err := db.QueryRow(ctx, `
+		UPDATE users
+		SET push_enabled = $1,
+		    updated_at = now()
+		WHERE id = $2
+		RETURNING push_enabled
+	`, pushEnabled, userID).Scan(&pushEnabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("updating push preference: %w", err)
+	}
+	return pushEnabled, nil
 }
 
 func (r *PgxAuthRepository) IsUsernameTaken(ctx context.Context, db DBTX, username string, excludeUserID string) (bool, error) {

@@ -13,6 +13,7 @@ CREATE TABLE users (
   name                TEXT NOT NULL DEFAULT '',
   username            TEXT NOT NULL UNIQUE,
   profile_picture_url TEXT,
+  push_enabled        BOOLEAN NOT NULL DEFAULT TRUE,
   leaderboard_visible BOOLEAN NOT NULL DEFAULT TRUE,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()

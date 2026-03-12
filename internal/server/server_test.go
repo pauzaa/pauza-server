@@ -377,6 +377,10 @@ func TestNew_ProtectedMeRoutesExist(t *testing.T) {
 	}{
 		{"get_me", http.MethodGet, "/api/v1/me", ""},
 		{"patch_me", http.MethodPatch, "/api/v1/me", `{"name":"Alice"}`},
+		{"get_notification_preferences", http.MethodGet, "/api/v1/me/notification-preferences", ""},
+		{"patch_notification_preferences", http.MethodPatch, "/api/v1/me/notification-preferences", `{"push_enabled":false}`},
+		{"get_privacy", http.MethodGet, "/api/v1/me/privacy", ""},
+		{"patch_privacy", http.MethodPatch, "/api/v1/me/privacy", `{"leaderboard_visible":false}`},
 		{"username_available", http.MethodGet, "/api/v1/me/username-available?username=alice", ""},
 	}
 
