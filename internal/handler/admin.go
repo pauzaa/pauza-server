@@ -291,13 +291,12 @@ func (h *AdminHandler) ManageEntitlement(w http.ResponseWriter, r *http.Request)
 	}
 
 	fields := make(apperror.FieldErrors)
-	if !req.Action.Valid() || req.Action == repository.AdminOverrideActionUnknown {
+	if req.Action == repository.AdminOverrideActionUnknown {
 		fields["action"] = "action must be grant or revoke"
 	}
-	if !req.Entitlement.Valid() || req.Entitlement == repository.EntitlementUnknown {
+	if req.Entitlement == repository.EntitlementUnknown {
 		fields["entitlement"] = "entitlement must be premium"
 	}
-
 	var expiresAt *time.Time
 	if req.ExpiresAt != nil {
 		t, parseErr := time.Parse(time.RFC3339, *req.ExpiresAt)

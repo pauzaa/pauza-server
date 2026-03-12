@@ -309,7 +309,7 @@ type Tables struct {
 }
 
 type Request struct {
-	Tables Tables `json:"tables"`
+	Tables RequestTables `json:"tables"`
 }
 
 type TableChangesByTable struct {

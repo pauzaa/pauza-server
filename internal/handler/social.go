@@ -81,7 +81,7 @@ func (h *SocialHandler) RegisterDevice(w http.ResponseWriter, r *http.Request) {
 	if req.FCMToken == "" {
 		fields["fcm_token"] = "fcm_token is required"
 	}
-	if !req.Platform.Valid() {
+	if req.Platform == repository.DevicePlatformUnknown {
 		fields["platform"] = "platform must be one of: android, ios"
 	}
 	if len(fields) > 0 {

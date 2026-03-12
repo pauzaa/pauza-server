@@ -1,6 +1,9 @@
 package repository
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 type Entitlement string
 
@@ -26,9 +29,29 @@ func MustParseEntitlement(raw string) Entitlement {
 	return value
 }
 
+func (e Entitlement) String() string {
+	return string(e)
+}
+
 func (e Entitlement) Valid() bool {
-	_, err := ParseEntitlement(string(e))
+	_, err := ParseEntitlement(e.String())
 	return err == nil
+}
+
+func (e Entitlement) MarshalJSON() ([]byte, error) {
+	return json.Marshal(e.String())
+}
+
+func (e *Entitlement) UnmarshalJSON(data []byte) error {
+	value, err := unmarshalEnumJSON(data, ParseEntitlement)
+	if err != nil {
+		return err
+	}
+	if value == EntitlementUnknown {
+		return fmt.Errorf("invalid entitlement %q", value)
+	}
+	*e = value
+	return nil
 }
 
 type AdminOverrideAction string
@@ -48,9 +71,29 @@ func ParseAdminOverrideAction(raw string) (AdminOverrideAction, error) {
 	}
 }
 
+func (a AdminOverrideAction) String() string {
+	return string(a)
+}
+
 func (a AdminOverrideAction) Valid() bool {
-	_, err := ParseAdminOverrideAction(string(a))
+	_, err := ParseAdminOverrideAction(a.String())
 	return err == nil
+}
+
+func (a AdminOverrideAction) MarshalJSON() ([]byte, error) {
+	return json.Marshal(a.String())
+}
+
+func (a *AdminOverrideAction) UnmarshalJSON(data []byte) error {
+	value, err := unmarshalEnumJSON(data, ParseAdminOverrideAction)
+	if err != nil {
+		return err
+	}
+	if value == AdminOverrideActionUnknown {
+		return fmt.Errorf("invalid admin override action %q", value)
+	}
+	*a = value
+	return nil
 }
 
 type DevicePlatform string
@@ -70,9 +113,29 @@ func ParseDevicePlatform(raw string) (DevicePlatform, error) {
 	}
 }
 
+func (p DevicePlatform) String() string {
+	return string(p)
+}
+
 func (p DevicePlatform) Valid() bool {
-	_, err := ParseDevicePlatform(string(p))
+	_, err := ParseDevicePlatform(p.String())
 	return err == nil
+}
+
+func (p DevicePlatform) MarshalJSON() ([]byte, error) {
+	return json.Marshal(p.String())
+}
+
+func (p *DevicePlatform) UnmarshalJSON(data []byte) error {
+	value, err := unmarshalEnumJSON(data, ParseDevicePlatform)
+	if err != nil {
+		return err
+	}
+	if value == DevicePlatformUnknown {
+		return fmt.Errorf("invalid device platform %q", value)
+	}
+	*p = value
+	return nil
 }
 
 type FriendRequestDirection string
@@ -107,4 +170,13 @@ func ParseFriendshipStatus(raw string) (FriendshipStatus, error) {
 	default:
 		return FriendshipStatusUnknown, fmt.Errorf("invalid friendship status %q", raw)
 	}
+}
+
+func unmarshalEnumJSON[T ~string](data []byte, parse func(string) (T, error)) (T, error) {
+	var raw string
+	if err := json.Unmarshal(data, &raw); err != nil {
+		var zero T
+		return zero, err
+	}
+	return parse(raw)
 }

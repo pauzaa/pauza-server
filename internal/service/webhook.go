@@ -89,7 +89,7 @@ func NewWebhookService(
 // warning but are not treated as errors. Transient RevenueCat API or DB
 // failures are returned to the caller.
 func (s *WebhookService) HandleWebhook(ctx context.Context, event revenuecat.WebhookEvent) error {
-	if event.Type == "TEST" {
+	if event.Type == revenuecat.WebhookEventTypeTest {
 		s.logger.Info("received TEST webhook event", "event_id", event.ID)
 		return nil
 	}

@@ -18,7 +18,7 @@ var ErrInternal = errors.New("internal error")
 type APIError struct {
 	Code       string
 	Message    string
-	Details    any
+	Details    *apperror.ValidationDetails
 	RetryAfter time.Duration
 	Cause      error
 }
@@ -64,7 +64,7 @@ func SubscriptionRequiredError(message string) error {
 }
 
 func ValidationError(message string, fields apperror.FieldErrors) error {
-	var details any
+	var details *apperror.ValidationDetails
 	if len(fields) > 0 {
 		details = apperror.NewValidationDetails(fields)
 	}

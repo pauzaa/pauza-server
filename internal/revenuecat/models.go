@@ -1,6 +1,159 @@
 package revenuecat
 
-import "time"
+import (
+	"encoding/json"
+	"fmt"
+	"time"
+)
+
+type WebhookEventType string
+
+const (
+	WebhookEventTypeInitialPurchase      WebhookEventType = "INITIAL_PURCHASE"
+	WebhookEventTypeRenewal              WebhookEventType = "RENEWAL"
+	WebhookEventTypeCancellation         WebhookEventType = "CANCELLATION"
+	WebhookEventTypeUncancellation       WebhookEventType = "UNCANCELLATION"
+	WebhookEventTypeNonRenewingPurchase  WebhookEventType = "NON_RENEWING_PURCHASE"
+	WebhookEventTypeProductChange        WebhookEventType = "PRODUCT_CHANGE"
+	WebhookEventTypeBillingIssue         WebhookEventType = "BILLING_ISSUE"
+	WebhookEventTypeSubscriberAlias      WebhookEventType = "SUBSCRIBER_ALIAS"
+	WebhookEventTypeSubscriptionPaused   WebhookEventType = "SUBSCRIPTION_PAUSED"
+	WebhookEventTypeExpiration           WebhookEventType = "EXPIRATION"
+	WebhookEventTypeTransfer             WebhookEventType = "TRANSFER"
+	WebhookEventTypeTest                 WebhookEventType = "TEST"
+	WebhookEventTypeTemporaryEntitlement WebhookEventType = "TEMPORARY_ENTITLEMENT_GRANT"
+	WebhookEventTypeInvoiceIssuance      WebhookEventType = "INVOICE_ISSUANCE"
+)
+
+func parseWebhookEventType(raw string) (WebhookEventType, error) {
+	switch WebhookEventType(raw) {
+	case WebhookEventTypeInitialPurchase,
+		WebhookEventTypeRenewal,
+		WebhookEventTypeCancellation,
+		WebhookEventTypeUncancellation,
+		WebhookEventTypeNonRenewingPurchase,
+		WebhookEventTypeProductChange,
+		WebhookEventTypeBillingIssue,
+		WebhookEventTypeSubscriberAlias,
+		WebhookEventTypeSubscriptionPaused,
+		WebhookEventTypeExpiration,
+		WebhookEventTypeTransfer,
+		WebhookEventTypeTest,
+		WebhookEventTypeTemporaryEntitlement,
+		WebhookEventTypeInvoiceIssuance:
+		return WebhookEventType(raw), nil
+	default:
+		return "", fmt.Errorf("invalid webhook event type %q", raw)
+	}
+}
+
+func (t WebhookEventType) String() string { return string(t) }
+
+func (t WebhookEventType) MarshalJSON() ([]byte, error) { return json.Marshal(t.String()) }
+
+func (t *WebhookEventType) UnmarshalJSON(data []byte) error {
+	value, err := unmarshalEnumJSON(data, parseWebhookEventType)
+	if err != nil {
+		return err
+	}
+	*t = value
+	return nil
+}
+
+type WebhookEnvironment string
+
+const (
+	WebhookEnvironmentSandbox    WebhookEnvironment = "SANDBOX"
+	WebhookEnvironmentProduction WebhookEnvironment = "PRODUCTION"
+)
+
+func parseWebhookEnvironment(raw string) (WebhookEnvironment, error) {
+	switch WebhookEnvironment(raw) {
+	case WebhookEnvironmentSandbox, WebhookEnvironmentProduction:
+		return WebhookEnvironment(raw), nil
+	default:
+		return "", fmt.Errorf("invalid webhook environment %q", raw)
+	}
+}
+
+func (e WebhookEnvironment) String() string { return string(e) }
+
+func (e WebhookEnvironment) MarshalJSON() ([]byte, error) { return json.Marshal(e.String()) }
+
+func (e *WebhookEnvironment) UnmarshalJSON(data []byte) error {
+	value, err := unmarshalEnumJSON(data, parseWebhookEnvironment)
+	if err != nil {
+		return err
+	}
+	*e = value
+	return nil
+}
+
+type WebhookPeriodType string
+
+const (
+	WebhookPeriodTypeNormal  WebhookPeriodType = "NORMAL"
+	WebhookPeriodTypeIntro   WebhookPeriodType = "INTRO"
+	WebhookPeriodTypeTrial   WebhookPeriodType = "TRIAL"
+	WebhookPeriodTypePrepaid WebhookPeriodType = "PREPAID"
+)
+
+func parseWebhookPeriodType(raw string) (WebhookPeriodType, error) {
+	switch WebhookPeriodType(raw) {
+	case "", WebhookPeriodTypeNormal, WebhookPeriodTypeIntro, WebhookPeriodTypeTrial, WebhookPeriodTypePrepaid:
+		return WebhookPeriodType(raw), nil
+	default:
+		return "", fmt.Errorf("invalid webhook period type %q", raw)
+	}
+}
+
+func (p WebhookPeriodType) String() string { return string(p) }
+
+func (p WebhookPeriodType) MarshalJSON() ([]byte, error) { return json.Marshal(p.String()) }
+
+func (p *WebhookPeriodType) UnmarshalJSON(data []byte) error {
+	value, err := unmarshalEnumJSON(data, parseWebhookPeriodType)
+	if err != nil {
+		return err
+	}
+	*p = value
+	return nil
+}
+
+type WebhookStore string
+
+const (
+	WebhookStoreAppStore    WebhookStore = "APP_STORE"
+	WebhookStoreMacAppStore WebhookStore = "MAC_APP_STORE"
+	WebhookStorePlayStore   WebhookStore = "PLAY_STORE"
+	WebhookStoreStripe      WebhookStore = "STRIPE"
+	WebhookStorePromotional WebhookStore = "PROMOTIONAL"
+	WebhookStoreAmazon      WebhookStore = "AMAZON"
+	WebhookStoreRCBilling   WebhookStore = "RC_BILLING"
+	WebhookStoreExternal    WebhookStore = "EXTERNAL"
+)
+
+func parseWebhookStore(raw string) (WebhookStore, error) {
+	switch WebhookStore(raw) {
+	case "", WebhookStoreAppStore, WebhookStoreMacAppStore, WebhookStorePlayStore, WebhookStoreStripe, WebhookStorePromotional, WebhookStoreAmazon, WebhookStoreRCBilling, WebhookStoreExternal:
+		return WebhookStore(raw), nil
+	default:
+		return "", fmt.Errorf("invalid webhook store %q", raw)
+	}
+}
+
+func (s WebhookStore) String() string { return string(s) }
+
+func (s WebhookStore) MarshalJSON() ([]byte, error) { return json.Marshal(s.String()) }
+
+func (s *WebhookStore) UnmarshalJSON(data []byte) error {
+	value, err := unmarshalEnumJSON(data, parseWebhookStore)
+	if err != nil {
+		return err
+	}
+	*s = value
+	return nil
+}
 
 // --- Webhook payload models ---
 
@@ -15,19 +168,19 @@ type WebhookPayload struct {
 // reconciliation flow needs. Additional fields sent by RevenueCat are
 // silently ignored so the handler tolerates forward-compatible changes.
 type WebhookEvent struct {
-	Type              string   `json:"type"`
-	ID                string   `json:"id"`
-	AppUserID         string   `json:"app_user_id"`
-	OriginalAppUserID string   `json:"original_app_user_id"`
-	ProductID         string   `json:"product_id"`
-	EntitlementIDs    []string `json:"entitlement_ids"`
-	EventTimestampMs  int64    `json:"event_timestamp_ms"`
-	ExpirationAtMs    *int64   `json:"expiration_at_ms"`
-	Environment       string   `json:"environment"`
-	PeriodType        string   `json:"period_type"`
-	Store             string   `json:"store"`
-	TransferredFrom   []string `json:"transferred_from"`
-	TransferredTo     []string `json:"transferred_to"`
+	Type              WebhookEventType   `json:"type"`
+	ID                string             `json:"id"`
+	AppUserID         string             `json:"app_user_id"`
+	OriginalAppUserID string             `json:"original_app_user_id"`
+	ProductID         string             `json:"product_id"`
+	EntitlementIDs    []string           `json:"entitlement_ids"`
+	EventTimestampMs  int64              `json:"event_timestamp_ms"`
+	ExpirationAtMs    *int64             `json:"expiration_at_ms"`
+	Environment       WebhookEnvironment `json:"environment"`
+	PeriodType        WebhookPeriodType  `json:"period_type"`
+	Store             WebhookStore       `json:"store"`
+	TransferredFrom   []string           `json:"transferred_from"`
+	TransferredTo     []string           `json:"transferred_to"`
 }
 
 // --- Subscriber API response models ---
@@ -61,4 +214,13 @@ type ReconciledEntitlement struct {
 	Entitlement      string
 	IsActive         bool
 	CurrentPeriodEnd *time.Time
+}
+
+func unmarshalEnumJSON[T ~string](data []byte, parse func(string) (T, error)) (T, error) {
+	var raw string
+	if err := json.Unmarshal(data, &raw); err != nil {
+		var zero T
+		return zero, err
+	}
+	return parse(raw)
 }

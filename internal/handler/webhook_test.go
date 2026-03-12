@@ -155,7 +155,7 @@ func TestWebhook_ValidAuthAndPayload_Returns200(t *testing.T) {
 	if !svc.called {
 		t.Fatal("expected service to be called")
 	}
-	if svc.lastEvt.Type != "INITIAL_PURCHASE" {
+	if svc.lastEvt.Type != revenuecat.WebhookEventTypeInitialPurchase {
 		t.Fatalf("event type = %q, want INITIAL_PURCHASE", svc.lastEvt.Type)
 	}
 	if svc.lastEvt.ID != "evt-123" {
@@ -173,7 +173,7 @@ func TestWebhook_ValidAuthAndPayload_Returns200(t *testing.T) {
 	if svc.lastEvt.EventTimestampMs != 1700000000000 {
 		t.Fatalf("event_timestamp_ms = %d, want 1700000000000", svc.lastEvt.EventTimestampMs)
 	}
-	if svc.lastEvt.Environment != "PRODUCTION" {
+	if svc.lastEvt.Environment != revenuecat.WebhookEnvironmentProduction {
 		t.Fatalf("environment = %q, want PRODUCTION", svc.lastEvt.Environment)
 	}
 }
@@ -204,6 +204,27 @@ func TestWebhook_InvalidJSON_ReturnsValidationError(t *testing.T) {
 	}
 	if resp.Error.Code != apperror.CodeValidationError {
 		t.Fatalf("error.code = %q, want %q", resp.Error.Code, apperror.CodeValidationError)
+	}
+	if svc.called {
+		t.Fatal("service should not have been called")
+	}
+}
+
+func TestWebhook_InvalidEnumValue_ReturnsValidationError(t *testing.T) {
+	t.Parallel()
+
+	svc := &mockWebhookService{}
+	h := newTestWebhookHandler(svc)
+
+	payload := `{"event":{"type":"INITIAL_PURCHASE","id":"evt-1","app_user_id":"user-1","environment":"LOCAL"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/revenuecat", strings.NewReader(payload))
+	req.Header.Set("Authorization", "Bearer "+testWebhookSecret)
+	rec := httptest.NewRecorder()
+
+	h.HandleRevenueCat(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", rec.Code)
 	}
 	if svc.called {
 		t.Fatal("service should not have been called")

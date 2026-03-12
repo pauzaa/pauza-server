@@ -48,9 +48,9 @@ const internalErrorMessage = "an unexpected error occurred"
 
 // ErrorBody is the inner object nested under the top-level "error" key.
 type ErrorBody struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Details any    `json:"details,omitempty"`
+	Code    string             `json:"code"`
+	Message string             `json:"message"`
+	Details *ValidationDetails `json:"details,omitempty"`
 }
 
 // ErrorResponse is the top-level JSON envelope returned for all error
@@ -72,8 +72,8 @@ type ValidationDetails struct {
 
 // NewValidationDetails constructs a ValidationDetails value suitable for
 // passing as the details argument to WriteError.
-func NewValidationDetails(fields FieldErrors) ValidationDetails {
-	return ValidationDetails{Fields: fields}
+func NewValidationDetails(fields FieldErrors) *ValidationDetails {
+	return &ValidationDetails{Fields: fields}
 }
 
 // StatusCode returns the HTTP status code associated with the given error code.
@@ -104,7 +104,7 @@ func StatusCode(code string) int {
 // WriteError writes a JSON error response using the standard envelope.
 // Content-Type is set to application/json. If JSON encoding fails after
 // headers are written, the error is logged with slog using key "err".
-func WriteError(w http.ResponseWriter, code string, message string, details any) {
+func WriteError(w http.ResponseWriter, code string, message string, details *ValidationDetails) {
 	resp := ErrorResponse{
 		Error: ErrorBody{
 			Code:    code,
@@ -122,7 +122,7 @@ func WriteError(w http.ResponseWriter, code string, message string, details any)
 
 // ValidationError writes a 422 response with the given message and optional
 // details (e.g. FieldErrors wrapped in ValidationDetails).
-func ValidationError(w http.ResponseWriter, message string, details any) {
+func ValidationError(w http.ResponseWriter, message string, details *ValidationDetails) {
 	WriteError(w, CodeValidationError, message, details)
 }
 
@@ -130,7 +130,7 @@ func ValidationError(w http.ResponseWriter, message string, details any) {
 // validation messages in the shape expected by the spec:
 // {"error":{"code":"VALIDATION_ERROR","message":"...","details":{"fields":{...}}}}.
 func ValidationFieldErrors(w http.ResponseWriter, message string, fields FieldErrors) {
-	WriteError(w, CodeValidationError, message, ValidationDetails{Fields: fields})
+	WriteError(w, CodeValidationError, message, &ValidationDetails{Fields: fields})
 }
 
 // Unauthorized writes a 401 response with the given message.

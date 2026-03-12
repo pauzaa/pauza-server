@@ -474,14 +474,16 @@ func TestAdminManageEntitlement_InvalidAction(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ManageEntitlement(rec, req)
 
-	assertValidationEnvelope(t, rec, []string{"action"})
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", rec.Code)
+	}
 }
 
 func TestAdminManageEntitlement_MissingEntitlement(t *testing.T) {
 	t.Parallel()
 	h := newTestAdminHandler(&mockAdminService{})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/user-001/entitlements",
-		strings.NewReader(`{"action":"grant","entitlement":""}`))
+		strings.NewReader(`{"action":"grant"}`))
 	req = withChiURLParam(req, "id", "user-001")
 	rec := httptest.NewRecorder()
 	h.ManageEntitlement(rec, req)
