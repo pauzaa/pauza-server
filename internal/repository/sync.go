@@ -951,7 +951,7 @@ func (r *PgxSyncRepository) collectModeCascade(ctx context.Context, db DBTX, use
 			rows.Close()
 			return nil, fmt.Errorf("scanning mode_blocked_apps cascade: %w", err)
 		}
-		key, err := encodeModeBlockedAppKey(syncmodel.ModeBlockedAppKey{ModeID: modeIDVal, Platform: platform, AppIdentifier: appIdentifier})
+		key, err := encodeModeBlockedAppKey(syncmodel.ModeBlockedAppKey{ModeID: modeIDVal, Platform: syncmodel.DevicePlatform(platform), AppIdentifier: appIdentifier})
 		if err != nil {
 			rows.Close()
 			return nil, err

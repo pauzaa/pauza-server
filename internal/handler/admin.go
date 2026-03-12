@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -100,9 +99,9 @@ type adminStatsResponse struct {
 }
 
 type manageEntitlementRequest struct {
-	Action      string  `json:"action"`
-	Entitlement string  `json:"entitlement"`
-	ExpiresAt   *string `json:"expires_at"`
+	Action      repository.AdminOverrideAction `json:"action"`
+	Entitlement repository.Entitlement         `json:"entitlement"`
+	ExpiresAt   *string                        `json:"expires_at"`
 }
 
 type adminEntitlementItemResponse struct {
@@ -272,11 +271,11 @@ func (h *AdminHandler) ManageEntitlement(w http.ResponseWriter, r *http.Request)
 	}
 
 	fields := make(apperror.FieldErrors)
-	if req.Action != "grant" && req.Action != "revoke" {
+	if !req.Action.Valid() || req.Action == repository.AdminOverrideActionUnknown {
 		fields["action"] = "action must be grant or revoke"
 	}
-	if req.Entitlement == "" {
-		fields["entitlement"] = "entitlement is required"
+	if !req.Entitlement.Valid() || req.Entitlement == repository.EntitlementUnknown {
+		fields["entitlement"] = "entitlement must be premium"
 	}
 
 	var expiresAt *time.Time
@@ -298,15 +297,11 @@ func (h *AdminHandler) ManageEntitlement(w http.ResponseWriter, r *http.Request)
 
 	out, err := h.svc.ManageEntitlement(r.Context(), service.ManageEntitlementInput{
 		UserID:      userID,
-		Entitlement: repository.Entitlement(req.Entitlement),
-		Action:      repository.AdminOverrideAction(req.Action),
+		Entitlement: req.Entitlement,
+		Action:      req.Action,
 		ExpiresAt:   expiresAt,
 	})
 	if err != nil {
-		if errors.Is(err, service.ErrInvalidAction) || errors.Is(err, service.ErrInvalidEntitlement) {
-			apperror.ValidationError(w, serviceMessage(err, service.ErrInvalidAction, serviceMessage(err, service.ErrInvalidEntitlement, "Invalid input")), nil)
-			return
-		}
 		writeServiceError(w, err)
 		return
 	}
@@ -317,7 +312,13 @@ func (h *AdminHandler) ManageEntitlement(w http.ResponseWriter, r *http.Request)
 // ListEntitlements handles GET /api/v1/admin/entitlements.
 func (h *AdminHandler) ListEntitlements(w http.ResponseWriter, r *http.Request) {
 	page, limit := paginationParams(r)
-	entitlement := r.URL.Query().Get("entitlement")
+	entitlement, err := repository.ParseEntitlement(r.URL.Query().Get("entitlement"))
+	if err != nil {
+		apperror.ValidationFieldErrors(w, "Invalid query parameter", apperror.FieldErrors{
+			"entitlement": "entitlement must be premium",
+		})
+		return
+	}
 
 	var isActive *bool
 	if raw := r.URL.Query().Get("is_active"); raw != "" {
@@ -334,7 +335,7 @@ func (h *AdminHandler) ListEntitlements(w http.ResponseWriter, r *http.Request) 
 	out, err := h.svc.ListEntitlements(r.Context(), service.ListEntitlementsInput{
 		Page:        page,
 		Limit:       limit,
-		Entitlement: repository.Entitlement(entitlement),
+		Entitlement: entitlement,
 		IsActive:    isActive,
 	})
 	if err != nil {

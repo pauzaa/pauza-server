@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -12,9 +11,16 @@ import (
 // healthResponse represents the JSON response from the liveness and readiness
 // endpoints.
 type healthResponse struct {
-	Status    string `json:"status"`
-	Timestamp string `json:"timestamp"`
+	Status    healthStatus `json:"status"`
+	Timestamp string       `json:"timestamp"`
 }
+
+type healthStatus string
+
+const (
+	healthStatusOK       healthStatus = "ok"
+	healthStatusDegraded healthStatus = "degraded"
+)
 
 // Live returns an HTTP handler for the GET /live endpoint.
 // It always responds with 200 and status "ok"; no external dependencies are
@@ -22,15 +28,10 @@ type healthResponse struct {
 func Live(logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		resp := healthResponse{
-			Status:    "ok",
+			Status:    healthStatusOK,
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			logger.Error("failed to encode live response", "err", err)
-		}
+		writeJSON(w, logger, http.StatusOK, resp, "live")
 	}
 }
 
@@ -40,15 +41,15 @@ func Live(logger *slog.Logger) http.HandlerFunc {
 // 503 with status "degraded" when the pool is nil or the ping fails.
 func Ready(pool *pgxpool.Pool, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		status := "ok"
+		status := healthStatusOK
 		code := http.StatusOK
 
 		if pool == nil {
-			status = "degraded"
+			status = healthStatusDegraded
 			code = http.StatusServiceUnavailable
 		} else if err := pool.Ping(r.Context()); err != nil {
 			logger.Warn("readiness check database ping failed", "err", err)
-			status = "degraded"
+			status = healthStatusDegraded
 			code = http.StatusServiceUnavailable
 		}
 
@@ -57,11 +58,6 @@ func Ready(pool *pgxpool.Pool, logger *slog.Logger) http.HandlerFunc {
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(code)
-		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			// Response might already be partially written; just log.
-			logger.Error("failed to encode ready response", "err", err)
-		}
+		writeJSON(w, logger, code, resp, "ready")
 	}
 }

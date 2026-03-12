@@ -258,11 +258,12 @@ func (r *SocialRepository) ListFriendRequests(ctx context.Context, db DBTX, user
 	return out, rows.Err()
 }
 
-func (r *SocialRepository) GetFriendship(ctx context.Context, db DBTX, friendshipID string) (string, string, string, error) {
-	var requesterID, addresseeID, status string
+func (r *SocialRepository) GetFriendship(ctx context.Context, db DBTX, friendshipID string) (string, string, FriendshipStatus, error) {
+	var requesterID, addresseeID string
+	var status FriendshipStatus
 	err := db.QueryRow(ctx, `SELECT requester_id, addressee_id, status FROM friendships WHERE id = $1`, friendshipID).Scan(&requesterID, &addresseeID, &status)
 	if err != nil {
-		return "", "", "", mapNoRows("loading friendship", err)
+		return "", "", FriendshipStatusUnknown, mapNoRows("loading friendship", err)
 	}
 	return requesterID, addresseeID, status, nil
 }

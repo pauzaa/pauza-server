@@ -80,11 +80,7 @@ func (h *WebhookHandler) HandleRevenueCat(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(struct{}{}); err != nil {
-		h.logger.Error("encoding webhook response", "err", err)
-	}
+	writeEmptyJSON(w, h.logger, http.StatusOK, "webhook")
 }
 
 // authenticateWebhook checks the Authorization header for a Bearer token that

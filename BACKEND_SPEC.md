@@ -1293,6 +1293,9 @@ Register an FCM device token.
 **Validation:**
 
 - `platform`: must be `"android"` or `"ios"`.
+- Enum-like request fields are part of the public contract. The backend decodes
+  them into typed domain values at the HTTP boundary and rejects unsupported
+  values with `VALIDATION_ERROR`.
 - `fcm_token`: non-empty string.
 
 If the token already exists for this user, its `updated_at` is refreshed. If the token exists for a different user, it is reassigned to the current user (device changed hands).
@@ -1435,6 +1438,9 @@ Aggregate platform statistics.
 ```
 
 `action` must be `"grant"` or `"revoke"`. `expires_at` is optional and can be used for temporary grants. Admin grant/revoke actions are durable overrides of the stored entitlement snapshot for authorization: they remain in effect until an admin changes them again or a grant expires, and they are not automatically overwritten by the next RevenueCat webhook reconciliation.
+
+Invalid `action`, `entitlement`, or `expires_at` values are returned as
+structured validation errors under `error.details.fields`.
 
 **`GET /api/v1/admin/entitlements`** — List entitlement records with filters.
 
@@ -1709,6 +1715,11 @@ All error responses follow this structure:
 
 The `details` field is optional and may contain additional structured information (e.g., field-level validation errors).
 
+Client-visible failures are produced from a typed server-side error model rather
+than parsed wrapped error strings. Public error codes, messages, optional field
+details, and optional `Retry-After` metadata are explicit parts of the API
+contract.
+
 ### 11.2 Error Codes
 
 | Code | HTTP Status | Description |
@@ -1721,6 +1732,9 @@ The `details` field is optional and may contain additional structured informatio
 | `CONFLICT` | `409` | Resource already exists (e.g., duplicate email, username) |
 | `RATE_LIMITED` | `429` | Too many requests |
 | `INTERNAL_ERROR` | `500` | Unexpected server error |
+
+`RATE_LIMITED` responses may include the `Retry-After` header when the server
+can calculate when the client should retry.
 
 ### 11.3 Validation Error Details
 
@@ -1740,6 +1754,10 @@ For `VALIDATION_ERROR`, the `details` field contains per-field errors:
   }
 }
 ```
+
+Enum-constrained request fields such as device `platform`, admin entitlement
+`action`, admin `entitlement`, and sync workflow values are validated at the
+HTTP boundary and use this same field-error shape when invalid.
 
 ---
 

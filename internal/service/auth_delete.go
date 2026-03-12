@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/IsorilovA/pauza-server/internal/auth"
@@ -14,7 +13,7 @@ import (
 func (s *AuthService) RequestAccountDeletion(ctx context.Context, in DeleteAccountRequestInput) (MessageOutput, error) {
 	user, err := s.repo.GetUserByID(ctx, s.pool, in.UserID)
 	if errors.Is(err, repository.ErrNotFound) {
-		return MessageOutput{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+		return MessageOutput{}, UnauthorizedError("Missing or invalid authentication")
 	}
 	if err != nil {
 		s.logger.Error("loading user for deletion request", "err", err)
@@ -41,7 +40,7 @@ func (s *AuthService) RequestAccountDeletion(ctx context.Context, in DeleteAccou
 
 	if _, err := s.repo.GetUserByIDForUpdate(ctx, tx, in.UserID); err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
-			return MessageOutput{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+			return MessageOutput{}, UnauthorizedError("Missing or invalid authentication")
 		}
 		s.logger.Error("locking user for deletion request", "err", err)
 		return MessageOutput{}, ErrInternal
@@ -80,7 +79,7 @@ func (s *AuthService) ConfirmAccountDeletion(ctx context.Context, in DeleteAccou
 
 	user, err := s.repo.GetUserByIDForUpdate(ctx, tx, in.UserID)
 	if errors.Is(err, repository.ErrNotFound) {
-		return MessageOutput{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+		return MessageOutput{}, UnauthorizedError("Missing or invalid authentication")
 	}
 	if err != nil {
 		s.logger.Error("locking user for deletion confirm", "err", err)
@@ -103,7 +102,7 @@ func (s *AuthService) ConfirmAccountDeletion(ctx context.Context, in DeleteAccou
 
 	otpRow, err := s.repo.GetActiveOTPForUpdate(ctx, tx, user.Email, mail.PurposeAccountDeletion)
 	if errors.Is(err, repository.ErrNotFound) {
-		return MessageOutput{}, fmt.Errorf("%w: invalid or expired OTP", ErrUnauthorized)
+		return MessageOutput{}, UnauthorizedError("Invalid or expired OTP")
 	}
 	if err != nil {
 		s.logger.Error("loading deletion otp", "user_id", in.UserID, "err", err)
@@ -125,7 +124,7 @@ func (s *AuthService) ConfirmAccountDeletion(ctx context.Context, in DeleteAccou
 			s.logger.Error("committing failed deletion otp attempt", "err", err)
 			return MessageOutput{}, ErrInternal
 		}
-		return MessageOutput{}, fmt.Errorf("%w: invalid or expired OTP", ErrUnauthorized)
+		return MessageOutput{}, UnauthorizedError("Invalid or expired OTP")
 	}
 
 	if err := s.repo.MarkOTPUsed(ctx, tx, otpRow.ID); err != nil {
@@ -134,7 +133,7 @@ func (s *AuthService) ConfirmAccountDeletion(ctx context.Context, in DeleteAccou
 	}
 	if err := s.repo.DeleteUser(ctx, tx, in.UserID); err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
-			return MessageOutput{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+			return MessageOutput{}, UnauthorizedError("Missing or invalid authentication")
 		}
 		s.logger.Error("deleting user account", "user_id", in.UserID, "err", err)
 		return MessageOutput{}, ErrInternal

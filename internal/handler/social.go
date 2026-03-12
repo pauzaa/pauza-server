@@ -39,8 +39,8 @@ func NewSocialHandler(svc SocialServicer) *SocialHandler {
 }
 
 type deviceRequest struct {
-	FCMToken string `json:"fcm_token"`
-	Platform string `json:"platform"`
+	FCMToken string                    `json:"fcm_token"`
+	Platform repository.DevicePlatform `json:"platform"`
 }
 
 type unregisterDeviceRequest struct {
@@ -49,6 +49,10 @@ type unregisterDeviceRequest struct {
 
 type friendRequestRequest struct {
 	Username string `json:"username"`
+}
+
+type searchUsersResponse struct {
+	Users []repository.BasicUserRow `json:"users"`
 }
 
 func (h *SocialHandler) RegisterDevice(w http.ResponseWriter, r *http.Request) {
@@ -64,19 +68,19 @@ func (h *SocialHandler) RegisterDevice(w http.ResponseWriter, r *http.Request) {
 	if req.FCMToken == "" {
 		fields["fcm_token"] = "fcm_token is required"
 	}
-	if msg := validate.Platform(req.Platform); msg != "" {
-		fields["platform"] = msg
+	if !req.Platform.Valid() {
+		fields["platform"] = "platform must be one of: android, ios"
 	}
 	if len(fields) > 0 {
 		apperror.ValidationFieldErrors(w, "Invalid request body", fields)
 		return
 	}
-	out, err := h.svc.RegisterDevice(r.Context(), service.DeviceInput{UserID: userID, FCMToken: req.FCMToken, Platform: repository.DevicePlatform(req.Platform)})
+	out, err := h.svc.RegisterDevice(r.Context(), service.DeviceInput{UserID: userID, FCMToken: req.FCMToken, Platform: req.Platform})
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, h.logger, http.StatusOK, map[string]string{"message": out.Message}, "register-device")
+	writeMessageResponse(w, h.logger, http.StatusOK, out.Message, "register-device")
 }
 
 func (h *SocialHandler) UnregisterDevice(w http.ResponseWriter, r *http.Request) {
@@ -97,7 +101,7 @@ func (h *SocialHandler) UnregisterDevice(w http.ResponseWriter, r *http.Request)
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, h.logger, http.StatusOK, map[string]string{"message": out.Message}, "unregister-device")
+	writeMessageResponse(w, h.logger, http.StatusOK, out.Message, "unregister-device")
 }
 
 func (h *SocialHandler) ListFriends(w http.ResponseWriter, r *http.Request) {
@@ -178,7 +182,7 @@ func (h *SocialHandler) DeclineFriend(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, h.logger, http.StatusOK, map[string]string{"message": out.Message}, "decline-friend")
+	writeMessageResponse(w, h.logger, http.StatusOK, out.Message, "decline-friend")
 }
 
 func (h *SocialHandler) RemoveFriend(w http.ResponseWriter, r *http.Request) {
@@ -191,7 +195,7 @@ func (h *SocialHandler) RemoveFriend(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, h.logger, http.StatusOK, map[string]string{"message": out.Message}, "remove-friend")
+	writeMessageResponse(w, h.logger, http.StatusOK, out.Message, "remove-friend")
 }
 
 func (h *SocialHandler) SearchUsers(w http.ResponseWriter, r *http.Request) {
@@ -209,7 +213,7 @@ func (h *SocialHandler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, h.logger, http.StatusOK, map[string]any{"users": users}, "search-users")
+	writeJSON(w, h.logger, http.StatusOK, searchUsersResponse{Users: users}, "search-users")
 }
 
 func (h *SocialHandler) FriendStats(w http.ResponseWriter, r *http.Request) {

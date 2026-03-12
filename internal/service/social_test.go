@@ -20,7 +20,7 @@ type fakeSocialRepo struct {
 	createFriendRequestFn       func(ctx context.Context, db repository.DBTX, requesterID, addresseeID string) (string, error)
 	listFriendsFn               func(ctx context.Context, db repository.DBTX, userID string, page, limit int) ([]repository.FriendRow, repository.PaginationResult, error)
 	listFriendRequestsFn        func(ctx context.Context, db repository.DBTX, userID string, direction repository.FriendRequestDirection) ([]repository.FriendRequestRow, error)
-	getFriendshipFn             func(ctx context.Context, db repository.DBTX, friendshipID string) (string, string, string, error)
+	getFriendshipFn             func(ctx context.Context, db repository.DBTX, friendshipID string) (string, string, repository.FriendshipStatus, error)
 	acceptFriendRequestFn       func(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
 	deletePendingRequestFn      func(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
 	removeFriendFn              func(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
@@ -59,7 +59,7 @@ func (f *fakeSocialRepo) ListFriends(ctx context.Context, db repository.DBTX, us
 func (f *fakeSocialRepo) ListFriendRequests(ctx context.Context, db repository.DBTX, userID string, direction repository.FriendRequestDirection) ([]repository.FriendRequestRow, error) {
 	return f.listFriendRequestsFn(ctx, db, userID, direction)
 }
-func (f *fakeSocialRepo) GetFriendship(ctx context.Context, db repository.DBTX, friendshipID string) (string, string, string, error) {
+func (f *fakeSocialRepo) GetFriendship(ctx context.Context, db repository.DBTX, friendshipID string) (string, string, repository.FriendshipStatus, error) {
 	return f.getFriendshipFn(ctx, db, friendshipID)
 }
 func (f *fakeSocialRepo) AcceptFriendRequest(ctx context.Context, db repository.DBTX, friendshipID, userID string) error {
@@ -129,8 +129,8 @@ func newFakeSocialRepo() *fakeSocialRepo {
 		listFriendRequestsFn: func(context.Context, repository.DBTX, string, repository.FriendRequestDirection) ([]repository.FriendRequestRow, error) {
 			return nil, nil
 		},
-		getFriendshipFn: func(context.Context, repository.DBTX, string) (string, string, string, error) {
-			return "", "", "", nil
+		getFriendshipFn: func(context.Context, repository.DBTX, string) (string, string, repository.FriendshipStatus, error) {
+			return "", "", repository.FriendshipStatusUnknown, nil
 		},
 		acceptFriendRequestFn: func(context.Context, repository.DBTX, string, string) error { return nil },
 		deletePendingRequestFn: func(context.Context, repository.DBTX, string, string) error {
@@ -182,7 +182,7 @@ func TestSocialService_RequestFriendSendsNotificationMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RequestFriend error = %v, want nil", err)
 	}
-	if out.FriendshipID != "friendship-1" || out.Status != "pending" {
+	if out.FriendshipID != "friendship-1" || out.Status != repository.FriendshipStatusPending {
 		t.Fatalf("unexpected output: %#v", out)
 	}
 	if len(pushSender.calls) != 1 {
@@ -215,11 +215,11 @@ func TestSocialService_RequestFriendSendsNotificationMetadata(t *testing.T) {
 
 func TestSocialService_AcceptFriendSendsNotificationMetadata(t *testing.T) {
 	repo := newFakeSocialRepo()
-	repo.getFriendshipFn = func(_ context.Context, _ repository.DBTX, friendshipID string) (string, string, string, error) {
+	repo.getFriendshipFn = func(_ context.Context, _ repository.DBTX, friendshipID string) (string, string, repository.FriendshipStatus, error) {
 		if friendshipID != "friendship-1" {
 			t.Fatalf("friendshipID = %q, want friendship-1", friendshipID)
 		}
-		return "requester-1", "actor-1", "pending", nil
+		return "requester-1", "actor-1", repository.FriendshipStatusPending, nil
 	}
 	repo.acceptFriendRequestFn = func(_ context.Context, _ repository.DBTX, friendshipID, userID string) error {
 		if friendshipID != "friendship-1" || userID != "actor-1" {
@@ -241,7 +241,7 @@ func TestSocialService_AcceptFriendSendsNotificationMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AcceptFriend error = %v, want nil", err)
 	}
-	if out.FriendshipID != "friendship-1" || out.Status != "accepted" {
+	if out.FriendshipID != "friendship-1" || out.Status != repository.FriendshipStatusAccepted {
 		t.Fatalf("unexpected output: %#v", out)
 	}
 	if len(pushSender.calls) != 1 {

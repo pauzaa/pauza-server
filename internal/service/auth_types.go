@@ -3,6 +3,9 @@ package service
 import (
 	"errors"
 	"time"
+
+	"github.com/IsorilovA/pauza-server/internal/apperror"
+	"github.com/IsorilovA/pauza-server/internal/repository"
 )
 
 var ErrConflict = errors.New("conflict")
@@ -11,6 +14,87 @@ var ErrUnauthorized = errors.New("unauthorized")
 var ErrRateLimited = errors.New("rate limited")
 var ErrSubscriptionRequired = errors.New("subscription required")
 var ErrInternal = errors.New("internal error")
+
+type APIError struct {
+	Code       string
+	Message    string
+	Details    any
+	RetryAfter time.Duration
+	Cause      error
+}
+
+func (e *APIError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Message != "" {
+		return e.Message
+	}
+	if e.Cause != nil {
+		return e.Cause.Error()
+	}
+	return e.Code
+}
+
+func (e *APIError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func apiError(code string, cause error, message string) error {
+	return &APIError{Code: code, Message: message, Cause: cause}
+}
+
+func UnauthorizedError(message string) error {
+	return apiError(apperror.CodeUnauthorized, ErrUnauthorized, message)
+}
+
+func ConflictError(message string) error {
+	return apiError(apperror.CodeConflict, ErrConflict, message)
+}
+
+func NotFoundError(message string) error {
+	return apiError(apperror.CodeNotFound, ErrNotFound, message)
+}
+
+func SubscriptionRequiredError(message string) error {
+	return apiError(apperror.CodeSubscriptionRequired, ErrSubscriptionRequired, message)
+}
+
+func ValidationError(message string, fields apperror.FieldErrors) error {
+	var details any
+	if len(fields) > 0 {
+		details = apperror.NewValidationDetails(fields)
+	}
+	return &APIError{
+		Code:    apperror.CodeValidationError,
+		Message: message,
+		Details: details,
+	}
+}
+
+func RateLimitedError(message string, retryAfter time.Duration) error {
+	return &APIError{
+		Code:       apperror.CodeRateLimited,
+		Message:    message,
+		RetryAfter: retryAfter,
+		Cause:      ErrRateLimited,
+	}
+}
+
+func invalidEntitlementError(entitlement repository.Entitlement) error {
+	return ValidationError("Invalid request body", apperror.FieldErrors{
+		"entitlement": "entitlement must be " + string(repository.EntitlementPremium),
+	})
+}
+
+func invalidAdminActionError() error {
+	return ValidationError("Invalid request body", apperror.FieldErrors{
+		"action": "action must be grant or revoke",
+	})
+}
 
 type StartAuthInput struct {
 	Email string

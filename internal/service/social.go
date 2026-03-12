@@ -29,7 +29,7 @@ type socialRepository interface {
 	CreateFriendRequest(ctx context.Context, db repository.DBTX, requesterID, addresseeID string) (string, error)
 	ListFriends(ctx context.Context, db repository.DBTX, userID string, page, limit int) ([]repository.FriendRow, repository.PaginationResult, error)
 	ListFriendRequests(ctx context.Context, db repository.DBTX, userID string, direction repository.FriendRequestDirection) ([]repository.FriendRequestRow, error)
-	GetFriendship(ctx context.Context, db repository.DBTX, friendshipID string) (string, string, string, error)
+	GetFriendship(ctx context.Context, db repository.DBTX, friendshipID string) (string, string, repository.FriendshipStatus, error)
 	AcceptFriendRequest(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
 	DeletePendingRequest(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
 	RemoveFriend(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
@@ -61,7 +61,7 @@ type FriendRequestInput struct {
 
 type FriendMutationOutput struct {
 	FriendshipID string
-	Status       string
+	Status       repository.FriendshipStatus
 }
 
 type FriendListOutput struct {
@@ -129,28 +129,28 @@ func (s *SocialService) RequestFriend(ctx context.Context, in FriendRequestInput
 	}
 	target, err := s.repo.FindUserByExactUsername(ctx, s.pool, in.Username)
 	if errors.Is(err, repository.ErrNotFound) {
-		return FriendMutationOutput{}, fmt.Errorf("%w: user not found", ErrUnauthorized)
+		return FriendMutationOutput{}, UnauthorizedError("User not found")
 	}
 	if err != nil {
 		s.logger.Error("loading friend target", "err", err)
 		return FriendMutationOutput{}, ErrInternal
 	}
 	if target.ID == in.UserID {
-		return FriendMutationOutput{}, fmt.Errorf("%w: cannot add yourself", ErrConflict)
+		return FriendMutationOutput{}, ConflictError("Cannot add yourself")
 	}
 
 	id, err := s.repo.CreateFriendRequest(ctx, s.pool, in.UserID, target.ID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation {
-			return FriendMutationOutput{}, fmt.Errorf("%w: request already exists", ErrConflict)
+			return FriendMutationOutput{}, ConflictError("Request already exists")
 		}
 		s.logger.Error("creating friend request", "err", err)
 		return FriendMutationOutput{}, ErrInternal
 	}
 
 	s.sendFriendNotification(ctx, target.ID, "friend_request", id, in.UserID, "New friend request", "%s sent you a friend request")
-	return FriendMutationOutput{FriendshipID: id, Status: "pending"}, nil
+	return FriendMutationOutput{FriendshipID: id, Status: repository.FriendshipStatusPending}, nil
 }
 
 func (s *SocialService) ListFriends(ctx context.Context, userID string, page, limit int) (FriendListOutput, error) {
@@ -188,13 +188,13 @@ func (s *SocialService) AcceptFriend(ctx context.Context, userID, friendshipID s
 	}
 	if err := s.repo.AcceptFriendRequest(ctx, s.pool, friendshipID, userID); err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
-			return FriendMutationOutput{}, fmt.Errorf("%w: request not found", ErrUnauthorized)
+			return FriendMutationOutput{}, UnauthorizedError("Request not found")
 		}
 		s.logger.Error("accepting friendship", "err", err)
 		return FriendMutationOutput{}, ErrInternal
 	}
 	s.sendFriendNotification(ctx, requesterID, "friend_accepted", friendshipID, userID, "Friend request accepted", "%s accepted your friend request")
-	return FriendMutationOutput{FriendshipID: friendshipID, Status: "accepted"}, nil
+	return FriendMutationOutput{FriendshipID: friendshipID, Status: repository.FriendshipStatusAccepted}, nil
 }
 
 func (s *SocialService) DeclineFriend(ctx context.Context, userID, friendshipID string) (MessageOutput, error) {
@@ -203,7 +203,7 @@ func (s *SocialService) DeclineFriend(ctx context.Context, userID, friendshipID 
 	}
 	if err := s.repo.DeletePendingRequest(ctx, s.pool, friendshipID, userID); err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
-			return MessageOutput{}, fmt.Errorf("%w: request not found", ErrUnauthorized)
+			return MessageOutput{}, UnauthorizedError("Request not found")
 		}
 		s.logger.Error("declining friendship", "err", err)
 		return MessageOutput{}, ErrInternal
@@ -217,7 +217,7 @@ func (s *SocialService) RemoveFriend(ctx context.Context, userID, friendshipID s
 	}
 	if err := s.repo.RemoveFriend(ctx, s.pool, friendshipID, userID); err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
-			return MessageOutput{}, fmt.Errorf("%w: friendship not found", ErrUnauthorized)
+			return MessageOutput{}, UnauthorizedError("Friendship not found")
 		}
 		s.logger.Error("removing friend", "err", err)
 		return MessageOutput{}, ErrInternal
@@ -244,13 +244,13 @@ func (s *SocialService) FriendStats(ctx context.Context, userID, friendshipID st
 	requesterID, addresseeID, status, err := s.repo.GetFriendship(ctx, s.pool, friendshipID)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
-			return FriendStatsOutput{}, fmt.Errorf("%w: friendship not found", ErrUnauthorized)
+			return FriendStatsOutput{}, UnauthorizedError("Friendship not found")
 		}
 		s.logger.Error("loading friendship for stats", "err", err)
 		return FriendStatsOutput{}, ErrInternal
 	}
-	if status != "accepted" || (requesterID != userID && addresseeID != userID) {
-		return FriendStatsOutput{}, fmt.Errorf("%w: friendship not found", ErrUnauthorized)
+	if status != repository.FriendshipStatusAccepted || (requesterID != userID && addresseeID != userID) {
+		return FriendStatsOutput{}, UnauthorizedError("Friendship not found")
 	}
 	friendID := requesterID
 	if requesterID == userID {
@@ -274,7 +274,7 @@ func (s *SocialService) requirePremium(ctx context.Context, userID string) error
 		return ErrInternal
 	}
 	if !active {
-		return fmt.Errorf("%w: subscription required", ErrSubscriptionRequired)
+		return SubscriptionRequiredError("Subscription required")
 	}
 	return nil
 }
@@ -294,7 +294,7 @@ func (s *SocialService) buildLeaderboard(ctx context.Context, userID string, pag
 	myRank, err := s.repo.GetLeaderboardRank(ctx, s.pool, metric, userID)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
-			return LeaderboardOutput{}, fmt.Errorf("%w: user not found", ErrUnauthorized)
+			return LeaderboardOutput{}, UnauthorizedError("User not found")
 		}
 		s.logger.Error("loading leaderboard rank", "err", err)
 		return LeaderboardOutput{}, ErrInternal
@@ -323,7 +323,7 @@ func (s *SocialService) loadStatsForUser(ctx context.Context, userID string, day
 	user, err := s.repo.GetBasicUserByID(ctx, s.pool, userID)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
-			return FriendStatsOutput{}, fmt.Errorf("%w: user not found", ErrUnauthorized)
+			return FriendStatsOutput{}, UnauthorizedError("User not found")
 		}
 		s.logger.Error("loading user for stats", "err", err)
 		return FriendStatsOutput{}, ErrInternal

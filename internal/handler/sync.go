@@ -60,30 +60,30 @@ type syncRequest struct {
 }
 
 type modeRequest struct {
-	ID                    string  `json:"id"`
-	Title                 string  `json:"title"`
-	TextOnScreen          string  `json:"text_on_screen"`
-	Description           *string `json:"description"`
-	AllowedPausesCount    *int    `json:"allowed_pauses_count"`
-	MinimumDurationMS     *int    `json:"minimum_duration_ms"`
-	EndingPausingScenario string  `json:"ending_pausing_scenario"`
-	IconToken             string  `json:"icon_token"`
-	CreatedAt             *int64  `json:"created_at"`
-	UpdatedAt             *int64  `json:"updated_at"`
+	ID                    string                              `json:"id"`
+	Title                 string                              `json:"title"`
+	TextOnScreen          string                              `json:"text_on_screen"`
+	Description           *string                             `json:"description"`
+	AllowedPausesCount    *int                                `json:"allowed_pauses_count"`
+	MinimumDurationMS     *int                                `json:"minimum_duration_ms"`
+	EndingPausingScenario syncmodel.ModeEndingPausingScenario `json:"ending_pausing_scenario"`
+	IconToken             string                              `json:"icon_token"`
+	CreatedAt             *int64                              `json:"created_at"`
+	UpdatedAt             *int64                              `json:"updated_at"`
 }
 
 type modeBlockedAppRequest struct {
-	ModeID        string `json:"mode_id"`
-	Platform      string `json:"platform"`
-	AppIdentifier string `json:"app_identifier"`
-	CreatedAt     *int64 `json:"created_at"`
-	UpdatedAt     *int64 `json:"updated_at"`
+	ModeID        string                   `json:"mode_id"`
+	Platform      syncmodel.DevicePlatform `json:"platform"`
+	AppIdentifier string                   `json:"app_identifier"`
+	CreatedAt     *int64                   `json:"created_at"`
+	UpdatedAt     *int64                   `json:"updated_at"`
 }
 
 type modeBlockedAppDeletion struct {
-	ModeID        string `json:"mode_id"`
-	Platform      string `json:"platform"`
-	AppIdentifier string `json:"app_identifier"`
+	ModeID        string                   `json:"mode_id"`
+	Platform      syncmodel.DevicePlatform `json:"platform"`
+	AppIdentifier string                   `json:"app_identifier"`
 }
 
 type scheduleRequest struct {
@@ -98,30 +98,30 @@ type scheduleRequest struct {
 }
 
 type restrictionSessionRequest struct {
-	SessionID         string  `json:"session_id"`
-	ModeID            string  `json:"mode_id"`
-	Source            string  `json:"source"`
-	StartedAt         *int64  `json:"started_at"`
-	EndedAt           *int64  `json:"ended_at"`
-	PauseCount        *int    `json:"pause_count"`
-	TotalPausedMS     *int    `json:"total_paused_ms"`
-	LastPausedAt      *int64  `json:"last_paused_at"`
-	IntegrityStatus   string  `json:"integrity_status"`
-	LastAnomalyReason *string `json:"last_anomaly_reason"`
-	LastEventID       string  `json:"last_event_id"`
-	CreatedAt         *int64  `json:"created_at"`
-	UpdatedAt         *int64  `json:"updated_at"`
+	SessionID         string                                      `json:"session_id"`
+	ModeID            string                                      `json:"mode_id"`
+	Source            syncmodel.RestrictionSessionSource          `json:"source"`
+	StartedAt         *int64                                      `json:"started_at"`
+	EndedAt           *int64                                      `json:"ended_at"`
+	PauseCount        *int                                        `json:"pause_count"`
+	TotalPausedMS     *int                                        `json:"total_paused_ms"`
+	LastPausedAt      *int64                                      `json:"last_paused_at"`
+	IntegrityStatus   syncmodel.RestrictionSessionIntegrityStatus `json:"integrity_status"`
+	LastAnomalyReason *string                                     `json:"last_anomaly_reason"`
+	LastEventID       string                                      `json:"last_event_id"`
+	CreatedAt         *int64                                      `json:"created_at"`
+	UpdatedAt         *int64                                      `json:"updated_at"`
 }
 
 type restrictionLifecycleEventRequest struct {
-	ID         string `json:"id"`
-	SessionID  string `json:"session_id"`
-	ModeID     string `json:"mode_id"`
-	Action     string `json:"action"`
-	Source     string `json:"source"`
-	Reason     string `json:"reason"`
-	OccurredAt *int64 `json:"occurred_at"`
-	CreatedAt  *int64 `json:"created_at"`
+	ID         string                               `json:"id"`
+	SessionID  string                               `json:"session_id"`
+	ModeID     string                               `json:"mode_id"`
+	Action     syncmodel.RestrictionLifecycleAction `json:"action"`
+	Source     syncmodel.RestrictionSessionSource   `json:"source"`
+	Reason     syncmodel.RestrictionLifecycleReason `json:"reason"`
+	OccurredAt *int64                               `json:"occurred_at"`
+	CreatedAt  *int64                               `json:"created_at"`
 }
 
 type nfcLinkedChipRequest struct {
@@ -263,10 +263,8 @@ func convertModes(fields apperror.FieldErrors, in syncTableRequest[modeRequest, 
 		if strings.TrimSpace(rec.TextOnScreen) == "" {
 			fields[path+".text_on_screen"] = "text_on_screen is required"
 		}
-		if strings.TrimSpace(rec.EndingPausingScenario) == "" {
+		if rec.EndingPausingScenario == "" {
 			fields[path+".ending_pausing_scenario"] = "ending_pausing_scenario is required"
-		} else if rec.EndingPausingScenario != "nfc" && rec.EndingPausingScenario != "qr" && rec.EndingPausingScenario != "manual" {
-			fields[path+".ending_pausing_scenario"] = "ending_pausing_scenario must be one of nfc, qr, manual"
 		}
 		if strings.TrimSpace(rec.IconToken) == "" {
 			fields[path+".icon_token"] = "icon_token is required"
@@ -311,7 +309,7 @@ func convertModeBlockedApps(fields apperror.FieldErrors, in syncTableRequest[mod
 		if strings.TrimSpace(rec.ModeID) == "" {
 			fields[path+".mode_id"] = "mode_id is required"
 		}
-		if rec.Platform != "android" && rec.Platform != "ios" {
+		if rec.Platform == "" {
 			fields[path+".platform"] = "platform must be one of android, ios"
 		}
 		if strings.TrimSpace(rec.AppIdentifier) == "" {
@@ -333,7 +331,7 @@ func convertModeBlockedApps(fields apperror.FieldErrors, in syncTableRequest[mod
 		if strings.TrimSpace(d.ModeID) == "" {
 			fields[path+".mode_id"] = "mode_id is required"
 		}
-		if d.Platform != "android" && d.Platform != "ios" {
+		if d.Platform == "" {
 			fields[path+".platform"] = "platform must be one of android, ios"
 		}
 		if strings.TrimSpace(d.AppIdentifier) == "" {
@@ -396,7 +394,7 @@ func convertRestrictionSessions(fields apperror.FieldErrors, in syncTableRequest
 		if strings.TrimSpace(rec.ModeID) == "" {
 			fields[path+".mode_id"] = "mode_id is required"
 		}
-		if rec.Source != "manual" && rec.Source != "schedule" {
+		if rec.Source == "" {
 			fields[path+".source"] = "source must be one of manual, schedule"
 		}
 		if rec.StartedAt == nil {
@@ -408,7 +406,7 @@ func convertRestrictionSessions(fields apperror.FieldErrors, in syncTableRequest
 		if rec.TotalPausedMS == nil {
 			fields[path+".total_paused_ms"] = "total_paused_ms is required"
 		}
-		if rec.IntegrityStatus != "ok" && rec.IntegrityStatus != "anomaly" {
+		if rec.IntegrityStatus == "" {
 			fields[path+".integrity_status"] = "integrity_status must be one of ok, anomaly"
 		}
 		if strings.TrimSpace(rec.LastEventID) == "" {
@@ -455,13 +453,13 @@ func convertRestrictionLifecycleEvents(fields apperror.FieldErrors, in syncTable
 		if strings.TrimSpace(rec.ModeID) == "" {
 			fields[path+".mode_id"] = "mode_id is required"
 		}
-		if rec.Action != "START" && rec.Action != "PAUSE" && rec.Action != "RESUME" && rec.Action != "END" {
+		if rec.Action == "" {
 			fields[path+".action"] = "action must be one of START, PAUSE, RESUME, END"
 		}
-		if rec.Source != "manual" && rec.Source != "schedule" {
+		if rec.Source == "" {
 			fields[path+".source"] = "source must be one of manual, schedule"
 		}
-		if strings.TrimSpace(rec.Reason) == "" {
+		if rec.Reason == "" {
 			fields[path+".reason"] = "reason is required"
 		}
 		if rec.OccurredAt == nil {

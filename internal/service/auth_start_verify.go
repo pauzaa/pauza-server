@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/IsorilovA/pauza-server/internal/auth"
@@ -75,7 +74,7 @@ func (s *AuthService) VerifyOTP(ctx context.Context, in VerifyOTPInput) (AuthOut
 
 	otpRow, err := s.repo.GetActiveOTPForUpdate(ctx, tx, email, mail.PurposeAuthLogin)
 	if errors.Is(err, repository.ErrNotFound) {
-		return AuthOutput{}, fmt.Errorf("%w: invalid or expired OTP", ErrUnauthorized)
+		return AuthOutput{}, UnauthorizedError("Invalid or expired OTP")
 	}
 	if err != nil {
 		s.logger.Error("querying auth otp", "email", redact.Email(email), "err", err)
@@ -111,7 +110,7 @@ func (s *AuthService) VerifyOTP(ctx context.Context, in VerifyOTPInput) (AuthOut
 			s.logger.Error("committing failed verify-otp attempt", "err", err)
 			return AuthOutput{}, ErrInternal
 		}
-		return AuthOutput{}, fmt.Errorf("%w: invalid or expired OTP", ErrUnauthorized)
+		return AuthOutput{}, UnauthorizedError("Invalid or expired OTP")
 	}
 
 	if err := s.repo.MarkOTPUsed(ctx, tx, otpRow.ID); err != nil {

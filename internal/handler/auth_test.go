@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"mime/multipart"
@@ -276,7 +275,7 @@ func TestVerifyOTP_ServiceUnauthorized(t *testing.T) {
 
 	h := NewAuthHandler(&mockAuthService{
 		verifyOTPFn: func(_ context.Context, _ service.VerifyOTPInput) (service.AuthOutput, error) {
-			return service.AuthOutput{}, fmt.Errorf("%w: invalid or expired OTP", service.ErrUnauthorized)
+			return service.AuthOutput{}, service.UnauthorizedError("Invalid or expired OTP")
 		},
 	}, noopLogger())
 

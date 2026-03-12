@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 
 	"github.com/IsorilovA/pauza-server/internal/repository"
@@ -55,7 +54,7 @@ func (s *SyncService) Sync(ctx context.Context, in SyncInput) (SyncOutput, error
 	_, errUser := s.userVerifier.GetUserByIDForUpdate(ctx, tx, in.UserID)
 	if errUser != nil {
 		if errors.Is(errUser, repository.ErrNotFound) {
-			return SyncOutput{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+			return SyncOutput{}, UnauthorizedError("Missing or invalid authentication")
 		}
 		s.logger.Error("querying user for sync", "err", errUser)
 		return SyncOutput{}, ErrInternal
@@ -162,5 +161,5 @@ func currentServerCursor(ctx context.Context, db repository.DBTX) (int64, error)
 
 func (s *SyncService) syncInternal(stage string, err error) (SyncOutput, error) {
 	s.logger.Error(stage, "err", err)
-	return SyncOutput{}, fmt.Errorf("%w: %s", ErrInternal, stage)
+	return SyncOutput{}, ErrInternal
 }

@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"mime/multipart"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -18,39 +17,64 @@ import (
 	"github.com/IsorilovA/pauza-server/internal/validate"
 )
 
-type AuthServicer interface {
+type AuthSessionService interface {
 	Start(ctx context.Context, in service.StartAuthInput) (service.StartAuthOutput, error)
 	VerifyOTP(ctx context.Context, in service.VerifyOTPInput) (service.AuthOutput, error)
 	Refresh(ctx context.Context, in service.RefreshInput) (service.RefreshOutput, error)
+}
+
+type AuthProfileService interface {
 	GetMe(ctx context.Context, in service.GetMeInput) (service.UserProfile, error)
 	UpdateMe(ctx context.Context, in service.UpdateMeInput) (service.UserProfile, error)
 	UpdateProfilePhoto(ctx context.Context, in service.UpdateProfilePhotoInput) (service.UserProfile, error)
+	CheckUsernameAvailable(ctx context.Context, in service.UsernameAvailableInput) (service.UsernameAvailableOutput, error)
+}
+
+type AuthPreferencesService interface {
 	GetNotificationPreferences(ctx context.Context, in service.GetNotificationPreferencesInput) (service.NotificationPreferences, error)
 	UpdateNotificationPreferences(ctx context.Context, in service.UpdateNotificationPreferencesInput) (service.NotificationPreferences, error)
 	GetPrivacyPreferences(ctx context.Context, in service.GetPrivacyPreferencesInput) (service.PrivacyPreferences, error)
 	UpdatePrivacyPreferences(ctx context.Context, in service.UpdatePrivacyPreferencesInput) (service.PrivacyPreferences, error)
-	CheckUsernameAvailable(ctx context.Context, in service.UsernameAvailableInput) (service.UsernameAvailableOutput, error)
+}
+
+type AuthDeletionService interface {
 	RequestAccountDeletion(ctx context.Context, in service.DeleteAccountRequestInput) (service.MessageOutput, error)
 	ConfirmAccountDeletion(ctx context.Context, in service.DeleteAccountConfirmInput) (service.MessageOutput, error)
 }
 
-var _ AuthServicer = (*service.AuthService)(nil)
+var _ AuthSessionService = (*service.AuthService)(nil)
+var _ AuthProfileService = (*service.AuthService)(nil)
+var _ AuthPreferencesService = (*service.AuthService)(nil)
+var _ AuthDeletionService = (*service.AuthService)(nil)
 
-type AuthHandler struct {
-	svc        AuthServicer
-	photoStore photostore.Store
-	logger     *slog.Logger
+type authHandlerServices interface {
+	AuthSessionService
+	AuthProfileService
+	AuthPreferencesService
+	AuthDeletionService
 }
 
-func NewAuthHandler(svc AuthServicer, logger *slog.Logger) *AuthHandler {
+type AuthHandler struct {
+	sessionSvc  AuthSessionService
+	profileSvc  AuthProfileService
+	prefsSvc    AuthPreferencesService
+	deletionSvc AuthDeletionService
+	photoStore  photostore.Store
+	logger      *slog.Logger
+}
+
+func NewAuthHandler(svc authHandlerServices, logger *slog.Logger) *AuthHandler {
 	return NewAuthHandlerWithPhotoStore(svc, nil, logger)
 }
 
-func NewAuthHandlerWithPhotoStore(svc AuthServicer, photoStore photostore.Store, logger *slog.Logger) *AuthHandler {
+func NewAuthHandlerWithPhotoStore(svc authHandlerServices, photoStore photostore.Store, logger *slog.Logger) *AuthHandler {
 	return &AuthHandler{
-		svc:        svc,
-		photoStore: photoStore,
-		logger:     logger,
+		sessionSvc:  svc,
+		profileSvc:  svc,
+		prefsSvc:    svc,
+		deletionSvc: svc,
+		photoStore:  photoStore,
+		logger:      logger,
 	}
 }
 
@@ -125,6 +149,10 @@ type privacyPreferencesResponse struct {
 	LeaderboardVisible bool `json:"leaderboard_visible"`
 }
 
+type profilePhotoResponse struct {
+	ProfilePictureURL string `json:"profile_picture_url"`
+}
+
 type messageResponse struct {
 	Message string `json:"message"`
 }
@@ -158,42 +186,6 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 	}
 
 	return true
-}
-
-func writeServiceError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, service.ErrConflict):
-		apperror.Conflict(w, serviceMessage(err, service.ErrConflict, "Conflict"))
-	case errors.Is(err, service.ErrNotFound):
-		apperror.NotFound(w, serviceMessage(err, service.ErrNotFound, "Not found"))
-	case errors.Is(err, service.ErrSubscriptionRequired):
-		apperror.SubscriptionRequired(w, serviceMessage(err, service.ErrSubscriptionRequired, "Subscription required"))
-	case errors.Is(err, service.ErrUnauthorized):
-		apperror.Unauthorized(w, serviceMessage(err, service.ErrUnauthorized, "Unauthorized"))
-	case errors.Is(err, service.ErrRateLimited):
-		if retryAfter, ok := service.RetryAfter(err); ok {
-			seconds := int(retryAfter / time.Second)
-			if retryAfter%time.Second != 0 {
-				seconds++
-			}
-			if seconds < 1 {
-				seconds = 1
-			}
-			w.Header().Set("Retry-After", strconv.Itoa(seconds))
-		}
-		apperror.RateLimited(w, serviceMessage(err, service.ErrRateLimited, "Too many requests"))
-	default:
-		apperror.InternalError(w)
-	}
-}
-
-func serviceMessage(err, sentinel error, fallback string) string {
-	full := err.Error()
-	prefix := sentinel.Error() + ": "
-	if after, found := strings.CutPrefix(full, prefix); found && after != "" {
-		return strings.ToUpper(after[:1]) + after[1:]
-	}
-	return fallback
 }
 
 func userProfileToResponse(p service.UserProfile) userResponse {
@@ -262,7 +254,7 @@ func (h *AuthHandler) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.svc.Start(r.Context(), service.StartAuthInput{Email: req.Email})
+	out, err := h.sessionSvc.Start(r.Context(), service.StartAuthInput{Email: req.Email})
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -290,7 +282,7 @@ func (h *AuthHandler) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.svc.VerifyOTP(r.Context(), service.VerifyOTPInput{
+	out, err := h.sessionSvc.VerifyOTP(r.Context(), service.VerifyOTPInput{
 		Email: req.Email,
 		OTP:   req.OTP,
 	})
@@ -316,7 +308,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.svc.Refresh(r.Context(), service.RefreshInput{
+	out, err := h.sessionSvc.Refresh(r.Context(), service.RefreshInput{
 		RefreshToken: req.RefreshToken,
 	})
 	if err != nil {
@@ -333,7 +325,7 @@ func (h *AuthHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.svc.GetMe(r.Context(), service.GetMeInput{UserID: userID})
+	out, err := h.profileSvc.GetMe(r.Context(), service.GetMeInput{UserID: userID})
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -369,7 +361,7 @@ func (h *AuthHandler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.svc.UpdateMe(r.Context(), service.UpdateMeInput{
+	out, err := h.profileSvc.UpdateMe(r.Context(), service.UpdateMeInput{
 		UserID:   userID,
 		Name:     req.Name,
 		Username: req.Username,
@@ -396,7 +388,7 @@ func (h *AuthHandler) UsernameAvailable(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	out, err := h.svc.CheckUsernameAvailable(r.Context(), service.UsernameAvailableInput{
+	out, err := h.profileSvc.CheckUsernameAvailable(r.Context(), service.UsernameAvailableInput{
 		UserID:   userID,
 		Username: username,
 	})
@@ -414,7 +406,7 @@ func (h *AuthHandler) GetNotificationPreferences(w http.ResponseWriter, r *http.
 		return
 	}
 
-	out, err := h.svc.GetNotificationPreferences(r.Context(), service.GetNotificationPreferencesInput{UserID: userID})
+	out, err := h.prefsSvc.GetNotificationPreferences(r.Context(), service.GetNotificationPreferencesInput{UserID: userID})
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -434,7 +426,7 @@ func (h *AuthHandler) UpdateNotificationPreferences(w http.ResponseWriter, r *ht
 		return
 	}
 
-	out, err := h.svc.UpdateNotificationPreferences(r.Context(), service.UpdateNotificationPreferencesInput{
+	out, err := h.prefsSvc.UpdateNotificationPreferences(r.Context(), service.UpdateNotificationPreferencesInput{
 		UserID:      userID,
 		PushEnabled: req.PushEnabled,
 	})
@@ -452,7 +444,7 @@ func (h *AuthHandler) GetPrivacyPreferences(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	out, err := h.svc.GetPrivacyPreferences(r.Context(), service.GetPrivacyPreferencesInput{UserID: userID})
+	out, err := h.prefsSvc.GetPrivacyPreferences(r.Context(), service.GetPrivacyPreferencesInput{UserID: userID})
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -472,7 +464,7 @@ func (h *AuthHandler) UpdatePrivacyPreferences(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	out, err := h.svc.UpdatePrivacyPreferences(r.Context(), service.UpdatePrivacyPreferencesInput{
+	out, err := h.prefsSvc.UpdatePrivacyPreferences(r.Context(), service.UpdatePrivacyPreferencesInput{
 		UserID:             userID,
 		LeaderboardVisible: req.LeaderboardVisible,
 	})
@@ -523,7 +515,7 @@ func (h *AuthHandler) UploadPhoto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.svc.UpdateProfilePhoto(r.Context(), service.UpdateProfilePhotoInput{
+	out, err := h.profileSvc.UpdateProfilePhoto(r.Context(), service.UpdateProfilePhotoInput{
 		UserID:            userID,
 		ProfilePictureURL: photoURL,
 	})
@@ -532,8 +524,7 @@ func (h *AuthHandler) UploadPhoto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := map[string]string{"profile_picture_url": derefString(out.ProfilePictureURL)}
-	writeJSON(w, h.logger, http.StatusOK, resp, "upload-photo")
+	writeJSON(w, h.logger, http.StatusOK, profilePhotoResponse{ProfilePictureURL: derefString(out.ProfilePictureURL)}, "upload-photo")
 }
 
 func (h *AuthHandler) DeleteRequest(w http.ResponseWriter, r *http.Request) {
@@ -542,7 +533,7 @@ func (h *AuthHandler) DeleteRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.svc.RequestAccountDeletion(r.Context(), service.DeleteAccountRequestInput{UserID: userID})
+	out, err := h.deletionSvc.RequestAccountDeletion(r.Context(), service.DeleteAccountRequestInput{UserID: userID})
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -566,7 +557,7 @@ func (h *AuthHandler) DeleteConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.svc.ConfirmAccountDeletion(r.Context(), service.DeleteAccountConfirmInput{
+	out, err := h.deletionSvc.ConfirmAccountDeletion(r.Context(), service.DeleteAccountConfirmInput{
 		UserID: userID,
 		OTP:    req.OTP,
 	})

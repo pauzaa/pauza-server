@@ -181,7 +181,7 @@ func (s *AdminService) Login(ctx context.Context, in LoginInput) (LoginOutput, e
 		// Perform a dummy password check so that the response time does not
 		// reveal whether the username exists.
 		_, _ = auth.CheckPassword("$2a$12$000000000000000000000uGbhMOb3FMvYXCaaDfibSaHOHfNqYpfi", in.Password)
-		return LoginOutput{}, fmt.Errorf("%w: invalid credentials", ErrUnauthorized)
+		return LoginOutput{}, UnauthorizedError("Invalid credentials")
 	}
 	if err != nil {
 		s.logger.Error("querying admin credentials", "err", err)
@@ -194,7 +194,7 @@ func (s *AdminService) Login(ctx context.Context, in LoginInput) (LoginOutput, e
 		return LoginOutput{}, ErrInternal
 	}
 	if !match {
-		return LoginOutput{}, fmt.Errorf("%w: invalid credentials", ErrUnauthorized)
+		return LoginOutput{}, UnauthorizedError("Invalid credentials")
 	}
 
 	token, err := auth.IssueAdminToken(cred.ID, s.jwtSecret, s.adminTokenTTL)
@@ -245,7 +245,7 @@ func (s *AdminService) ListUsers(ctx context.Context, in ListUsersInput) (ListUs
 func (s *AdminService) GetUserDetail(ctx context.Context, in GetUserDetailInput) (UserDetailOutput, error) {
 	row, err := s.adminRepo.GetUserDetail(ctx, s.pool, in.UserID)
 	if errors.Is(err, repository.ErrNotFound) {
-		return UserDetailOutput{}, ErrNotFound
+		return UserDetailOutput{}, NotFoundError("User not found")
 	}
 	if err != nil {
 		s.logger.Error("getting admin user detail", "user_id", in.UserID, "err", err)
@@ -295,10 +295,10 @@ func (s *AdminService) GetPlatformStats(ctx context.Context) (PlatformStatsOutpu
 // not mutated so that temporary overrides expire cleanly.
 func (s *AdminService) ManageEntitlement(ctx context.Context, in ManageEntitlementInput) (MessageOutput, error) {
 	if in.Action != repository.AdminOverrideGrant && in.Action != repository.AdminOverrideRevoke {
-		return MessageOutput{}, fmt.Errorf("%w: action must be grant or revoke", ErrInvalidAction)
+		return MessageOutput{}, invalidAdminActionError()
 	}
 	if in.Entitlement != repository.EntitlementPremium {
-		return MessageOutput{}, fmt.Errorf("%w: entitlement must be premium", ErrInvalidEntitlement)
+		return MessageOutput{}, invalidEntitlementError(in.Entitlement)
 	}
 
 	// Check user existence before starting the transaction.
@@ -308,7 +308,7 @@ func (s *AdminService) ManageEntitlement(ctx context.Context, in ManageEntitleme
 		return MessageOutput{}, ErrInternal
 	}
 	if !exists {
-		return MessageOutput{}, ErrNotFound
+		return MessageOutput{}, NotFoundError("User not found")
 	}
 
 	// Upsert the admin entitlement override. Authorization reads and admin

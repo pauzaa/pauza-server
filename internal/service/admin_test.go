@@ -630,8 +630,9 @@ func TestManageEntitlement_InvalidAction_ReturnsError(t *testing.T) {
 		Entitlement: repository.EntitlementPremium,
 		Action:      repository.AdminOverrideAction("suspend"),
 	})
-	if !errors.Is(err, ErrInvalidAction) {
-		t.Fatalf("ManageEntitlement() error = %v, want ErrInvalidAction", err)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "VALIDATION_ERROR" {
+		t.Fatalf("ManageEntitlement() error = %v, want validation API error", err)
 	}
 }
 
@@ -645,8 +646,9 @@ func TestManageEntitlement_InvalidEntitlement_ReturnsError(t *testing.T) {
 		Entitlement: repository.Entitlement("gold"),
 		Action:      repository.AdminOverrideGrant,
 	})
-	if !errors.Is(err, ErrInvalidEntitlement) {
-		t.Fatalf("ManageEntitlement() error = %v, want ErrInvalidEntitlement", err)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "VALIDATION_ERROR" {
+		t.Fatalf("ManageEntitlement() error = %v, want validation API error", err)
 	}
 }
 

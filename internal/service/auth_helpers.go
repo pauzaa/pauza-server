@@ -57,7 +57,7 @@ func (s *AuthService) newOTPAttemptsRateLimitedError(ctx context.Context, db rep
 		retryAfter = time.Second
 	}
 	return retryAfterError{
-		err:        fmt.Errorf("%w: too many verification attempts", ErrRateLimited),
+		err:        RateLimitedError("Too many verification attempts", retryAfter),
 		retryAfter: retryAfter,
 	}
 }

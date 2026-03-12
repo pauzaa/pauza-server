@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/IsorilovA/pauza-server/internal/repository"
 )
@@ -11,7 +10,7 @@ import (
 func (s *AuthService) GetMe(ctx context.Context, in GetMeInput) (UserProfile, error) {
 	user, err := s.repo.GetUserByID(ctx, s.pool, in.UserID)
 	if errors.Is(err, repository.ErrNotFound) {
-		return UserProfile{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+		return UserProfile{}, UnauthorizedError("Missing or invalid authentication")
 	}
 	if err != nil {
 		s.logger.Error("querying user profile", "err", err)
@@ -30,11 +29,11 @@ func (s *AuthService) GetMe(ctx context.Context, in GetMeInput) (UserProfile, er
 func (s *AuthService) UpdateMe(ctx context.Context, in UpdateMeInput) (UserProfile, error) {
 	updated, err := s.repo.UpdateUser(ctx, s.pool, in.UserID, in.Name, in.Username, nil, nil)
 	if errors.Is(err, repository.ErrNotFound) {
-		return UserProfile{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+		return UserProfile{}, UnauthorizedError("Missing or invalid authentication")
 	}
 	if err != nil {
 		if isUniqueViolation(err, "users_username_key") || isUniqueViolation(err, "idx_users_username") {
-			return UserProfile{}, fmt.Errorf("%w: username already taken", ErrConflict)
+			return UserProfile{}, ConflictError("Username already taken")
 		}
 		s.logger.Error("updating user profile", "err", err)
 		return UserProfile{}, ErrInternal
@@ -53,7 +52,7 @@ func (s *AuthService) CheckUsernameAvailable(ctx context.Context, in UsernameAva
 	taken, err := s.repo.IsUsernameTaken(ctx, s.pool, in.Username, in.UserID)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
-			return UsernameAvailableOutput{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+			return UsernameAvailableOutput{}, UnauthorizedError("Missing or invalid authentication")
 		}
 		s.logger.Error("checking username availability", "err", err)
 		return UsernameAvailableOutput{}, ErrInternal
@@ -64,7 +63,7 @@ func (s *AuthService) CheckUsernameAvailable(ctx context.Context, in UsernameAva
 func (s *AuthService) UpdateProfilePhoto(ctx context.Context, in UpdateProfilePhotoInput) (UserProfile, error) {
 	updated, err := s.repo.UpdateUser(ctx, s.pool, in.UserID, nil, nil, nil, &in.ProfilePictureURL)
 	if errors.Is(err, repository.ErrNotFound) {
-		return UserProfile{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+		return UserProfile{}, UnauthorizedError("Missing or invalid authentication")
 	}
 	if err != nil {
 		s.logger.Error("updating profile photo", "err", err)
@@ -83,7 +82,7 @@ func (s *AuthService) UpdateProfilePhoto(ctx context.Context, in UpdateProfilePh
 func (s *AuthService) GetNotificationPreferences(ctx context.Context, in GetNotificationPreferencesInput) (NotificationPreferences, error) {
 	pushEnabled, err := s.repo.GetPushEnabled(ctx, s.pool, in.UserID)
 	if errors.Is(err, repository.ErrNotFound) {
-		return NotificationPreferences{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+		return NotificationPreferences{}, UnauthorizedError("Missing or invalid authentication")
 	}
 	if err != nil {
 		s.logger.Error("querying notification preferences", "err", err)
@@ -99,7 +98,7 @@ func (s *AuthService) UpdateNotificationPreferences(ctx context.Context, in Upda
 
 	pushEnabled, err := s.repo.UpdatePushEnabled(ctx, s.pool, in.UserID, *in.PushEnabled)
 	if errors.Is(err, repository.ErrNotFound) {
-		return NotificationPreferences{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+		return NotificationPreferences{}, UnauthorizedError("Missing or invalid authentication")
 	}
 	if err != nil {
 		s.logger.Error("updating notification preferences", "err", err)
@@ -111,7 +110,7 @@ func (s *AuthService) UpdateNotificationPreferences(ctx context.Context, in Upda
 func (s *AuthService) GetPrivacyPreferences(ctx context.Context, in GetPrivacyPreferencesInput) (PrivacyPreferences, error) {
 	user, err := s.repo.GetUserByID(ctx, s.pool, in.UserID)
 	if errors.Is(err, repository.ErrNotFound) {
-		return PrivacyPreferences{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+		return PrivacyPreferences{}, UnauthorizedError("Missing or invalid authentication")
 	}
 	if err != nil {
 		s.logger.Error("querying privacy preferences", "err", err)
@@ -127,7 +126,7 @@ func (s *AuthService) UpdatePrivacyPreferences(ctx context.Context, in UpdatePri
 
 	updated, err := s.repo.UpdateUser(ctx, s.pool, in.UserID, nil, nil, in.LeaderboardVisible, nil)
 	if errors.Is(err, repository.ErrNotFound) {
-		return PrivacyPreferences{}, fmt.Errorf("%w: missing or invalid authentication", ErrUnauthorized)
+		return PrivacyPreferences{}, UnauthorizedError("Missing or invalid authentication")
 	}
 	if err != nil {
 		s.logger.Error("updating privacy preferences", "err", err)

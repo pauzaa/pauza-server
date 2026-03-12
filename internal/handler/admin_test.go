@@ -568,7 +568,9 @@ func TestAdminManageEntitlement_ServiceInvalidAction(t *testing.T) {
 	t.Parallel()
 	h := newTestAdminHandler(&mockAdminService{
 		manageEntitlementFn: func(_ context.Context, _ service.ManageEntitlementInput) (service.MessageOutput, error) {
-			return service.MessageOutput{}, fmt.Errorf("%w: must be grant or revoke", service.ErrInvalidAction)
+			return service.MessageOutput{}, service.ValidationError("Invalid request body", apperror.FieldErrors{
+				"action": "action must be grant or revoke",
+			})
 		},
 	})
 
@@ -587,7 +589,9 @@ func TestAdminManageEntitlement_ServiceInvalidEntitlement(t *testing.T) {
 	t.Parallel()
 	h := newTestAdminHandler(&mockAdminService{
 		manageEntitlementFn: func(_ context.Context, _ service.ManageEntitlementInput) (service.MessageOutput, error) {
-			return service.MessageOutput{}, fmt.Errorf("%w: must be premium", service.ErrInvalidEntitlement)
+			return service.MessageOutput{}, service.ValidationError("Invalid request body", apperror.FieldErrors{
+				"entitlement": "entitlement must be premium",
+			})
 		},
 	})
 

@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/IsorilovA/pauza-server/internal/auth"
@@ -23,7 +22,7 @@ func (s *AuthService) Refresh(ctx context.Context, in RefreshInput) (RefreshOutp
 
 	tok, err := s.repo.GetRefreshTokenByHashForUpdate(ctx, tx, tokenHash)
 	if errors.Is(err, repository.ErrNotFound) {
-		return RefreshOutput{}, fmt.Errorf("%w: invalid refresh token", ErrUnauthorized)
+		return RefreshOutput{}, UnauthorizedError("Invalid refresh token")
 	}
 	if err != nil {
 		s.logger.Error("querying refresh token", "err", err)
@@ -39,11 +38,11 @@ func (s *AuthService) Refresh(ctx context.Context, in RefreshInput) (RefreshOutp
 			s.logger.Error("committing reuse-detection revoke-all", "err", err)
 			return RefreshOutput{}, ErrInternal
 		}
-		return RefreshOutput{}, fmt.Errorf("%w: invalid refresh token", ErrUnauthorized)
+		return RefreshOutput{}, UnauthorizedError("Invalid refresh token")
 	}
 
 	if time.Now().UTC().After(tok.ExpiresAt) {
-		return RefreshOutput{}, fmt.Errorf("%w: invalid refresh token", ErrUnauthorized)
+		return RefreshOutput{}, UnauthorizedError("Invalid refresh token")
 	}
 
 	if err := s.repo.RevokeRefreshToken(ctx, tx, tok.ID); err != nil {
