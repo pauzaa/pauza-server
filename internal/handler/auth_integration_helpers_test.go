@@ -57,6 +57,19 @@ type authEnvelope struct {
 	} `json:"user"`
 }
 
+type authStartRequest struct {
+	Email string `json:"email"`
+}
+
+type authVerifyRequest struct {
+	Email string `json:"email"`
+	OTP   string `json:"otp"`
+}
+
+type authRefreshRequest struct {
+	RefreshToken string `json:"refresh_token"`
+}
+
 func (s *captureSender) Probe(context.Context) error { return nil }
 
 func (s *captureSender) SendOTP(_ context.Context, to, otp string, purpose mail.Purpose) error {
@@ -198,7 +211,7 @@ func discardBody(_ *testing.T, resp *http.Response) {
 func startAuthChallenge(t *testing.T, baseURL, email string) {
 	t.Helper()
 
-	resp := postJSON(t, baseURL+"/api/v1/auth/start", map[string]string{"email": email})
+	resp := postJSON(t, baseURL+"/api/v1/auth/start", authStartRequest{Email: email})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("start status = %d: %s", resp.StatusCode, string(readBody(t, resp)))
 	}
@@ -215,9 +228,9 @@ func startAuthChallenge(t *testing.T, baseURL, email string) {
 func verifyAuthOTP(t *testing.T, baseURL, email, otp string) authEnvelope {
 	t.Helper()
 
-	resp := postJSON(t, baseURL+"/api/v1/auth/verify", map[string]string{
-		"email": email,
-		"otp":   otp,
+	resp := postJSON(t, baseURL+"/api/v1/auth/verify", authVerifyRequest{
+		Email: email,
+		OTP:   otp,
 	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("verify status = %d: %s", resp.StatusCode, string(readBody(t, resp)))

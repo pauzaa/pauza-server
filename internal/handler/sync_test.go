@@ -22,6 +22,13 @@ type mockSyncService struct {
 	syncFn func(ctx context.Context, in service.SyncInput) (service.SyncOutput, error)
 }
 
+type syncErrorEnvelope struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
 type failingSyncResponseWriter struct {
 	header     http.Header
 	statuses   []int
@@ -119,13 +126,12 @@ func TestSync_MissingLastSyncedAt(t *testing.T) {
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422", rec.Code)
 	}
-	var resp apperror.ErrorResponse
+	var resp syncErrorEnvelope
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	fields, _ := resp.Error.Details.(map[string]any)
-	if fields == nil {
-		return
+	if resp.Error.Code != apperror.CodeValidationError {
+		t.Fatalf("error.code = %q, want %q", resp.Error.Code, apperror.CodeValidationError)
 	}
 }
 

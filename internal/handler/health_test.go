@@ -17,6 +17,11 @@ func testHealthLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+type healthEnvelope struct {
+	Status    string `json:"status"`
+	Timestamp string `json:"timestamp"`
+}
+
 // ---------------------------------------------------------------------------
 // Ready (readiness probe) tests
 // ---------------------------------------------------------------------------
@@ -88,21 +93,15 @@ func TestReady_ExactResponseShape(t *testing.T) {
 
 	h.ServeHTTP(rec, req)
 
-	var raw map[string]any
-	if err := json.NewDecoder(rec.Body).Decode(&raw); err != nil {
+	var resp healthEnvelope
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-
-	// Response must contain exactly two keys: "status" and "timestamp"
-	if len(raw) != 2 {
-		t.Errorf("expected exactly 2 keys in response, got %d: %v", len(raw), raw)
+	if resp.Status != "degraded" {
+		t.Errorf("expected status 'degraded', got: %q", resp.Status)
 	}
-
-	if raw["status"] != "degraded" {
-		t.Errorf("expected status 'degraded', got: %v", raw["status"])
-	}
-	if _, ok := raw["timestamp"]; !ok {
-		t.Errorf("expected timestamp key to be present, got: %v", raw)
+	if resp.Timestamp == "" {
+		t.Error("expected timestamp key to be present")
 	}
 }
 
@@ -173,20 +172,15 @@ func TestLive_ResponseShape(t *testing.T) {
 
 	h.ServeHTTP(rec, req)
 
-	var raw map[string]any
-	if err := json.NewDecoder(rec.Body).Decode(&raw); err != nil {
+	var resp healthEnvelope
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-
-	if len(raw) != 2 {
-		t.Errorf("expected exactly 2 keys in response, got %d: %v", len(raw), raw)
+	if resp.Status != "ok" {
+		t.Errorf("expected status 'ok', got: %q", resp.Status)
 	}
-
-	if raw["status"] != "ok" {
-		t.Errorf("expected status 'ok', got: %v", raw["status"])
-	}
-	if _, ok := raw["timestamp"]; !ok {
-		t.Errorf("expected timestamp key to be present, got: %v", raw)
+	if resp.Timestamp == "" {
+		t.Error("expected timestamp key to be present")
 	}
 }
 

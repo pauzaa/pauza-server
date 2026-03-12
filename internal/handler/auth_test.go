@@ -36,6 +36,10 @@ func noopLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+type uploadPhotoResponse struct {
+	ProfilePictureURL string `json:"profile_picture_url"`
+}
+
 func assertValidationEnvelope(t *testing.T, rec *httptest.ResponseRecorder, expectedFields []string) {
 	t.Helper()
 	if rec.Code != http.StatusUnprocessableEntity {
@@ -529,12 +533,12 @@ func TestUploadPhoto_Success(t *testing.T) {
 		t.Fatalf("profile_picture_url = %q", gotURL)
 	}
 
-	var body map[string]string
+	var body uploadPhotoResponse
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body["profile_picture_url"] != gotURL {
-		t.Fatalf("response profile_picture_url = %q, want %q", body["profile_picture_url"], gotURL)
+	if body.ProfilePictureURL != gotURL {
+		t.Fatalf("response profile_picture_url = %q, want %q", body.ProfilePictureURL, gotURL)
 	}
 }
 

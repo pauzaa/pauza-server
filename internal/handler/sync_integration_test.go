@@ -15,22 +15,168 @@ import (
 	"github.com/IsorilovA/pauza-server/internal/syncmodel"
 )
 
-func syncPayload() map[string]any {
-	table := func() map[string]any {
-		return map[string]any{"last_synced_at": int64(0), "upserts": []any{}, "deletions": []any{}}
-	}
-	return map[string]any{
-		"tables": map[string]any{
-			"modes":                        table(),
-			"mode_blocked_apps":            table(),
-			"schedules":                    table(),
-			"restriction_sessions":         table(),
-			"restriction_lifecycle_events": table(),
-			"nfc_linked_chips":             table(),
-			"qr_linked_codes":              table(),
-			"streak_session_daily_rollups": table(),
-			"streak_daily_aggregates":      table(),
+type syncTableFixture[T any, D any] struct {
+	LastSyncedAt *int64 `json:"last_synced_at,omitempty"`
+	Upserts      []T    `json:"upserts"`
+	Deletions    []D    `json:"deletions"`
+}
+
+type syncRequestFixture struct {
+	Tables syncTablesFixture `json:"tables"`
+}
+
+type syncTablesFixture struct {
+	Modes                      *syncTableFixture[syncModeFixture, string]                                              `json:"modes,omitempty"`
+	ModeBlockedApps            *syncTableFixture[syncModeBlockedAppFixture, syncModeBlockedAppKey]                     `json:"mode_blocked_apps,omitempty"`
+	Schedules                  *syncTableFixture[syncScheduleFixture, string]                                          `json:"schedules,omitempty"`
+	RestrictionSessions        *syncTableFixture[syncRestrictionSessionFixture, string]                                `json:"restriction_sessions,omitempty"`
+	RestrictionLifecycleEvents *syncTableFixture[syncRestrictionLifecycleEventFixture, string]                         `json:"restriction_lifecycle_events,omitempty"`
+	NFCLinkedChips             *syncTableFixture[syncNFCLinkedChipFixture, string]                                     `json:"nfc_linked_chips,omitempty"`
+	QRLinkedCodes              *syncTableFixture[syncQRLinkedCodeFixture, string]                                      `json:"qr_linked_codes,omitempty"`
+	StreakSessionDailyRollups  *syncTableFixture[syncStreakSessionDailyRollupFixture, syncStreakSessionDailyRollupKey] `json:"streak_session_daily_rollups,omitempty"`
+	StreakDailyAggregates      *syncTableFixture[syncStreakDailyAggregateFixture, string]                              `json:"streak_daily_aggregates,omitempty"`
+}
+
+type syncModeFixture struct {
+	ID                    string  `json:"id"`
+	Title                 string  `json:"title"`
+	TextOnScreen          string  `json:"text_on_screen"`
+	Description           *string `json:"description"`
+	AllowedPausesCount    *int    `json:"allowed_pauses_count"`
+	MinimumDurationMS     *int    `json:"minimum_duration_ms"`
+	EndingPausingScenario string  `json:"ending_pausing_scenario"`
+	IconToken             string  `json:"icon_token"`
+	CreatedAt             *int64  `json:"created_at"`
+	UpdatedAt             *int64  `json:"updated_at"`
+}
+
+type syncModeBlockedAppFixture struct {
+	ModeID        string `json:"mode_id"`
+	Platform      string `json:"platform"`
+	AppIdentifier string `json:"app_identifier"`
+	CreatedAt     *int64 `json:"created_at"`
+	UpdatedAt     *int64 `json:"updated_at"`
+}
+
+type syncModeBlockedAppKey struct {
+	ModeID        string `json:"mode_id"`
+	Platform      string `json:"platform"`
+	AppIdentifier string `json:"app_identifier"`
+}
+
+type syncScheduleFixture struct {
+	ID          string `json:"id"`
+	ModeID      string `json:"mode_id"`
+	Days        string `json:"days"`
+	StartMinute *int   `json:"start_minute"`
+	EndMinute   *int   `json:"end_minute"`
+	Enabled     *int   `json:"enabled"`
+	CreatedAt   *int64 `json:"created_at"`
+	UpdatedAt   *int64 `json:"updated_at"`
+}
+
+type syncRestrictionSessionFixture struct {
+	SessionID         string  `json:"session_id"`
+	ModeID            string  `json:"mode_id"`
+	Source            string  `json:"source"`
+	StartedAt         *int64  `json:"started_at"`
+	EndedAt           *int64  `json:"ended_at"`
+	PauseCount        *int    `json:"pause_count"`
+	TotalPausedMS     *int    `json:"total_paused_ms"`
+	LastPausedAt      *int64  `json:"last_paused_at"`
+	IntegrityStatus   string  `json:"integrity_status"`
+	LastAnomalyReason *string `json:"last_anomaly_reason"`
+	LastEventID       string  `json:"last_event_id"`
+	CreatedAt         *int64  `json:"created_at"`
+	UpdatedAt         *int64  `json:"updated_at"`
+}
+
+type syncRestrictionLifecycleEventFixture struct {
+	ID         string `json:"id"`
+	SessionID  string `json:"session_id"`
+	ModeID     string `json:"mode_id"`
+	Action     string `json:"action"`
+	Source     string `json:"source"`
+	Reason     string `json:"reason"`
+	OccurredAt *int64 `json:"occurred_at"`
+	CreatedAt  *int64 `json:"created_at"`
+}
+
+type syncNFCLinkedChipFixture struct {
+	ID             string `json:"id"`
+	ChipIdentifier string `json:"chip_identifier"`
+	Name           string `json:"name"`
+	CreatedAt      *int64 `json:"created_at"`
+	UpdatedAt      *int64 `json:"updated_at"`
+}
+
+type syncQRLinkedCodeFixture struct {
+	ID        string `json:"id"`
+	ScanValue string `json:"scan_value"`
+	Name      string `json:"name"`
+	CreatedAt *int64 `json:"created_at"`
+	UpdatedAt *int64 `json:"updated_at"`
+}
+
+type syncStreakSessionDailyRollupFixture struct {
+	SessionID   string `json:"session_id"`
+	LocalDay    string `json:"local_day"`
+	EffectiveMS *int   `json:"effective_ms"`
+	UpdatedAt   *int64 `json:"updated_at"`
+}
+
+type syncStreakSessionDailyRollupKey struct {
+	SessionID string `json:"session_id"`
+	LocalDay  string `json:"local_day"`
+}
+
+type syncStreakDailyAggregateFixture struct {
+	LocalDay           string `json:"local_day"`
+	EffectiveMS        *int   `json:"effective_ms"`
+	Qualified          *int   `json:"qualified"`
+	SourceSessionCount *int   `json:"source_session_count"`
+	UpdatedAt          *int64 `json:"updated_at"`
+}
+
+func syncPayload() syncRequestFixture {
+	return syncRequestFixture{
+		Tables: syncTablesFixture{
+			Modes:                      syncEmptyTable[syncModeFixture, string](),
+			ModeBlockedApps:            syncEmptyTable[syncModeBlockedAppFixture, syncModeBlockedAppKey](),
+			Schedules:                  syncEmptyTable[syncScheduleFixture, string](),
+			RestrictionSessions:        syncEmptyTable[syncRestrictionSessionFixture, string](),
+			RestrictionLifecycleEvents: syncEmptyTable[syncRestrictionLifecycleEventFixture, string](),
+			NFCLinkedChips:             syncEmptyTable[syncNFCLinkedChipFixture, string](),
+			QRLinkedCodes:              syncEmptyTable[syncQRLinkedCodeFixture, string](),
+			StreakSessionDailyRollups:  syncEmptyTable[syncStreakSessionDailyRollupFixture, syncStreakSessionDailyRollupKey](),
+			StreakDailyAggregates:      syncEmptyTable[syncStreakDailyAggregateFixture, string](),
 		},
+	}
+}
+
+func syncEmptyTable[T any, D any]() *syncTableFixture[T, D] {
+	return &syncTableFixture[T, D]{
+		LastSyncedAt: int64Ptr(0),
+		Upserts:      []T{},
+		Deletions:    []D{},
+	}
+}
+
+func int64Ptr(v int64) *int64 { return &v }
+func intPtr(v int) *int       { return &v }
+
+func syncModeUpsert(title string, updatedAt int64) syncModeFixture {
+	return syncModeFixture{
+		ID:                    "mode1",
+		Title:                 title,
+		TextOnScreen:          "S",
+		Description:           nil,
+		AllowedPausesCount:    intPtr(1),
+		MinimumDurationMS:     intPtr(1000),
+		EndingPausingScenario: "manual",
+		IconToken:             "ms:v1:work",
+		CreatedAt:             int64Ptr(1000),
+		UpdatedAt:             int64Ptr(updatedAt),
 	}
 }
 
@@ -137,11 +283,7 @@ func TestIntegration_Sync_OnlyRequestedTablesAreProcessed(t *testing.T) {
 		t.Fatalf("insert nfc: %v", err)
 	}
 
-	body := map[string]any{
-		"tables": map[string]any{
-			"modes": map[string]any{"last_synced_at": int64(0), "upserts": []any{}, "deletions": []any{}},
-		},
-	}
+	body := syncRequestFixture{Tables: syncTablesFixture{Modes: syncEmptyTable[syncModeFixture, string]()}}
 	resp := postSync(t, ts.URL, auth.AccessToken, body)
 	if resp.StatusCode != http.StatusOK {
 		body := readBody(t, resp)
@@ -162,11 +304,7 @@ func TestIntegration_Sync_EmptyRequestedTableSerializesArrays(t *testing.T) {
 	ts, _, mailer, _ := setupTestServer(t)
 	auth := startAndVerifyAuth(t, ts.URL, mailer, "sync-empty@example.com")
 
-	body := map[string]any{
-		"tables": map[string]any{
-			"modes": map[string]any{"last_synced_at": int64(0), "upserts": []any{}, "deletions": []any{}},
-		},
-	}
+	body := syncRequestFixture{Tables: syncTablesFixture{Modes: syncEmptyTable[syncModeFixture, string]()}}
 	resp := postSync(t, ts.URL, auth.AccessToken, body)
 	if resp.StatusCode != http.StatusOK {
 		body := readBody(t, resp)
@@ -195,13 +333,10 @@ func TestIntegration_Sync_LastWriteWinsAndEchoSuppression(t *testing.T) {
 	}
 
 	oldPayload := syncPayload()
-	oldPayload["tables"].(map[string]any)["modes"] = map[string]any{
-		"last_synced_at": int64(150),
-		"upserts": []any{map[string]any{
-			"id": "mode1", "title": "OldClient", "text_on_screen": "S", "description": nil, "allowed_pauses_count": 1,
-			"minimum_duration_ms": 1000, "ending_pausing_scenario": "manual", "icon_token": "ms:v1:work", "created_at": int64(1000), "updated_at": int64(100),
-		}},
-		"deletions": []any{},
+	oldPayload.Tables.Modes = &syncTableFixture[syncModeFixture, string]{
+		LastSyncedAt: int64Ptr(150),
+		Upserts:      []syncModeFixture{syncModeUpsert("OldClient", 100)},
+		Deletions:    []string{},
 	}
 	resp := postSync(t, ts.URL, auth.AccessToken, oldPayload)
 	if resp.StatusCode != http.StatusOK {
@@ -215,13 +350,10 @@ func TestIntegration_Sync_LastWriteWinsAndEchoSuppression(t *testing.T) {
 	}
 
 	newPayload := syncPayload()
-	newPayload["tables"].(map[string]any)["modes"] = map[string]any{
-		"last_synced_at": int64(150),
-		"upserts": []any{map[string]any{
-			"id": "mode1", "title": "ClientNew", "text_on_screen": "S", "description": nil, "allowed_pauses_count": 1,
-			"minimum_duration_ms": 1000, "ending_pausing_scenario": "manual", "icon_token": "ms:v1:work", "created_at": int64(1000), "updated_at": int64(300),
-		}},
-		"deletions": []any{},
+	newPayload.Tables.Modes = &syncTableFixture[syncModeFixture, string]{
+		LastSyncedAt: int64Ptr(150),
+		Upserts:      []syncModeFixture{syncModeUpsert("ClientNew", 300)},
+		Deletions:    []string{},
 	}
 	resp = postSync(t, ts.URL, auth.AccessToken, newPayload)
 	if resp.StatusCode != http.StatusOK {
@@ -267,7 +399,11 @@ func TestIntegration_Sync_RestrictionLifecycleCursorUsesCreatedAt(t *testing.T) 
 	}
 
 	p := syncPayload()
-	p["tables"].(map[string]any)["restriction_lifecycle_events"] = map[string]any{"last_synced_at": int64(900), "upserts": []any{}, "deletions": []any{}}
+	p.Tables.RestrictionLifecycleEvents = &syncTableFixture[syncRestrictionLifecycleEventFixture, string]{
+		LastSyncedAt: int64Ptr(900),
+		Upserts:      []syncRestrictionLifecycleEventFixture{},
+		Deletions:    []string{},
+	}
 	resp := postSync(t, ts.URL, auth.AccessToken, p)
 	if resp.StatusCode != http.StatusOK {
 		body := readBody(t, resp)
@@ -280,7 +416,11 @@ func TestIntegration_Sync_RestrictionLifecycleCursorUsesCreatedAt(t *testing.T) 
 	}
 
 	p2 := syncPayload()
-	p2["tables"].(map[string]any)["restriction_lifecycle_events"] = map[string]any{"last_synced_at": int64(1000), "upserts": []any{}, "deletions": []any{}}
+	p2.Tables.RestrictionLifecycleEvents = &syncTableFixture[syncRestrictionLifecycleEventFixture, string]{
+		LastSyncedAt: int64Ptr(1000),
+		Upserts:      []syncRestrictionLifecycleEventFixture{},
+		Deletions:    []string{},
+	}
 	resp = postSync(t, ts.URL, auth.AccessToken, p2)
 	if resp.StatusCode != http.StatusOK {
 		body := readBody(t, resp)
@@ -331,7 +471,11 @@ func TestIntegration_Sync_CascadeTombstonesReturnedOnFullRestore(t *testing.T) {
 	}
 
 	deletePayload := syncPayload()
-	deletePayload["tables"].(map[string]any)["modes"] = map[string]any{"last_synced_at": int64(0), "upserts": []any{}, "deletions": []any{"mode1"}}
+	deletePayload.Tables.Modes = &syncTableFixture[syncModeFixture, string]{
+		LastSyncedAt: int64Ptr(0),
+		Upserts:      []syncModeFixture{},
+		Deletions:    []string{"mode1"},
+	}
 	resp := postSync(t, ts.URL, auth.AccessToken, deletePayload)
 	if resp.StatusCode != http.StatusOK {
 		body := readBody(t, resp)

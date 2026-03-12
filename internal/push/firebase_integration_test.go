@@ -107,8 +107,8 @@ func TestFirebaseSenderIntegrationDeletesUnregisteredToken(t *testing.T) {
 		Type:  "friend_request",
 		Title: "New friend request",
 		Body:  "alice sent you a friend request",
-		Data: map[string]string{
-			"friendship_id": "friendship-1",
+		FriendMetadata: &FriendMetadata{
+			FriendshipID: "friendship-1",
 		},
 	})
 	if err != nil {

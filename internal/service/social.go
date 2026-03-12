@@ -427,10 +427,10 @@ func (s *SocialService) sendFriendNotification(
 		Type:  notificationType,
 		Title: title,
 		Body:  fmt.Sprintf(bodyTemplate, actor.Username),
-		Data: map[string]string{
-			"friendship_id":  friendshipID,
-			"actor_user_id":  actor.ID,
-			"actor_username": actor.Username,
+		FriendMetadata: &push.FriendMetadata{
+			FriendshipID:  friendshipID,
+			ActorUserID:   actor.ID,
+			ActorUsername: actor.Username,
 		},
 	})
 	if err != nil {

@@ -157,10 +157,10 @@ func TestFirebaseSenderBatchesNotificationsAndIncludesPayload(t *testing.T) {
 		Type:  "friend_request",
 		Title: "New friend request",
 		Body:  "alice sent you a friend request",
-		Data: map[string]string{
-			"friendship_id":  "friendship-1",
-			"actor_user_id":  "actor-1",
-			"actor_username": "alice",
+		FriendMetadata: &FriendMetadata{
+			FriendshipID:  "friendship-1",
+			ActorUserID:   "actor-1",
+			ActorUsername: "alice",
 		},
 	})
 	if err != nil {

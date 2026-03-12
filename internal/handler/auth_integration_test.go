@@ -84,9 +84,9 @@ func TestIntegration_AuthVerifyInvalidOTPReturnsUnauthorized(t *testing.T) {
 		t.Fatal("expected auth login OTP to be sent")
 	}
 
-	resp := postJSON(t, ts.URL+"/api/v1/auth/verify", map[string]string{
-		"email": email,
-		"otp":   "000000",
+	resp := postJSON(t, ts.URL+"/api/v1/auth/verify", authVerifyRequest{
+		Email: email,
+		OTP:   "000000",
 	})
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("verify status = %d, want 401", resp.StatusCode)
@@ -107,8 +107,8 @@ func TestIntegration_AuthRefreshRotatesTokensAndDetectsReuse(t *testing.T) {
 
 	auth := startAndVerifyAuth(t, ts.URL, sender, "refresh@example.com")
 
-	refreshResp := postJSON(t, ts.URL+"/api/v1/auth/refresh", map[string]string{
-		"refresh_token": auth.RefreshToken,
+	refreshResp := postJSON(t, ts.URL+"/api/v1/auth/refresh", authRefreshRequest{
+		RefreshToken: auth.RefreshToken,
 	})
 	if refreshResp.StatusCode != http.StatusOK {
 		t.Fatalf("refresh status = %d: %s", refreshResp.StatusCode, string(readBody(t, refreshResp)))
@@ -126,16 +126,16 @@ func TestIntegration_AuthRefreshRotatesTokensAndDetectsReuse(t *testing.T) {
 		t.Fatal("expected refresh token rotation")
 	}
 
-	reuseResp := postJSON(t, ts.URL+"/api/v1/auth/refresh", map[string]string{
-		"refresh_token": auth.RefreshToken,
+	reuseResp := postJSON(t, ts.URL+"/api/v1/auth/refresh", authRefreshRequest{
+		RefreshToken: auth.RefreshToken,
 	})
 	if reuseResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("reuse refresh status = %d, want 401", reuseResp.StatusCode)
 	}
 	discardBody(t, reuseResp)
 
-	revokedResp := postJSON(t, ts.URL+"/api/v1/auth/refresh", map[string]string{
-		"refresh_token": rotated.RefreshToken,
+	revokedResp := postJSON(t, ts.URL+"/api/v1/auth/refresh", authRefreshRequest{
+		RefreshToken: rotated.RefreshToken,
 	})
 	if revokedResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("rotated token after reuse status = %d, want 401", revokedResp.StatusCode)
@@ -206,7 +206,9 @@ func TestIntegration_NotificationPreferencesReadAndUpdate(t *testing.T) {
 		t.Fatal("initial push_enabled = false, want true")
 	}
 
-	body, err := json.Marshal(map[string]bool{"push_enabled": false})
+	body, err := json.Marshal(struct {
+		PushEnabled bool `json:"push_enabled"`
+	}{PushEnabled: false})
 	if err != nil {
 		t.Fatalf("marshal patch body: %v", err)
 	}
@@ -306,7 +308,9 @@ func TestIntegration_PrivacyPreferencesReadAndUpdate(t *testing.T) {
 		t.Fatal("initial leaderboard_visible = false, want true")
 	}
 
-	body, err := json.Marshal(map[string]bool{"leaderboard_visible": false})
+	body, err := json.Marshal(struct {
+		LeaderboardVisible bool `json:"leaderboard_visible"`
+	}{LeaderboardVisible: false})
 	if err != nil {
 		t.Fatalf("marshal patch body: %v", err)
 	}

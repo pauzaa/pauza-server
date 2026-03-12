@@ -190,6 +190,9 @@ func TestSocialService_RequestFriendSendsNotificationMetadata(t *testing.T) {
 	}
 
 	got := pushSender.calls[0]
+	if got.notification.FriendMetadata == nil {
+		t.Fatal("expected friend metadata")
+	}
 	if got.userID != "target-1" {
 		t.Fatalf("push recipient = %q, want target-1", got.userID)
 	}
@@ -202,14 +205,14 @@ func TestSocialService_RequestFriendSendsNotificationMetadata(t *testing.T) {
 	if got.notification.Body != "alice sent you a friend request" {
 		t.Fatalf("notification body = %q", got.notification.Body)
 	}
-	if got.notification.Data["friendship_id"] != "friendship-1" {
-		t.Fatalf("friendship_id = %q, want friendship-1", got.notification.Data["friendship_id"])
+	if got.notification.FriendMetadata.FriendshipID != "friendship-1" {
+		t.Fatalf("friendship_id = %q, want friendship-1", got.notification.FriendMetadata.FriendshipID)
 	}
-	if got.notification.Data["actor_user_id"] != "actor-1" {
-		t.Fatalf("actor_user_id = %q, want actor-1", got.notification.Data["actor_user_id"])
+	if got.notification.FriendMetadata.ActorUserID != "actor-1" {
+		t.Fatalf("actor_user_id = %q, want actor-1", got.notification.FriendMetadata.ActorUserID)
 	}
-	if got.notification.Data["actor_username"] != "alice" {
-		t.Fatalf("actor_username = %q, want alice", got.notification.Data["actor_username"])
+	if got.notification.FriendMetadata.ActorUsername != "alice" {
+		t.Fatalf("actor_username = %q, want alice", got.notification.FriendMetadata.ActorUsername)
 	}
 }
 
@@ -249,6 +252,9 @@ func TestSocialService_AcceptFriendSendsNotificationMetadata(t *testing.T) {
 	}
 
 	got := pushSender.calls[0]
+	if got.notification.FriendMetadata == nil {
+		t.Fatal("expected friend metadata")
+	}
 	if got.userID != "requester-1" {
 		t.Fatalf("push recipient = %q, want requester-1", got.userID)
 	}
@@ -261,8 +267,8 @@ func TestSocialService_AcceptFriendSendsNotificationMetadata(t *testing.T) {
 	if got.notification.Body != "alice accepted your friend request" {
 		t.Fatalf("notification body = %q", got.notification.Body)
 	}
-	if got.notification.Data["friendship_id"] != "friendship-1" {
-		t.Fatalf("friendship_id = %q, want friendship-1", got.notification.Data["friendship_id"])
+	if got.notification.FriendMetadata.FriendshipID != "friendship-1" {
+		t.Fatalf("friendship_id = %q, want friendship-1", got.notification.FriendMetadata.FriendshipID)
 	}
 }
 

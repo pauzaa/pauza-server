@@ -9,10 +9,16 @@ import (
 )
 
 type Notification struct {
-	Type  string
-	Title string
-	Body  string
-	Data  map[string]string
+	Type           string
+	Title          string
+	Body           string
+	FriendMetadata *FriendMetadata
+}
+
+type FriendMetadata struct {
+	FriendshipID  string
+	ActorUserID   string
+	ActorUsername string
 }
 
 type Sender interface {

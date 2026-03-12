@@ -12,22 +12,22 @@ import (
 	"github.com/IsorilovA/pauza-server/internal/syncmodel"
 )
 
-type SyncServicer interface {
+type SyncService interface {
 	Sync(ctx context.Context, in service.SyncInput) (service.SyncOutput, error)
 }
 
-var _ SyncServicer = (*service.SyncService)(nil)
+var _ SyncService = (*service.SyncService)(nil)
 
 type SyncHandler struct {
-	svc    SyncServicer
+	svc    SyncService
 	logger *slog.Logger
 }
 
-func NewSyncHandler(svc SyncServicer) *SyncHandler {
+func NewSyncHandler(svc SyncService) *SyncHandler {
 	return &SyncHandler{svc: svc, logger: slog.Default()}
 }
 
-func NewSyncHandlerWithLogger(svc SyncServicer, logger *slog.Logger) *SyncHandler {
+func NewSyncHandlerWithLogger(svc SyncService, logger *slog.Logger) *SyncHandler {
 	return &SyncHandler{svc: svc, logger: logger}
 }
 

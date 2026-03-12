@@ -95,9 +95,11 @@ func (s *FirebaseSender) Send(ctx context.Context, userID string, notification N
 		return nil
 	}
 
-	data := make(map[string]string, len(notification.Data)+1)
-	for key, value := range notification.Data {
-		data[key] = value
+	data := make(map[string]string, 1)
+	if notification.FriendMetadata != nil {
+		for key, value := range friendMetadataFields(*notification.FriendMetadata) {
+			data[key] = value
+		}
 	}
 	if notification.Type != "" {
 		data["type"] = notification.Type
@@ -179,4 +181,12 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func friendMetadataFields(metadata FriendMetadata) map[string]string {
+	return map[string]string{
+		"friendship_id":  metadata.FriendshipID,
+		"actor_user_id":  metadata.ActorUserID,
+		"actor_username": metadata.ActorUsername,
+	}
 }

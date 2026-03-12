@@ -15,27 +15,47 @@ import (
 	"github.com/IsorilovA/pauza-server/internal/service"
 )
 
-// AdminServicer is the subset of service.AdminService the handler depends on.
-type AdminServicer interface {
+type AdminLoginService interface {
 	Login(ctx context.Context, in service.LoginInput) (service.LoginOutput, error)
+}
+
+type AdminUsersService interface {
 	ListUsers(ctx context.Context, in service.ListUsersInput) (service.ListUsersOutput, error)
 	GetUserDetail(ctx context.Context, in service.GetUserDetailInput) (service.UserDetailOutput, error)
+}
+
+type AdminStatsService interface {
 	GetPlatformStats(ctx context.Context) (service.PlatformStatsOutput, error)
+}
+
+type AdminEntitlementsService interface {
 	ManageEntitlement(ctx context.Context, in service.ManageEntitlementInput) (service.MessageOutput, error)
 	ListEntitlements(ctx context.Context, in service.ListEntitlementsInput) (service.ListEntitlementsOutput, error)
 }
 
-var _ AdminServicer = (*service.AdminService)(nil)
+var _ AdminLoginService = (*service.AdminService)(nil)
+var _ AdminUsersService = (*service.AdminService)(nil)
+var _ AdminStatsService = (*service.AdminService)(nil)
+var _ AdminEntitlementsService = (*service.AdminService)(nil)
 
 // AdminHandler handles admin HTTP endpoints.
 type AdminHandler struct {
-	svc    AdminServicer
-	logger *slog.Logger
+	loginSvc        AdminLoginService
+	usersSvc        AdminUsersService
+	statsSvc        AdminStatsService
+	entitlementsSvc AdminEntitlementsService
+	logger          *slog.Logger
 }
 
 // NewAdminHandler creates an AdminHandler with the given service and logger.
-func NewAdminHandler(svc AdminServicer, logger *slog.Logger) *AdminHandler {
-	return &AdminHandler{svc: svc, logger: logger}
+func NewAdminHandler(loginSvc AdminLoginService, usersSvc AdminUsersService, statsSvc AdminStatsService, entitlementsSvc AdminEntitlementsService, logger *slog.Logger) *AdminHandler {
+	return &AdminHandler{
+		loginSvc:        loginSvc,
+		usersSvc:        usersSvc,
+		statsSvc:        statsSvc,
+		entitlementsSvc: entitlementsSvc,
+		logger:          logger,
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -142,7 +162,7 @@ func (h *AdminHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.svc.Login(r.Context(), service.LoginInput{
+	out, err := h.loginSvc.Login(r.Context(), service.LoginInput{
 		Username: req.Username,
 		Password: req.Password,
 	})
@@ -159,7 +179,7 @@ func (h *AdminHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	page, limit := paginationParams(r)
 	search := r.URL.Query().Get("search")
 
-	out, err := h.svc.ListUsers(r.Context(), service.ListUsersInput{
+	out, err := h.usersSvc.ListUsers(r.Context(), service.ListUsersInput{
 		Page:   page,
 		Limit:  limit,
 		Search: search,
@@ -204,7 +224,7 @@ func (h *AdminHandler) GetUserDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.svc.GetUserDetail(r.Context(), service.GetUserDetailInput{
+	out, err := h.usersSvc.GetUserDetail(r.Context(), service.GetUserDetailInput{
 		UserID: userID,
 	})
 	if err != nil {
@@ -236,7 +256,7 @@ func (h *AdminHandler) GetUserDetail(w http.ResponseWriter, r *http.Request) {
 
 // GetPlatformStats handles GET /api/v1/admin/stats.
 func (h *AdminHandler) GetPlatformStats(w http.ResponseWriter, r *http.Request) {
-	out, err := h.svc.GetPlatformStats(r.Context())
+	out, err := h.statsSvc.GetPlatformStats(r.Context())
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -295,7 +315,7 @@ func (h *AdminHandler) ManageEntitlement(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	out, err := h.svc.ManageEntitlement(r.Context(), service.ManageEntitlementInput{
+	out, err := h.entitlementsSvc.ManageEntitlement(r.Context(), service.ManageEntitlementInput{
 		UserID:      userID,
 		Entitlement: req.Entitlement,
 		Action:      req.Action,
@@ -332,7 +352,7 @@ func (h *AdminHandler) ListEntitlements(w http.ResponseWriter, r *http.Request) 
 		isActive = &parsed
 	}
 
-	out, err := h.svc.ListEntitlements(r.Context(), service.ListEntitlementsInput{
+	out, err := h.entitlementsSvc.ListEntitlements(r.Context(), service.ListEntitlementsInput{
 		Page:        page,
 		Limit:       limit,
 		Entitlement: entitlement,
