@@ -35,8 +35,7 @@ func testConfig() *config.Config {
 		// RevenueCat — deterministic test values for webhook auth.
 		RevenueCatWebhookSecret: "test-webhook-secret",
 		// Consolidated rate limits — use generous values so tests are not
-		// throttled. The window must also be positive (MemoryLimiter uses
-		// it for the eviction ticker).
+		// throttled. The windows must remain positive for limiter semantics.
 		AuthRateLimit:          10000,
 		AuthRateWindow:         time.Minute,
 		VerifyOTPRateLimit:     10000,

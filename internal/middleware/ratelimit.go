@@ -2,10 +2,11 @@ package middleware
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -64,52 +65,73 @@ func RateLimit(lim ratelimit.Limiter, limit int, keyFunc func(*http.Request) str
 	}
 }
 
-// IPKey returns the bare IP address from r.RemoteAddr, stripping any port
-// suffix. When chi's middleware.RealIP has run earlier in the chain,
-// RemoteAddr contains the real client IP. The port is stripped so that
-// rate-limit keys are stable regardless of the client's ephemeral source
-// port. If RemoteAddr cannot be parsed (e.g. a Unix socket path), it is
-// returned verbatim as a safe fallback.
-func IPKey(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		// RemoteAddr may already be a bare IP (no port). Use it as-is.
-		return strings.TrimSpace(r.RemoteAddr)
-	}
-	return host
-}
-
 // emailBody is a minimal struct for extracting only the "email" field from a
 // JSON request body without binding the full request schema.
 type emailBody struct {
 	Email string `json:"email"`
 }
 
-// EmailKey extracts the normalized email address from a JSON request body
-// for use as a rate-limit key. The body is read, buffered, and rewound
-// so the downstream handler still sees the original payload. If the body
-// cannot be read or decoded, the client IP (via IPKey) is returned as a
-// fallback so the request is still rate-limited.
-func EmailKey(r *http.Request) string {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return IPKey(r)
-	}
-	// Rewind the body for the downstream handler.
-	r.Body = io.NopCloser(bytes.NewReader(body))
+type authEmailKeyContextKey struct{}
 
-	var parsed emailBody
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return IPKey(r)
-	}
+// ExtractAuthEmailKey reads and rewinds the request body once, storing a
+// normalized auth email key in context for later rate-limit key lookup.
+// Invalid or missing emails are ignored so callers can fall back to IP keys.
+func ExtractAuthEmailKey(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
 
-	email := strings.ToLower(strings.TrimSpace(parsed.Email))
-	if email == "" {
-		return IPKey(r)
-	}
-	return "email:" + email
+		var parsed emailBody
+		if err := json.Unmarshal(body, &parsed); err == nil {
+			email := strings.ToLower(strings.TrimSpace(parsed.Email))
+			if email != "" {
+				r = r.WithContext(contextWithAuthEmailKey(r.Context(), "email:"+email))
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
+func contextWithAuthEmailKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, authEmailKeyContextKey{}, key)
+}
+
+func authEmailKeyFromContext(ctx context.Context) (string, bool) {
+	key, ok := ctx.Value(authEmailKeyContextKey{}).(string)
+	return key, ok && key != ""
+}
+
+// AuthEmailKey returns the previously extracted auth email key. If no email
+// key was extracted it falls back to the caller IP so the request is still
+// throttled.
+func AuthEmailKey(r *http.Request) string {
+	if key, ok := authEmailKeyFromContext(r.Context()); ok {
+		return key
+	}
+	return IPKey(r)
+}
+
+// IPKey returns the remote IP address without port when possible.
+func IPKey(r *http.Request) string {
+	addr := strings.TrimSpace(r.RemoteAddr)
+	if addr == "" {
+		return ""
+	}
+	if parsed, err := netip.ParseAddrPort(addr); err == nil {
+		return parsed.Addr().String()
+	}
+	if parsed, err := netip.ParseAddr(addr); err == nil {
+		return parsed.String()
+	}
+	return addr
+}
+
+// UserIDKey builds a per-user key from auth context, falling back to IP.
 func UserIDKey(r *http.Request) string {
 	user, ok := UserFromContext(r.Context())
 	if !ok || strings.TrimSpace(user.UserID) == "" {

@@ -72,7 +72,7 @@ func minimalSyncPayload() string {
 }
 
 func TestSync_MissingAuthContext(t *testing.T) {
-	h := NewSyncHandler(&mockSyncService{})
+	h := NewSyncHandler(&mockSyncService{}, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(validSyncPayload()))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -85,7 +85,7 @@ func TestSync_MissingAuthContext(t *testing.T) {
 }
 
 func TestSync_InvalidJSON(t *testing.T) {
-	h := NewSyncHandler(&mockSyncService{})
+	h := NewSyncHandler(&mockSyncService{}, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader("{invalid"))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-1"}))
@@ -99,7 +99,7 @@ func TestSync_InvalidJSON(t *testing.T) {
 }
 
 func TestSync_UnknownFieldRejected(t *testing.T) {
-	h := NewSyncHandler(&mockSyncService{})
+	h := NewSyncHandler(&mockSyncService{}, nil)
 	body := `{"tables":{"modes":{"last_synced_at":0,"upserts":[],"deletions":[],"x":1},"mode_blocked_apps":{"last_synced_at":0,"upserts":[],"deletions":[]},"schedules":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_sessions":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"last_synced_at":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"last_synced_at":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"last_synced_at":0,"upserts":[],"deletions":[]}}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -114,7 +114,7 @@ func TestSync_UnknownFieldRejected(t *testing.T) {
 }
 
 func TestSync_MissingLastSyncedAt(t *testing.T) {
-	h := NewSyncHandler(&mockSyncService{})
+	h := NewSyncHandler(&mockSyncService{}, nil)
 	body := `{"tables":{"modes":{"upserts":[],"deletions":[]},"mode_blocked_apps":{"last_synced_at":0,"upserts":[],"deletions":[]},"schedules":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_sessions":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"last_synced_at":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"last_synced_at":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"last_synced_at":0,"upserts":[],"deletions":[]}}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -136,7 +136,7 @@ func TestSync_MissingLastSyncedAt(t *testing.T) {
 }
 
 func TestSync_InvalidCompositeDeletion(t *testing.T) {
-	h := NewSyncHandler(&mockSyncService{})
+	h := NewSyncHandler(&mockSyncService{}, nil)
 	body := `{"tables":{"modes":{"last_synced_at":0,"upserts":[],"deletions":[]},"mode_blocked_apps":{"last_synced_at":0,"upserts":[],"deletions":[{"mode_id":"","platform":"android","app_identifier":"app"}]},"schedules":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_sessions":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"last_synced_at":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"last_synced_at":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"last_synced_at":0,"upserts":[],"deletions":[]}}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -153,7 +153,7 @@ func TestSync_InvalidCompositeDeletion(t *testing.T) {
 func TestSync_ServiceErrorMapping(t *testing.T) {
 	h := NewSyncHandler(&mockSyncService{syncFn: func(context.Context, service.SyncInput) (service.SyncOutput, error) {
 		return service.SyncOutput{}, fmt.Errorf("%w: bad auth", service.ErrUnauthorized)
-	}})
+	}}, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(validSyncPayload()))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-1"}))
@@ -172,7 +172,7 @@ func TestSync_Success(t *testing.T) {
 			t.Fatalf("user id = %q", in.UserID)
 		}
 		return syncmodel.Response{ServerTime: 1000, Tables: syncmodel.TableChangesByTable{}}, nil
-	}})
+	}}, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(validSyncPayload()))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-1"}))
@@ -201,7 +201,7 @@ func TestSync_SubsetOfTablesAllowed(t *testing.T) {
 			t.Fatal("expected unspecified tables to stay nil")
 		}
 		return service.SyncOutput{}, nil
-	}})
+	}}, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(minimalSyncPayload()))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-1"}))
@@ -217,7 +217,7 @@ func TestSync_SubsetOfTablesAllowed(t *testing.T) {
 func TestSync_EncodeFailureDoesNotWriteSecondResponse(t *testing.T) {
 	h := NewSyncHandler(&mockSyncService{syncFn: func(_ context.Context, in service.SyncInput) (service.SyncOutput, error) {
 		return syncmodel.Response{ServerTime: 1000, Tables: syncmodel.TableChangesByTable{}}, nil
-	}})
+	}}, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(validSyncPayload()))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-1"}))
@@ -250,7 +250,7 @@ func TestSync_EncodeFailureLogsWithInjectedLogger(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
-	h := NewSyncHandlerWithLogger(&mockSyncService{syncFn: func(_ context.Context, in service.SyncInput) (service.SyncOutput, error) {
+	h := NewSyncHandler(&mockSyncService{syncFn: func(_ context.Context, in service.SyncInput) (service.SyncOutput, error) {
 		return syncmodel.Response{ServerTime: 1000, Tables: syncmodel.TableChangesByTable{}}, nil
 	}}, logger)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(validSyncPayload()))

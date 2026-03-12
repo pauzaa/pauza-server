@@ -21,6 +21,9 @@ func newTestService(repo *fakeAuthRepo, sender *fakeSender) *AuthService {
 	return NewAuthService(
 		&fakePool{},
 		repo,
+		repo,
+		repo,
+		repo,
 		sender,
 		"test-jwt-secret-abcdefghijklmnopqrstuvwxyz",
 		15*time.Minute,
@@ -32,6 +35,9 @@ func newTestService(repo *fakeAuthRepo, sender *fakeSender) *AuthService {
 func newTestServiceWithPool(pool *fakePool, repo *fakeAuthRepo, sender *fakeSender) *AuthService {
 	return NewAuthService(
 		pool,
+		repo,
+		repo,
+		repo,
 		repo,
 		sender,
 		"test-jwt-secret-abcdefghijklmnopqrstuvwxyz",

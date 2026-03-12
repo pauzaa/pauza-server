@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/IsorilovA/pauza-server/internal/auth"
+	"github.com/IsorilovA/pauza-server/internal/pagination"
 	"github.com/IsorilovA/pauza-server/internal/repository"
 )
 
@@ -124,16 +125,6 @@ type PlatformStatsOutput struct {
 // Pagination defaults
 // ---------------------------------------------------------------------------
 
-const (
-	defaultPage  = 1
-	defaultLimit = 20
-	maxLimit     = 100
-)
-
-// ---------------------------------------------------------------------------
-// Allowed entitlement / action values
-// ---------------------------------------------------------------------------
-
 var (
 	ErrInvalidAction      = errors.New("invalid action")
 	ErrInvalidEntitlement = errors.New("invalid entitlement")
@@ -208,7 +199,7 @@ func (s *AdminService) Login(ctx context.Context, in LoginInput) (LoginOutput, e
 
 // ListUsers returns a paginated list of users for the admin dashboard.
 func (s *AdminService) ListUsers(ctx context.Context, in ListUsersInput) (ListUsersOutput, error) {
-	page, limit := normalizePagination(in.Page, in.Limit)
+	page, limit := pagination.Normalize(in.Page, in.Limit)
 
 	rows, total, err := s.adminRepo.ListUsers(ctx, s.pool, repository.ListUsersParams{
 		Limit:  limit,
@@ -330,7 +321,7 @@ func (s *AdminService) ManageEntitlement(ctx context.Context, in ManageEntitleme
 
 // ListEntitlements returns a paginated list of entitlements for the admin dashboard.
 func (s *AdminService) ListEntitlements(ctx context.Context, in ListEntitlementsInput) (ListEntitlementsOutput, error) {
-	page, limit := normalizePagination(in.Page, in.Limit)
+	page, limit := pagination.Normalize(in.Page, in.Limit)
 
 	rows, total, err := s.adminRepo.ListEntitlements(ctx, s.pool, repository.ListEntitlementsParams{
 		Limit:       limit,
@@ -362,22 +353,4 @@ func (s *AdminService) ListEntitlements(ctx context.Context, in ListEntitlements
 		Page:         page,
 		Limit:        limit,
 	}, nil
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// normalizePagination clamps page and limit to safe defaults.
-func normalizePagination(page, limit int) (int, int) {
-	if page < 1 {
-		page = defaultPage
-	}
-	if limit < 1 {
-		limit = defaultLimit
-	}
-	if limit > maxLimit {
-		limit = maxLimit
-	}
-	return page, limit
 }

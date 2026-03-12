@@ -47,7 +47,7 @@ var _ AuthProfileService = (*service.AuthService)(nil)
 var _ AuthPreferencesService = (*service.AuthService)(nil)
 var _ AuthDeletionService = (*service.AuthService)(nil)
 
-type authHandlerServices interface {
+type AuthService interface {
 	AuthSessionService
 	AuthProfileService
 	AuthPreferencesService
@@ -55,26 +55,19 @@ type authHandlerServices interface {
 }
 
 type AuthHandler struct {
-	sessionSvc  AuthSessionService
-	profileSvc  AuthProfileService
-	prefsSvc    AuthPreferencesService
-	deletionSvc AuthDeletionService
-	photoStore  photostore.Store
-	logger      *slog.Logger
+	svc        AuthService
+	photoStore photostore.Store
+	logger     *slog.Logger
 }
 
-func NewAuthHandler(svc authHandlerServices, logger *slog.Logger) *AuthHandler {
-	return NewAuthHandlerWithPhotoStore(svc, nil, logger)
-}
-
-func NewAuthHandlerWithPhotoStore(svc authHandlerServices, photoStore photostore.Store, logger *slog.Logger) *AuthHandler {
+func NewAuthHandler(svc AuthService, photoStore photostore.Store, logger *slog.Logger) *AuthHandler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &AuthHandler{
-		sessionSvc:  svc,
-		profileSvc:  svc,
-		prefsSvc:    svc,
-		deletionSvc: svc,
-		photoStore:  photoStore,
-		logger:      logger,
+		svc:        svc,
+		photoStore: photoStore,
+		logger:     logger,
 	}
 }
 
@@ -254,7 +247,7 @@ func (h *AuthHandler) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.sessionSvc.Start(r.Context(), service.StartAuthInput{Email: req.Email})
+	out, err := h.svc.Start(r.Context(), service.StartAuthInput{Email: req.Email})
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -282,7 +275,7 @@ func (h *AuthHandler) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.sessionSvc.VerifyOTP(r.Context(), service.VerifyOTPInput{
+	out, err := h.svc.VerifyOTP(r.Context(), service.VerifyOTPInput{
 		Email: req.Email,
 		OTP:   req.OTP,
 	})
@@ -308,7 +301,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.sessionSvc.Refresh(r.Context(), service.RefreshInput{
+	out, err := h.svc.Refresh(r.Context(), service.RefreshInput{
 		RefreshToken: req.RefreshToken,
 	})
 	if err != nil {
@@ -325,7 +318,7 @@ func (h *AuthHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.profileSvc.GetMe(r.Context(), service.GetMeInput{UserID: userID})
+	out, err := h.svc.GetMe(r.Context(), service.GetMeInput{UserID: userID})
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -361,7 +354,7 @@ func (h *AuthHandler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.profileSvc.UpdateMe(r.Context(), service.UpdateMeInput{
+	out, err := h.svc.UpdateMe(r.Context(), service.UpdateMeInput{
 		UserID:   userID,
 		Name:     req.Name,
 		Username: req.Username,
@@ -388,7 +381,7 @@ func (h *AuthHandler) UsernameAvailable(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	out, err := h.profileSvc.CheckUsernameAvailable(r.Context(), service.UsernameAvailableInput{
+	out, err := h.svc.CheckUsernameAvailable(r.Context(), service.UsernameAvailableInput{
 		UserID:   userID,
 		Username: username,
 	})
@@ -406,7 +399,7 @@ func (h *AuthHandler) GetNotificationPreferences(w http.ResponseWriter, r *http.
 		return
 	}
 
-	out, err := h.prefsSvc.GetNotificationPreferences(r.Context(), service.GetNotificationPreferencesInput{UserID: userID})
+	out, err := h.svc.GetNotificationPreferences(r.Context(), service.GetNotificationPreferencesInput{UserID: userID})
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -426,7 +419,7 @@ func (h *AuthHandler) UpdateNotificationPreferences(w http.ResponseWriter, r *ht
 		return
 	}
 
-	out, err := h.prefsSvc.UpdateNotificationPreferences(r.Context(), service.UpdateNotificationPreferencesInput{
+	out, err := h.svc.UpdateNotificationPreferences(r.Context(), service.UpdateNotificationPreferencesInput{
 		UserID:      userID,
 		PushEnabled: req.PushEnabled,
 	})
@@ -444,7 +437,7 @@ func (h *AuthHandler) GetPrivacyPreferences(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	out, err := h.prefsSvc.GetPrivacyPreferences(r.Context(), service.GetPrivacyPreferencesInput{UserID: userID})
+	out, err := h.svc.GetPrivacyPreferences(r.Context(), service.GetPrivacyPreferencesInput{UserID: userID})
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -464,7 +457,7 @@ func (h *AuthHandler) UpdatePrivacyPreferences(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	out, err := h.prefsSvc.UpdatePrivacyPreferences(r.Context(), service.UpdatePrivacyPreferencesInput{
+	out, err := h.svc.UpdatePrivacyPreferences(r.Context(), service.UpdatePrivacyPreferencesInput{
 		UserID:             userID,
 		LeaderboardVisible: req.LeaderboardVisible,
 	})
@@ -515,7 +508,7 @@ func (h *AuthHandler) UploadPhoto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.profileSvc.UpdateProfilePhoto(r.Context(), service.UpdateProfilePhotoInput{
+	out, err := h.svc.UpdateProfilePhoto(r.Context(), service.UpdateProfilePhotoInput{
 		UserID:            userID,
 		ProfilePictureURL: photoURL,
 	})
@@ -533,7 +526,7 @@ func (h *AuthHandler) DeleteRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.deletionSvc.RequestAccountDeletion(r.Context(), service.DeleteAccountRequestInput{UserID: userID})
+	out, err := h.svc.RequestAccountDeletion(r.Context(), service.DeleteAccountRequestInput{UserID: userID})
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -557,7 +550,7 @@ func (h *AuthHandler) DeleteConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.deletionSvc.ConfirmAccountDeletion(r.Context(), service.DeleteAccountConfirmInput{
+	out, err := h.svc.ConfirmAccountDeletion(r.Context(), service.DeleteAccountConfirmInput{
 		UserID: userID,
 		OTP:    req.OTP,
 	})

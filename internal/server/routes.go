@@ -17,23 +17,24 @@ func mountRoutes(r chi.Router, cfg *config.Config, logger *slog.Logger, pool *pg
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Route("/auth", func(r chi.Router) {
-			r.With(authmw.RateLimit(limiters.auth, cfg.AuthRateLimit, authmw.IPKey)).
-				Post("/start", deps.authHandler.Start)
-			r.With(authmw.RateLimit(limiters.auth, cfg.AuthRateLimit, authmw.IPKey)).
-				Post("/refresh", deps.authHandler.Refresh)
+			r.Group(func(r chi.Router) {
+				r.Use(authmw.RateLimit(limiters.auth, cfg.AuthRateLimit, authmw.IPKey))
+				r.Post("/start", deps.authHandler.Start)
+				r.Post("/refresh", deps.authHandler.Refresh)
+			})
+
 			r.With(
 				authmw.RateLimit(limiters.auth, cfg.AuthRateLimit, authmw.IPKey),
-				authmw.RateLimit(limiters.verifyOTP, cfg.VerifyOTPRateLimit, authmw.EmailKey),
-			).
-				Post("/verify", deps.authHandler.VerifyOTP)
+				authmw.ExtractAuthEmailKey,
+				authmw.RateLimit(limiters.verifyOTP, cfg.VerifyOTPRateLimit, authmw.AuthEmailKey),
+			).Post("/verify", deps.authHandler.VerifyOTP)
 		})
 
 		r.With(authmw.RateLimit(limiters.webhook, cfg.WebhookRateLimit, authmw.IPKey)).
 			Post("/webhooks/revenuecat", deps.webhookHandler.HandleRevenueCat)
 
 		r.Route("/admin", func(r chi.Router) {
-			r.With(authmw.RateLimit(limiters.admin, cfg.AdminRateLimit, authmw.IPKey)).
-				Post("/login", deps.adminHandler.Login)
+			r.With(authmw.RateLimit(limiters.admin, cfg.AdminRateLimit, authmw.IPKey)).Post("/login", deps.adminHandler.Login)
 
 			r.Group(func(r chi.Router) {
 				r.Use(authmw.AdminJWTAuth(cfg.JWTSecret, logger))

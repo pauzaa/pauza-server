@@ -18,6 +18,15 @@ import (
 	"github.com/IsorilovA/pauza-server/internal/repository"
 )
 
+type authChallenge struct {
+	OTPID string
+	OTP   string
+}
+
+type verifiedChallenge struct {
+	OTPRow repository.OTPRow
+}
+
 func normalizeEmail(raw string) string {
 	return strings.ToLower(strings.TrimSpace(raw))
 }
@@ -45,7 +54,7 @@ func RetryAfter(err error) (time.Duration, bool) {
 
 func (s *AuthService) newOTPAttemptsRateLimitedError(ctx context.Context, db repository.DBTX, email string, purpose mail.Purpose, since time.Time) error {
 	retryAfter := auth.OTPExpiry
-	oldestAttemptAt, err := s.repo.GetOldestFailedOTPAttemptSinceForUpdate(ctx, db, email, purpose, since)
+	oldestAttemptAt, err := s.otps.GetOldestFailedOTPAttemptSinceForUpdate(ctx, db, email, purpose, since)
 	if err != nil && !errors.Is(err, repository.ErrNotFound) {
 		s.logger.Error("querying oldest failed otp attempt for retry-after", "purpose", purpose, "err", err)
 		return ErrInternal
@@ -62,8 +71,97 @@ func (s *AuthService) newOTPAttemptsRateLimitedError(ctx context.Context, db rep
 	}
 }
 
+func (s *AuthService) createChallenge(ctx context.Context, email string, userID *string, purpose mail.Purpose, deleteLogMsg, insertLogMsg, sendLogMsg string) (authChallenge, error) {
+	otp, err := auth.GenerateOTP()
+	if err != nil {
+		s.logger.Error("generating otp", "err", err)
+		return authChallenge{}, ErrInternal
+	}
+
+	otpHash, err := auth.HashOTP(otp)
+	if err != nil {
+		s.logger.Error("hashing otp", "err", err)
+		return authChallenge{}, ErrInternal
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		s.logger.Error("beginning otp challenge transaction", "err", err)
+		return authChallenge{}, ErrInternal
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	if err := s.otps.DeleteOTPsByEmailAndPurpose(ctx, tx, email, purpose); err != nil {
+		s.logger.Error(deleteLogMsg, "email", redact.Email(email), "err", err)
+		return authChallenge{}, ErrInternal
+	}
+
+	otpID, err := s.otps.InsertOTP(ctx, tx, email, userID, otpHash, purpose, time.Now().UTC().Add(auth.OTPExpiry))
+	if err != nil {
+		s.logger.Error(insertLogMsg, "email", redact.Email(email), "err", err)
+		return authChallenge{}, ErrInternal
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		s.logger.Error("committing otp challenge transaction", "err", err)
+		return authChallenge{}, ErrInternal
+	}
+
+	if err := s.mailer.SendOTP(ctx, email, otp, purpose); err != nil {
+		s.logger.Error(sendLogMsg, "email", redact.Email(email), "err", err)
+		s.cleanupFailedOTP(otpID)
+		return authChallenge{}, ErrInternal
+	}
+
+	return authChallenge{OTPID: otpID, OTP: otp}, nil
+}
+
+func (s *AuthService) verifyChallenge(ctx context.Context, tx repository.Tx, email string, userID *string, purpose mail.Purpose, providedOTP, loadLogMsg, countLogMsg, failedLogMsg string) (verifiedChallenge, error) {
+	otpRow, err := s.otps.GetActiveOTPForUpdate(ctx, tx, email, purpose)
+	if errors.Is(err, repository.ErrNotFound) {
+		return verifiedChallenge{}, UnauthorizedError("Invalid or expired OTP")
+	}
+	if err != nil {
+		s.logger.Error(loadLogMsg, "email", redact.Email(email), "err", err)
+		return verifiedChallenge{}, ErrInternal
+	}
+
+	attemptWindowStart := time.Now().UTC().Add(-auth.OTPExpiry)
+	attemptsUsed, err := s.otps.CountFailedOTPAttemptsSinceForUpdate(ctx, tx, email, purpose, attemptWindowStart)
+	if err != nil {
+		s.logger.Error(countLogMsg, "email", redact.Email(email), "err", err)
+		return verifiedChallenge{}, ErrInternal
+	}
+	if attemptsUsed >= auth.MaxOTPAttempts {
+		rateLimitedErr := s.newOTPAttemptsRateLimitedError(ctx, tx, email, purpose, attemptWindowStart)
+		if errors.Is(rateLimitedErr, ErrInternal) {
+			return verifiedChallenge{}, ErrInternal
+		}
+		return verifiedChallenge{}, rateLimitedErr
+	}
+
+	otpMatch, err := auth.VerifyOTP(otpRow.CodeHash, providedOTP)
+	if err != nil {
+		s.logger.Error("verifying otp hash", "err", err)
+		return verifiedChallenge{}, ErrInternal
+	}
+	if !otpMatch {
+		if err := s.otps.InsertFailedOTPAttempt(ctx, tx, email, userID, purpose, time.Now().UTC()); err != nil {
+			s.logger.Error(failedLogMsg, "email", redact.Email(email), "err", err)
+			return verifiedChallenge{}, ErrInternal
+		}
+		if err := tx.Commit(ctx); err != nil {
+			s.logger.Error("committing failed otp attempt", "err", err)
+			return verifiedChallenge{}, ErrInternal
+		}
+		return verifiedChallenge{}, UnauthorizedError("Invalid or expired OTP")
+	}
+
+	return verifiedChallenge{OTPRow: otpRow}, nil
+}
+
 func (s *AuthService) ensureUserForEmail(ctx context.Context, tx repository.DBTX, email string) (repository.UserRow, error) {
-	user, err := s.repo.GetUserByEmailForUpdate(ctx, tx, email)
+	user, err := s.users.GetUserByEmailForUpdate(ctx, tx, email)
 	if err == nil {
 		return user, nil
 	}
@@ -77,7 +175,7 @@ func (s *AuthService) ensureUserForEmail(ctx context.Context, tx repository.DBTX
 		return repository.UserRow{}, err
 	}
 
-	user, err = s.repo.GetUserByID(ctx, tx, userID)
+	user, err = s.users.GetUserByID(ctx, tx, userID)
 	if err != nil {
 		s.logger.Error("querying new user profile", "user_id", userID, "err", err)
 		return repository.UserRow{}, ErrInternal
@@ -106,7 +204,7 @@ func (s *AuthService) insertUserWithRetries(ctx context.Context, tx repository.D
 			return "", ErrInternal
 		}
 
-		userID, insertErr := s.repo.InsertUser(ctx, sp, email, username)
+		userID, insertErr := s.users.InsertUser(ctx, sp, email, username)
 		if insertErr == nil {
 			if err := sp.Commit(ctx); err != nil {
 				s.logger.Error("releasing savepoint after user insert", "err", err)
@@ -123,7 +221,7 @@ func (s *AuthService) insertUserWithRetries(ctx context.Context, tx repository.D
 			continue
 		}
 		if isUniqueViolation(insertErr, "idx_users_email") {
-			user, err := s.repo.GetUserByEmailForUpdate(ctx, tx, email)
+			user, err := s.users.GetUserByEmailForUpdate(ctx, tx, email)
 			if err != nil {
 				s.logger.Error("reloading user after concurrent email insert", "email", redact.Email(email), "err", err)
 				return "", ErrInternal
@@ -151,7 +249,7 @@ func (s *AuthService) issueAuthOutput(ctx context.Context, db repository.DBTX, u
 	}
 
 	refreshExpiresAt := time.Now().UTC().Add(s.jwtRefreshTokenTTL)
-	if err := s.repo.InsertRefreshToken(ctx, db, user.ID, hashRefresh, refreshExpiresAt); err != nil {
+	if err := s.refreshTokens.InsertRefreshToken(ctx, db, user.ID, hashRefresh, refreshExpiresAt); err != nil {
 		s.logger.Error("inserting refresh token", "err", err)
 		return AuthOutput{}, ErrInternal
 	}
@@ -187,7 +285,7 @@ func (s *AuthService) cleanupFailedOTP(otpID string) {
 		return
 	}
 
-	if err := s.repo.DeleteOTPByID(cleanupCtx, cleanupTx, otpID); err != nil {
+	if err := s.otps.DeleteOTPByID(cleanupCtx, cleanupTx, otpID); err != nil {
 		s.logger.Error("cleaning up otp after email failure", "err", err)
 		if rbErr := cleanupTx.Rollback(cleanupCtx); rbErr != nil {
 			s.logger.Error("rolling back otp cleanup transaction", "err", rbErr)
@@ -223,7 +321,7 @@ func isUniqueViolation(err error, constraint string) bool {
 }
 
 func (s *AuthService) lookupEntitlementSnapshot(ctx context.Context, userID string) (*EntitlementInfo, error) {
-	row, err := s.repo.GetEntitlementSnapshot(ctx, s.pool, userID)
+	row, err := s.entitlements.GetEntitlementSnapshot(ctx, s.pool, userID)
 	if errors.Is(err, repository.ErrNotFound) {
 		return nil, nil
 	}

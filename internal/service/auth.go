@@ -8,9 +8,28 @@ import (
 	"github.com/IsorilovA/pauza-server/internal/repository"
 )
 
+type authUserRepository interface {
+	repository.UserRepository
+}
+
+type authOTPRepository interface {
+	repository.OTPRepository
+}
+
+type authRefreshTokenRepository interface {
+	repository.RefreshTokenRepository
+}
+
+type authEntitlementRepository interface {
+	repository.EntitlementSnapshotRepository
+}
+
 type AuthService struct {
 	pool               repository.Pool
-	repo               repository.AuthRepository
+	users              authUserRepository
+	otps               authOTPRepository
+	refreshTokens      authRefreshTokenRepository
+	entitlements       authEntitlementRepository
 	mailer             mail.Sender
 	jwtSecret          string
 	jwtAccessTokenTTL  time.Duration
@@ -22,7 +41,10 @@ const cleanupTimeout = 5 * time.Second
 
 func NewAuthService(
 	pool repository.Pool,
-	repo repository.AuthRepository,
+	users authUserRepository,
+	otps authOTPRepository,
+	refreshTokens authRefreshTokenRepository,
+	entitlements authEntitlementRepository,
 	mailer mail.Sender,
 	jwtSecret string,
 	jwtAccessTokenTTL time.Duration,
@@ -31,7 +53,10 @@ func NewAuthService(
 ) *AuthService {
 	return &AuthService{
 		pool:               pool,
-		repo:               repo,
+		users:              users,
+		otps:               otps,
+		refreshTokens:      refreshTokens,
+		entitlements:       entitlements,
 		mailer:             mailer,
 		jwtSecret:          jwtSecret,
 		jwtAccessTokenTTL:  jwtAccessTokenTTL,

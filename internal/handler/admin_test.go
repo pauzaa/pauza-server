@@ -72,7 +72,7 @@ func (m *mockAdminService) ListEntitlements(ctx context.Context, in service.List
 }
 
 func newTestAdminHandler(svc *mockAdminService) *AdminHandler {
-	return NewAdminHandler(svc, svc, svc, svc, noopLogger())
+	return NewAdminHandler(svc, noopLogger())
 }
 
 // withChiURLParam injects chi URL params into the request context.

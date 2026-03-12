@@ -8,7 +8,7 @@ import (
 )
 
 func (s *AuthService) GetMe(ctx context.Context, in GetMeInput) (UserProfile, error) {
-	user, err := s.repo.GetUserByID(ctx, s.pool, in.UserID)
+	user, err := s.users.GetUserByID(ctx, s.pool, in.UserID)
 	if errors.Is(err, repository.ErrNotFound) {
 		return UserProfile{}, UnauthorizedError("Missing or invalid authentication")
 	}
@@ -27,7 +27,7 @@ func (s *AuthService) GetMe(ctx context.Context, in GetMeInput) (UserProfile, er
 }
 
 func (s *AuthService) UpdateMe(ctx context.Context, in UpdateMeInput) (UserProfile, error) {
-	updated, err := s.repo.UpdateUser(ctx, s.pool, in.UserID, in.Name, in.Username, nil, nil)
+	updated, err := s.users.UpdateUser(ctx, s.pool, in.UserID, in.Name, in.Username, nil, nil)
 	if errors.Is(err, repository.ErrNotFound) {
 		return UserProfile{}, UnauthorizedError("Missing or invalid authentication")
 	}
@@ -49,7 +49,7 @@ func (s *AuthService) UpdateMe(ctx context.Context, in UpdateMeInput) (UserProfi
 }
 
 func (s *AuthService) CheckUsernameAvailable(ctx context.Context, in UsernameAvailableInput) (UsernameAvailableOutput, error) {
-	taken, err := s.repo.IsUsernameTaken(ctx, s.pool, in.Username, in.UserID)
+	taken, err := s.users.IsUsernameTaken(ctx, s.pool, in.Username, in.UserID)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			return UsernameAvailableOutput{}, UnauthorizedError("Missing or invalid authentication")
@@ -61,7 +61,7 @@ func (s *AuthService) CheckUsernameAvailable(ctx context.Context, in UsernameAva
 }
 
 func (s *AuthService) UpdateProfilePhoto(ctx context.Context, in UpdateProfilePhotoInput) (UserProfile, error) {
-	updated, err := s.repo.UpdateUser(ctx, s.pool, in.UserID, nil, nil, nil, &in.ProfilePictureURL)
+	updated, err := s.users.UpdateUser(ctx, s.pool, in.UserID, nil, nil, nil, &in.ProfilePictureURL)
 	if errors.Is(err, repository.ErrNotFound) {
 		return UserProfile{}, UnauthorizedError("Missing or invalid authentication")
 	}
@@ -80,7 +80,7 @@ func (s *AuthService) UpdateProfilePhoto(ctx context.Context, in UpdateProfilePh
 }
 
 func (s *AuthService) GetNotificationPreferences(ctx context.Context, in GetNotificationPreferencesInput) (NotificationPreferences, error) {
-	pushEnabled, err := s.repo.GetPushEnabled(ctx, s.pool, in.UserID)
+	pushEnabled, err := s.users.GetPushEnabled(ctx, s.pool, in.UserID)
 	if errors.Is(err, repository.ErrNotFound) {
 		return NotificationPreferences{}, UnauthorizedError("Missing or invalid authentication")
 	}
@@ -96,7 +96,7 @@ func (s *AuthService) UpdateNotificationPreferences(ctx context.Context, in Upda
 		return s.GetNotificationPreferences(ctx, GetNotificationPreferencesInput{UserID: in.UserID})
 	}
 
-	pushEnabled, err := s.repo.UpdatePushEnabled(ctx, s.pool, in.UserID, *in.PushEnabled)
+	pushEnabled, err := s.users.UpdatePushEnabled(ctx, s.pool, in.UserID, *in.PushEnabled)
 	if errors.Is(err, repository.ErrNotFound) {
 		return NotificationPreferences{}, UnauthorizedError("Missing or invalid authentication")
 	}
@@ -108,7 +108,7 @@ func (s *AuthService) UpdateNotificationPreferences(ctx context.Context, in Upda
 }
 
 func (s *AuthService) GetPrivacyPreferences(ctx context.Context, in GetPrivacyPreferencesInput) (PrivacyPreferences, error) {
-	user, err := s.repo.GetUserByID(ctx, s.pool, in.UserID)
+	user, err := s.users.GetUserByID(ctx, s.pool, in.UserID)
 	if errors.Is(err, repository.ErrNotFound) {
 		return PrivacyPreferences{}, UnauthorizedError("Missing or invalid authentication")
 	}
@@ -124,7 +124,7 @@ func (s *AuthService) UpdatePrivacyPreferences(ctx context.Context, in UpdatePri
 		return s.GetPrivacyPreferences(ctx, GetPrivacyPreferencesInput{UserID: in.UserID})
 	}
 
-	updated, err := s.repo.UpdateUser(ctx, s.pool, in.UserID, nil, nil, in.LeaderboardVisible, nil)
+	updated, err := s.users.UpdateUser(ctx, s.pool, in.UserID, nil, nil, in.LeaderboardVisible, nil)
 	if errors.Is(err, repository.ErrNotFound) {
 		return PrivacyPreferences{}, UnauthorizedError("Missing or invalid authentication")
 	}

@@ -18,7 +18,7 @@ var uuidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4
 // premiumEntitlement is the entitlement identifier we track locally.
 const premiumEntitlement = repository.EntitlementPremium
 
-// webhookUserLookup is the subset of AuthRepository that the webhook service
+// webhookUserLookup is the subset of auth user lookups that the webhook service
 // needs to resolve a RevenueCat app_user_id to a local user row.
 type webhookUserLookup interface {
 	GetUserByID(ctx context.Context, db repository.DBTX, userID string) (repository.UserRow, error)

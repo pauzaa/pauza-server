@@ -21,11 +21,10 @@ type SyncHandler struct {
 	logger *slog.Logger
 }
 
-func NewSyncHandler(svc SyncService) *SyncHandler {
-	return &SyncHandler{svc: svc, logger: slog.Default()}
-}
-
-func NewSyncHandlerWithLogger(svc SyncService, logger *slog.Logger) *SyncHandler {
+func NewSyncHandler(svc SyncService, logger *slog.Logger) *SyncHandler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &SyncHandler{svc: svc, logger: logger}
 }
 

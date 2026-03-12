@@ -7,7 +7,7 @@
 ## WHERE TO LOOK
 | Task | Location | Notes |
 | --- | --- | --- |
-| Shared limiter contract | `internal/ratelimit/ratelimit.go` | `Limiter`, `Result`, legacy in-memory backend |
+| Shared limiter contract | `internal/ratelimit/ratelimit.go` | `Limiter`, `Result` used by Redis and test fakes |
 | Redis limiter | `internal/ratelimit/redis.go` | Lua script, shared counters, caller-owned client |
 | Fail-open wrapper | `internal/ratelimit/failopen.go` | warn and allow on backend error |
 | HTTP integration | `internal/middleware/ratelimit.go` | `IPKey`, `EmailKey`, `X-RateLimit-*`, `Retry-After` |

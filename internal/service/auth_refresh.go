@@ -20,7 +20,7 @@ func (s *AuthService) Refresh(ctx context.Context, in RefreshInput) (RefreshOutp
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	tok, err := s.repo.GetRefreshTokenByHashForUpdate(ctx, tx, tokenHash)
+	tok, err := s.refreshTokens.GetRefreshTokenByHashForUpdate(ctx, tx, tokenHash)
 	if errors.Is(err, repository.ErrNotFound) {
 		return RefreshOutput{}, UnauthorizedError("Invalid refresh token")
 	}
@@ -30,7 +30,7 @@ func (s *AuthService) Refresh(ctx context.Context, in RefreshInput) (RefreshOutp
 	}
 
 	if tok.Revoked {
-		if err := s.repo.RevokeAllRefreshTokens(ctx, tx, tok.UserID); err != nil {
+		if err := s.refreshTokens.RevokeAllRefreshTokens(ctx, tx, tok.UserID); err != nil {
 			s.logger.Error("revoking all refresh tokens after reuse", "err", err)
 			return RefreshOutput{}, ErrInternal
 		}
@@ -45,12 +45,12 @@ func (s *AuthService) Refresh(ctx context.Context, in RefreshInput) (RefreshOutp
 		return RefreshOutput{}, UnauthorizedError("Invalid refresh token")
 	}
 
-	if err := s.repo.RevokeRefreshToken(ctx, tx, tok.ID); err != nil {
+	if err := s.refreshTokens.RevokeRefreshToken(ctx, tx, tok.ID); err != nil {
 		s.logger.Error("revoking current refresh token", "err", err)
 		return RefreshOutput{}, ErrInternal
 	}
 
-	email, err := s.repo.GetUserEmailByID(ctx, tx, tok.UserID)
+	email, err := s.refreshTokens.GetUserEmailByID(ctx, tx, tok.UserID)
 	if err != nil {
 		s.logger.Error("querying user email for refresh", "err", err)
 		return RefreshOutput{}, ErrInternal
@@ -69,7 +69,7 @@ func (s *AuthService) Refresh(ctx context.Context, in RefreshInput) (RefreshOutp
 	}
 
 	refreshExpiresAt := time.Now().UTC().Add(s.jwtRefreshTokenTTL)
-	if err := s.repo.InsertRefreshToken(ctx, tx, tok.UserID, hashRefresh, refreshExpiresAt); err != nil {
+	if err := s.refreshTokens.InsertRefreshToken(ctx, tx, tok.UserID, hashRefresh, refreshExpiresAt); err != nil {
 		s.logger.Error("inserting new refresh token", "err", err)
 		return RefreshOutput{}, ErrInternal
 	}

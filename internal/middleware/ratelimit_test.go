@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,9 +34,40 @@ func (errLimiter) Allow(context.Context, string) (ratelimit.Result, error) {
 
 func (errLimiter) Stop() {}
 
+type fixedWindowLimiter struct {
+	rate   int
+	window time.Duration
+
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func newFixedWindowLimiter(rate int, window time.Duration) *fixedWindowLimiter {
+	return &fixedWindowLimiter{
+		rate:   rate,
+		window: window,
+		counts: make(map[string]int),
+	}
+}
+
+func (l *fixedWindowLimiter) Allow(_ context.Context, key string) (ratelimit.Result, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.counts[key]++
+	count := l.counts[key]
+	resetAt := time.Now().UTC().Add(l.window)
+	if count > l.rate {
+		return ratelimit.Result{Allowed: false, Remaining: 0, ResetAt: resetAt}, nil
+	}
+	return ratelimit.Result{Allowed: true, Remaining: l.rate - count, ResetAt: resetAt}, nil
+}
+
+func (l *fixedWindowLimiter) Stop() {}
+
 func TestRateLimit_AllowsUnderLimit(t *testing.T) {
 	const rate = 3
-	lim := ratelimit.New(rate, time.Minute)
+	lim := newFixedWindowLimiter(rate, time.Minute)
 	defer lim.Stop()
 
 	handler := middleware.RateLimit(lim, rate, middleware.IPKey)(okHandler)
@@ -67,7 +99,7 @@ func TestRateLimit_AllowsUnderLimit(t *testing.T) {
 
 func TestRateLimit_DeniesOverLimit(t *testing.T) {
 	const rate = 2
-	lim := ratelimit.New(rate, time.Minute)
+	lim := newFixedWindowLimiter(rate, time.Minute)
 	defer lim.Stop()
 
 	handler := middleware.RateLimit(lim, rate, middleware.IPKey)(okHandler)
@@ -114,7 +146,7 @@ func TestRateLimit_DeniesOverLimit(t *testing.T) {
 }
 
 func TestRateLimit_RetryAfterHeaderIsAbsent_WhenAllowed(t *testing.T) {
-	lim := ratelimit.New(5, time.Minute)
+	lim := newFixedWindowLimiter(5, time.Minute)
 	defer lim.Stop()
 
 	handler := middleware.RateLimit(lim, 5, middleware.IPKey)(okHandler)
@@ -133,7 +165,7 @@ func TestRateLimit_RetryAfterHeaderIsAbsent_WhenAllowed(t *testing.T) {
 
 func TestRateLimit_DifferentKeysAreIndependent(t *testing.T) {
 	const rate = 1
-	lim := ratelimit.New(rate, time.Minute)
+	lim := newFixedWindowLimiter(rate, time.Minute)
 	defer lim.Stop()
 
 	handler := middleware.RateLimit(lim, rate, middleware.IPKey)(okHandler)
@@ -190,7 +222,7 @@ func TestRateLimit_FailOpenAllowedOmitsBudgetHeaders(t *testing.T) {
 }
 
 func TestRateLimit_ResetHeaderIsValidUnixTimestamp(t *testing.T) {
-	lim := ratelimit.New(5, time.Minute)
+	lim := newFixedWindowLimiter(5, time.Minute)
 	defer lim.Stop()
 
 	handler := middleware.RateLimit(lim, 5, middleware.IPKey)(okHandler)
@@ -217,7 +249,7 @@ func TestRateLimit_ResetHeaderIsValidUnixTimestamp(t *testing.T) {
 
 func TestRateLimit_CustomKeyFunc(t *testing.T) {
 	const rate = 1
-	lim := ratelimit.New(rate, time.Minute)
+	lim := newFixedWindowLimiter(rate, time.Minute)
 	defer lim.Stop()
 
 	// Key by a custom header instead of IP.
@@ -284,7 +316,7 @@ func TestIPKey_StripsPort(t *testing.T) {
 	}
 }
 
-func TestEmailKey_ExtractsNormalizedEmail(t *testing.T) {
+func TestExtractAuthEmailKey_ExtractsNormalizedEmail(t *testing.T) {
 	tests := []struct {
 		name string
 		body string
@@ -302,15 +334,21 @@ func TestEmailKey_ExtractsNormalizedEmail(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			req.RemoteAddr = "10.0.0.1:9999"
 
-			got := middleware.EmailKey(req)
+			req = req.WithContext(context.Background())
+			next := middleware.ExtractAuthEmailKey(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				req = r
+			}))
+			next.ServeHTTP(httptest.NewRecorder(), req)
+
+			got := middleware.AuthEmailKey(req)
 			if got != tt.want {
-				t.Errorf("EmailKey = %q, want %q", got, tt.want)
+				t.Errorf("AuthEmailKey = %q, want %q", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestEmailKey_FallsBackToIP_WhenNoEmail(t *testing.T) {
+func TestExtractAuthEmailKey_FallsBackToIP_WhenNoEmail(t *testing.T) {
 	tests := []struct {
 		name string
 		body string
@@ -328,48 +366,57 @@ func TestEmailKey_FallsBackToIP_WhenNoEmail(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			req.RemoteAddr = "10.0.0.1:9999"
 
-			got := middleware.EmailKey(req)
+			next := middleware.ExtractAuthEmailKey(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				req = r
+			}))
+			next.ServeHTTP(httptest.NewRecorder(), req)
+
+			got := middleware.AuthEmailKey(req)
 			// Should fall back to the IP key (stripped of port).
 			if got != "10.0.0.1" {
-				t.Errorf("EmailKey = %q, want fallback IP %q", got, "10.0.0.1")
+				t.Errorf("AuthEmailKey = %q, want fallback IP %q", got, "10.0.0.1")
 			}
 		})
 	}
 }
 
-func TestEmailKey_RewoundsBody(t *testing.T) {
+func TestExtractAuthEmailKey_RewoundsBody(t *testing.T) {
 	body := `{"email":"user@example.com","otp":"123456"}`
 	req := httptest.NewRequest(http.MethodPost, "/auth/verify-otp",
 		strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
-	// Call EmailKey — it should read and rewind the body.
-	_ = middleware.EmailKey(req)
+	next := middleware.ExtractAuthEmailKey(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		req = r
+	}))
+	next.ServeHTTP(httptest.NewRecorder(), req)
 
 	// The downstream handler should still be able to read the full body.
 	remaining, err := io.ReadAll(req.Body)
 	if err != nil {
-		t.Fatalf("reading body after EmailKey: %v", err)
+		t.Fatalf("reading body after ExtractAuthEmailKey: %v", err)
 	}
 	if string(remaining) != body {
-		t.Errorf("body after EmailKey = %q, want %q", remaining, body)
+		t.Errorf("body after ExtractAuthEmailKey = %q, want %q", remaining, body)
 	}
 }
 
 func TestRateLimit_PerEmailThrottling(t *testing.T) {
 	const rate = 3
-	lim := ratelimit.New(rate, time.Minute)
+	lim := newFixedWindowLimiter(rate, time.Minute)
 	defer lim.Stop()
 
 	// echoBodyHandler reads and echoes the request body to verify it was
-	// properly rewound after EmailKey consumed it.
+	// properly rewound after ExtractAuthEmailKey consumed it.
 	echoBodyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		w.WriteHeader(http.StatusOK)
 		w.Write(body) //nolint:errcheck
 	})
 
-	handler := middleware.RateLimit(lim, rate, middleware.EmailKey)(echoBodyHandler)
+	handler := middleware.ExtractAuthEmailKey(
+		middleware.RateLimit(lim, rate, middleware.AuthEmailKey)(echoBodyHandler),
+	)
 
 	makeReq := func(email string) *httptest.ResponseRecorder {
 		body := `{"email":"` + email + `","otp":"123456"}`

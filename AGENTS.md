@@ -39,7 +39,7 @@ Child docs:
 | JWT / OTP / password | `internal/auth/AGENTS.md` | token and credential primitives |
 | DB runtime helpers | `internal/database/AGENTS.md` | connect, migrate, seed, cleanup, destructive test helpers |
 | HTTP boundary | `internal/handler/AGENTS.md` | request decoding, validation, response mapping |
-| Rate limiting | `internal/ratelimit/AGENTS.md` | memory vs Redis limiter, fail-open behavior |
+| Rate limiting | `internal/ratelimit/AGENTS.md` | Redis limiter and fail-open behavior |
 | Env and validation | `internal/config/config.go` | envconfig tags, defaults, semantic checks |
 | API contract | `BACKEND_SPEC.md` | stable response and error semantics |
 

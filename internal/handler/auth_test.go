@@ -28,8 +28,8 @@ func (m *mockEmailSender) SendOTP(_ context.Context, _, _ string, _ mail.Purpose
 }
 
 func newTestAuthHandler() *AuthHandler {
-	svc := service.NewAuthService(nil, nil, &mockEmailSender{}, "test-secret-abcdefghijklmnopqrstuvwxyz", time.Minute, time.Hour, noopLogger())
-	return NewAuthHandler(svc, noopLogger())
+	svc := service.NewAuthService(nil, nil, nil, nil, nil, &mockEmailSender{}, "test-secret-abcdefghijklmnopqrstuvwxyz", time.Minute, time.Hour, noopLogger())
+	return NewAuthHandler(svc, nil, noopLogger())
 }
 
 func noopLogger() *slog.Logger {
@@ -186,7 +186,7 @@ func TestStart_Success(t *testing.T) {
 			}
 			return service.StartAuthOutput{OTPRequired: true}, nil
 		},
-	}, noopLogger())
+	}, nil, noopLogger())
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/start", strings.NewReader(`{"email":"user@example.com"}`))
 	rec := httptest.NewRecorder()
@@ -239,7 +239,7 @@ func TestVerifyOTP_Success(t *testing.T) {
 				},
 			}, nil
 		},
-	}, noopLogger())
+	}, nil, noopLogger())
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verify", strings.NewReader(`{"email":"user@example.com","otp":"123456"}`))
 	rec := httptest.NewRecorder()
@@ -281,7 +281,7 @@ func TestVerifyOTP_ServiceUnauthorized(t *testing.T) {
 		verifyOTPFn: func(_ context.Context, _ service.VerifyOTPInput) (service.AuthOutput, error) {
 			return service.AuthOutput{}, service.UnauthorizedError("Invalid or expired OTP")
 		},
-	}, noopLogger())
+	}, nil, noopLogger())
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verify", strings.NewReader(`{"email":"user@example.com","otp":"123456"}`))
 	rec := httptest.NewRecorder()
@@ -322,7 +322,7 @@ func TestRefresh_Success(t *testing.T) {
 				RefreshToken: "rotated-refresh",
 			}, nil
 		},
-	}, noopLogger())
+	}, nil, noopLogger())
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", strings.NewReader(`{"refresh_token":"opaque-token"}`))
 	rec := httptest.NewRecorder()
@@ -352,7 +352,7 @@ func TestGetNotificationPreferences_Success(t *testing.T) {
 			}
 			return service.NotificationPreferences{PushEnabled: false}, nil
 		},
-	}, noopLogger())
+	}, nil, noopLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/me/notification-preferences", nil)
 	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"}))
@@ -386,7 +386,7 @@ func TestUpdateNotificationPreferences_Success(t *testing.T) {
 			}
 			return service.NotificationPreferences{PushEnabled: false}, nil
 		},
-	}, noopLogger())
+	}, nil, noopLogger())
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/v1/me/notification-preferences", strings.NewReader(`{"push_enabled":false}`))
 	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"}))
@@ -417,7 +417,7 @@ func TestGetPrivacyPreferences_Success(t *testing.T) {
 			}
 			return service.PrivacyPreferences{LeaderboardVisible: false}, nil
 		},
-	}, noopLogger())
+	}, nil, noopLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/me/privacy", nil)
 	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"}))
@@ -451,7 +451,7 @@ func TestUpdatePrivacyPreferences_Success(t *testing.T) {
 			}
 			return service.PrivacyPreferences{LeaderboardVisible: false}, nil
 		},
-	}, noopLogger())
+	}, nil, noopLogger())
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/v1/me/privacy", strings.NewReader(`{"leaderboard_visible":false}`))
 	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-123"}))
@@ -480,7 +480,7 @@ func TestUpdateMe_RejectsRemovedPreferenceFields(t *testing.T) {
 			t.Fatal("updateMe should not be called")
 			return service.UserProfile{}, nil
 		},
-	}, noopLogger())
+	}, nil, noopLogger())
 
 	for _, body := range []string{`{"leaderboard_visible":false}`, `{"push_enabled":false}`} {
 		req := httptest.NewRequest(http.MethodPatch, "/api/v1/me", strings.NewReader(body))
@@ -500,7 +500,7 @@ func TestUploadPhoto_Success(t *testing.T) {
 
 	var gotUserID string
 	var gotURL string
-	h := NewAuthHandlerWithPhotoStore(&mockAuthService{
+	h := NewAuthHandler(&mockAuthService{
 		updateProfilePhotoFn: func(_ context.Context, in service.UpdateProfilePhotoInput) (service.UserProfile, error) {
 			gotUserID = in.UserID
 			gotURL = in.ProfilePictureURL
@@ -545,7 +545,7 @@ func TestUploadPhoto_Success(t *testing.T) {
 func TestUploadPhoto_ValidationMissingPhoto(t *testing.T) {
 	t.Parallel()
 
-	h := NewAuthHandlerWithPhotoStore(&mockAuthService{}, &fakePhotoStore{
+	h := NewAuthHandler(&mockAuthService{}, &fakePhotoStore{
 		saveFn: func(context.Context, multipart.File, string) (string, error) {
 			t.Fatal("photo store should not be called")
 			return "", nil
@@ -565,7 +565,7 @@ func TestUploadPhoto_ValidationMissingPhoto(t *testing.T) {
 func TestUploadPhoto_InternalWhenStoreIsMissing(t *testing.T) {
 	t.Parallel()
 
-	h := NewAuthHandler(&mockAuthService{}, noopLogger())
+	h := NewAuthHandler(&mockAuthService{}, nil, noopLogger())
 	req := newUploadPhotoRequest(t, "avatar.jpg", "image/jpeg", []byte{
 		0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08, 0x07, 0x07,
 	})

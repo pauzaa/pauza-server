@@ -60,10 +60,10 @@ type EntitlementRow struct {
 	CurrentPeriodEnd *time.Time
 }
 
-// AuthRepository defines the data-access operations used by auth and sync
+// UserRepository defines user read/write operations used by auth-adjacent
 // services. Every method accepts a DBTX so it can be called against the pool
 // or inside an explicit transaction.
-type AuthRepository interface {
+type UserRepository interface {
 	GetUserByEmail(ctx context.Context, db DBTX, email string) (UserRow, error)
 	GetUserByEmailForUpdate(ctx context.Context, db DBTX, email string) (UserRow, error)
 	GetUserByID(ctx context.Context, db DBTX, userID string) (UserRow, error)
@@ -74,7 +74,10 @@ type AuthRepository interface {
 	UpdatePushEnabled(ctx context.Context, db DBTX, userID string, pushEnabled bool) (bool, error)
 	IsUsernameTaken(ctx context.Context, db DBTX, username string, excludeUserID string) (bool, error)
 	DeleteUser(ctx context.Context, db DBTX, userID string) error
+}
 
+// OTPRepository defines OTP and failed-attempt persistence operations.
+type OTPRepository interface {
 	InsertOTP(ctx context.Context, db DBTX, email string, userID *string, codeHash string, purpose mail.Purpose, expiresAt time.Time) (string, error)
 	GetActiveOTPForUpdate(ctx context.Context, db DBTX, email string, purpose mail.Purpose) (OTPRow, error)
 	CountFailedOTPAttemptsSinceForUpdate(ctx context.Context, db DBTX, email string, purpose mail.Purpose, since time.Time) (int, error)
@@ -83,23 +86,31 @@ type AuthRepository interface {
 	MarkOTPUsed(ctx context.Context, db DBTX, otpID string) error
 	DeleteOTPsByEmailAndPurpose(ctx context.Context, db DBTX, email string, purpose mail.Purpose) error
 	DeleteOTPByID(ctx context.Context, db DBTX, otpID string) error
+}
 
+// RefreshTokenRepository defines refresh-token persistence operations.
+type RefreshTokenRepository interface {
 	InsertRefreshToken(ctx context.Context, db DBTX, userID, tokenHash string, expiresAt time.Time) error
 	GetRefreshTokenByHashForUpdate(ctx context.Context, db DBTX, tokenHash string) (RefreshTokenRow, error)
 	RevokeRefreshToken(ctx context.Context, db DBTX, tokenID string) error
 	RevokeAllRefreshTokens(ctx context.Context, db DBTX, userID string) error
 	GetUserEmailByID(ctx context.Context, db DBTX, userID string) (string, error)
+}
 
+// EntitlementSnapshotRepository defines entitlement snapshot lookups.
+type EntitlementSnapshotRepository interface {
 	GetEntitlementSnapshot(ctx context.Context, db DBTX, userID string) (EntitlementRow, error)
 }
 
 // ErrNotFound is returned when a queried row does not exist.
 var ErrNotFound = errors.New("not found")
 
-// Compile-time check: PgxAuthRepository satisfies AuthRepository.
-var _ AuthRepository = (*PgxAuthRepository)(nil)
+var _ UserRepository = (*PgxAuthRepository)(nil)
+var _ OTPRepository = (*PgxAuthRepository)(nil)
+var _ RefreshTokenRepository = (*PgxAuthRepository)(nil)
+var _ EntitlementSnapshotRepository = (*PgxAuthRepository)(nil)
 
-// PgxAuthRepository implements AuthRepository using pgx queries.
+// PgxAuthRepository implements the auth-related repository interfaces using pgx queries.
 type PgxAuthRepository struct{}
 
 // NewPgxAuthRepository returns a PgxAuthRepository.

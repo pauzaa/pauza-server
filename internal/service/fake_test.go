@@ -89,7 +89,10 @@ type fakeAuthRepo struct {
 	getEntitlementSnapshotFn                  func(ctx context.Context, db repository.DBTX, userID string) (repository.EntitlementRow, error)
 }
 
-var _ repository.AuthRepository = (*fakeAuthRepo)(nil)
+var _ authUserRepository = (*fakeAuthRepo)(nil)
+var _ authOTPRepository = (*fakeAuthRepo)(nil)
+var _ authRefreshTokenRepository = (*fakeAuthRepo)(nil)
+var _ authEntitlementRepository = (*fakeAuthRepo)(nil)
 
 func (f *fakeAuthRepo) GetUserByEmail(ctx context.Context, db repository.DBTX, email string) (repository.UserRow, error) {
 	return f.getUserByEmailFn(ctx, db, email)

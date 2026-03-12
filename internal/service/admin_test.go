@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/IsorilovA/pauza-server/internal/auth"
+	"github.com/IsorilovA/pauza-server/internal/pagination"
 	"github.com/IsorilovA/pauza-server/internal/repository"
 )
 
@@ -267,11 +268,11 @@ func TestListUsers_HappyPath(t *testing.T) {
 	if out.Total != 1 {
 		t.Errorf("Total = %d, want 1", out.Total)
 	}
-	if out.Page != defaultPage {
-		t.Errorf("Page = %d, want %d", out.Page, defaultPage)
+	if out.Page != pagination.DefaultPage {
+		t.Errorf("Page = %d, want %d", out.Page, pagination.DefaultPage)
 	}
-	if out.Limit != defaultLimit {
-		t.Errorf("Limit = %d, want %d", out.Limit, defaultLimit)
+	if out.Limit != pagination.DefaultLimit {
+		t.Errorf("Limit = %d, want %d", out.Limit, pagination.DefaultLimit)
 	}
 	if len(out.Users) != 1 {
 		t.Fatalf("len(Users) = %d, want 1", len(out.Users))
@@ -847,7 +848,7 @@ func TestListEntitlements_DBError_ReturnsInternal(t *testing.T) {
 }
 
 // =========================================================================
-// normalizePagination tests
+// pagination.Normalize tests
 // =========================================================================
 
 func TestNormalizePagination(t *testing.T) {
@@ -860,25 +861,25 @@ func TestNormalizePagination(t *testing.T) {
 		wantPage  int
 		wantLimit int
 	}{
-		{"zero values use defaults", 0, 0, defaultPage, defaultLimit},
-		{"negative values use defaults", -1, -5, defaultPage, defaultLimit},
+		{"zero values use defaults", 0, 0, pagination.DefaultPage, pagination.DefaultLimit},
+		{"negative values use defaults", -1, -5, pagination.DefaultPage, pagination.DefaultLimit},
 		{"valid values pass through", 3, 50, 3, 50},
-		{"limit clamped to max", 1, 200, 1, maxLimit},
+		{"limit clamped to max", 1, 200, 1, pagination.MaxLimit},
 		{"page=1 limit=1 edge case", 1, 1, 1, 1},
-		{"page=0 limit=maxLimit", 0, maxLimit, defaultPage, maxLimit},
+		{"page=0 limit=maxLimit", 0, pagination.MaxLimit, pagination.DefaultPage, pagination.MaxLimit},
 	}
 
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			gotPage, gotLimit := normalizePagination(tt.page, tt.limit)
+			gotPage, gotLimit := pagination.Normalize(tt.page, tt.limit)
 			if gotPage != tt.wantPage {
-				t.Errorf("normalizePagination(%d, %d) page = %d, want %d",
+				t.Errorf("pagination.Normalize(%d, %d) page = %d, want %d",
 					tt.page, tt.limit, gotPage, tt.wantPage)
 			}
 			if gotLimit != tt.wantLimit {
-				t.Errorf("normalizePagination(%d, %d) limit = %d, want %d",
+				t.Errorf("pagination.Normalize(%d, %d) limit = %d, want %d",
 					tt.page, tt.limit, gotLimit, tt.wantLimit)
 			}
 		})
