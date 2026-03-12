@@ -1,7 +1,6 @@
 package server
 
 import (
-	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -12,15 +11,9 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/IsorilovA/pauza-server/internal/config"
-	"github.com/IsorilovA/pauza-server/internal/handler"
 	"github.com/IsorilovA/pauza-server/internal/mail"
 	authmw "github.com/IsorilovA/pauza-server/internal/middleware"
-	"github.com/IsorilovA/pauza-server/internal/photostore"
 	"github.com/IsorilovA/pauza-server/internal/push"
-	"github.com/IsorilovA/pauza-server/internal/ratelimit"
-	"github.com/IsorilovA/pauza-server/internal/repository"
-	"github.com/IsorilovA/pauza-server/internal/revenuecat"
-	"github.com/IsorilovA/pauza-server/internal/service"
 )
 
 // respondRequestID copies the request ID from the context to the X-Request-Id
@@ -103,153 +96,9 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 	r.Use(authmw.Recoverer(logger))                        // recover from panics with structured logging
 	r.Use(limitBody)                                       // defense-in-depth: cap request bodies
 
-	// Liveness and readiness probes (not under /api/v1; used by container
-	// orchestration). /live is dependency-free; /ready pings the database.
-	r.Get("/live", handler.Live(logger))
-	r.Get("/ready", handler.Ready(pool, logger))
+	deps := buildDependencies(cfg, logger, pool, mailer, pushSender)
+	limiters, cleanup := buildLimiters(cfg, logger, redisClient)
+	mountRoutes(r, cfg, logger, pool, deps, limiters)
 
-	// Construct shared dependencies for handler wiring.
-	authRepo := repository.NewPgxAuthRepository()
-	authService := service.NewAuthService(
-		pool, authRepo, mailer, cfg.JWTSecret,
-		cfg.JWTAccessTokenTTL, cfg.JWTRefreshTokenTTL, logger,
-	)
-	photoStore := photostore.NewFileStore(cfg.PhotoStorageDir, cfg.PhotoPublicBaseURL)
-	authHandler := handler.NewAuthHandlerWithPhotoStore(authService, photoStore, logger)
-	syncRepo := repository.NewPgxSyncRepository()
-	syncService := service.NewSyncService(pool, syncRepo, authRepo, logger)
-	syncHandler := handler.NewSyncHandlerWithLogger(syncService, logger)
-	socialRepo := repository.NewSocialRepository()
-	if pushSender == nil {
-		pushSender = push.NewNoopSender(logger)
-	}
-	pushSender = push.NewPreferenceSender(pool, authRepo, pushSender, logger)
-	socialHandler := handler.NewSocialHandler(service.NewSocialService(pool, socialRepo, pushSender, logger))
-
-	// Admin repository (shared with webhook override checking and admin routes).
-	adminRepo := repository.NewPgxAdminRepository()
-
-	// RevenueCat webhook dependencies.
-	rcClient := revenuecat.NewClient(cfg.RevenueCatAPIKey)
-	entitlementRepo := repository.NewPgxEntitlementRepository()
-	webhookService := service.NewWebhookService(pool, entitlementRepo, rcClient, authRepo, logger,
-		service.WithOverrideChecker(adminRepo),
-	)
-	webhookHandler := handler.NewWebhookHandler(webhookService, cfg.RevenueCatWebhookSecret, logger)
-
-	// Admin API dependencies (after entitlementRepo and adminRepo are available).
-	adminService := service.NewAdminService(pool, adminRepo, entitlementRepo, cfg.JWTSecret, cfg.AdminJWTAccessTokenTTL, logger)
-	adminHandler := handler.NewAdminHandler(adminService, logger)
-
-	// newLimiter creates a Redis-backed rate limiter with the given budget.
-	newLimiter := func(prefix string, rate int, window time.Duration) ratelimit.Limiter {
-		inner := ratelimit.NewRedisLimiter(redisClient, rate, window, ratelimit.WithPrefix("rl:"+prefix+":"))
-		return ratelimit.NewFailOpen(inner, logger)
-	}
-
-	authLimiter := newLimiter("auth", cfg.AuthRateLimit, cfg.AuthRateWindow)
-	verifyOTPLimiter := newLimiter("verify-otp", cfg.VerifyOTPRateLimit, cfg.VerifyOTPRateWindow)
-	generalAPILimiter := newLimiter("general-api", cfg.GeneralAPIRateLimit, cfg.GeneralAPIRateWindow)
-	syncLimiter := newLimiter("sync", cfg.SyncRateLimit, cfg.SyncRateWindow)
-	webhookLimiter := newLimiter("webhook", cfg.WebhookRateLimit, cfg.WebhookRateWindow)
-	adminLimiter := newLimiter("admin", cfg.AdminRateLimit, cfg.AdminRateWindow)
-
-	// --- /api/v1 routes -------------------------------------------------
-	// Public and protected routes are mounted in separate chi.Route groups
-	// so that the JWT middleware applies only to protected endpoints. This
-	// avoids relying on chi route registration order for correctness.
-	r.Route("/api/v1", func(r chi.Router) {
-		// Public passwordless user-auth routes (no JWT required).
-		r.Route("/auth", func(r chi.Router) {
-			r.With(authmw.RateLimit(authLimiter, cfg.AuthRateLimit, authmw.IPKey)).
-				Post("/start", authHandler.Start)
-			r.With(authmw.RateLimit(authLimiter, cfg.AuthRateLimit, authmw.IPKey)).
-				Post("/refresh", authHandler.Refresh)
-			r.With(
-				authmw.RateLimit(authLimiter, cfg.AuthRateLimit, authmw.IPKey),
-				authmw.RateLimit(verifyOTPLimiter, cfg.VerifyOTPRateLimit, authmw.EmailKey),
-			).
-				Post("/verify", authHandler.VerifyOTP)
-		})
-
-		// RevenueCat webhook (Bearer-secret auth, not JWT).
-		r.With(authmw.RateLimit(webhookLimiter, cfg.WebhookRateLimit, authmw.IPKey)).
-			Post("/webhooks/revenuecat", webhookHandler.HandleRevenueCat)
-
-		// Admin routes — login is public and rate-limited per IP; all
-		// other endpoints require an admin JWT and are rate-limited per
-		// admin identity (with an IP-based outer layer for unauthorized
-		// probing protection).
-		r.Route("/admin", func(r chi.Router) {
-			r.With(authmw.RateLimit(adminLimiter, cfg.AdminRateLimit, authmw.IPKey)).
-				Post("/login", adminHandler.Login)
-
-			r.Group(func(r chi.Router) {
-				r.Use(authmw.AdminJWTAuth(cfg.JWTSecret, logger))
-				r.Use(authmw.RateLimit(adminLimiter, cfg.AdminRateLimit, authmw.UserIDKey))
-
-				r.Get("/users", adminHandler.ListUsers)
-				r.Get("/users/{id}", adminHandler.GetUserDetail)
-				r.Get("/stats", adminHandler.GetPlatformStats)
-				r.Post("/users/{id}/entitlements", adminHandler.ManageEntitlement)
-				r.Get("/entitlements", adminHandler.ListEntitlements)
-			})
-		})
-
-		// Protected routes — JWT required. All endpoints in this group
-		// require a valid access token; the middleware stores the
-		// authenticated user in the request context for handlers to use
-		// via middleware.UserFromContext.
-		r.Group(func(r chi.Router) {
-			r.Use(authmw.JWTAuth(cfg.JWTSecret, logger))
-
-			r.Group(func(r chi.Router) {
-				r.Use(authmw.RateLimit(generalAPILimiter, cfg.GeneralAPIRateLimit, authmw.UserIDKey))
-
-				r.Get("/me", authHandler.GetMe)
-				r.Patch("/me", authHandler.UpdateMe)
-				r.Get("/me/notification-preferences", authHandler.GetNotificationPreferences)
-				r.Patch("/me/notification-preferences", authHandler.UpdateNotificationPreferences)
-				r.Get("/me/privacy", authHandler.GetPrivacyPreferences)
-				r.Patch("/me/privacy", authHandler.UpdatePrivacyPreferences)
-				r.Get("/me/username-available", authHandler.UsernameAvailable)
-				r.Post("/me/delete/request", authHandler.DeleteRequest)
-				r.Post("/me/delete/confirm", authHandler.DeleteConfirm)
-				r.Post("/me/photo", authHandler.UploadPhoto)
-				r.Post("/devices", socialHandler.RegisterDevice)
-				r.Post("/devices/unregister", socialHandler.UnregisterDevice)
-				r.Get("/friends", socialHandler.ListFriends)
-				r.Post("/friends/request", socialHandler.RequestFriend)
-				r.Get("/friends/requests/incoming", socialHandler.ListIncomingRequests)
-				r.Get("/friends/requests/outgoing", socialHandler.ListOutgoingRequests)
-				r.Post("/friends/requests/{id}/accept", socialHandler.AcceptFriend)
-				r.Post("/friends/requests/{id}/decline", socialHandler.DeclineFriend)
-				r.Delete("/friends/{id}", socialHandler.RemoveFriend)
-				r.Get("/friends/{id}/stats", socialHandler.FriendStats)
-				r.Get("/friends/search", socialHandler.SearchUsers)
-				r.Get("/leaderboard/streaks", socialHandler.LeaderboardStreaks)
-				r.Get("/leaderboard/focus-time", socialHandler.LeaderboardFocusTime)
-			})
-
-			r.With(authmw.RateLimit(syncLimiter, cfg.SyncRateLimit, authmw.UserIDKey)).Post("/sync", syncHandler.Sync)
-		})
-	})
-
-	cleanup := func() {
-		authLimiter.Stop()
-		verifyOTPLimiter.Stop()
-		generalAPILimiter.Stop()
-		syncLimiter.Stop()
-		webhookLimiter.Stop()
-		adminLimiter.Stop()
-	}
-
-	return &http.Server{
-		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           r,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}, cleanup
+	return newHTTPServer(cfg, r), cleanup
 }

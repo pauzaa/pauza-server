@@ -13,13 +13,13 @@ import (
 
 type fakeSocialRepo struct {
 	effectivePremiumActiveFn    func(ctx context.Context, db repository.DBTX, userID string) (bool, error)
-	registerDeviceFn            func(ctx context.Context, db repository.DBTX, userID, fcmToken, platform string) error
+	registerDeviceFn            func(ctx context.Context, db repository.DBTX, userID, fcmToken string, platform repository.DevicePlatform) error
 	unregisterDeviceFn          func(ctx context.Context, db repository.DBTX, userID, fcmToken string) error
 	findUserByExactUsernameFn   func(ctx context.Context, db repository.DBTX, username string) (repository.BasicUserRow, error)
 	getBasicUserByIDFn          func(ctx context.Context, db repository.DBTX, userID string) (repository.BasicUserRow, error)
 	createFriendRequestFn       func(ctx context.Context, db repository.DBTX, requesterID, addresseeID string) (string, error)
 	listFriendsFn               func(ctx context.Context, db repository.DBTX, userID string, page, limit int) ([]repository.FriendRow, repository.PaginationResult, error)
-	listFriendRequestsFn        func(ctx context.Context, db repository.DBTX, userID, direction string) ([]repository.FriendRequestRow, error)
+	listFriendRequestsFn        func(ctx context.Context, db repository.DBTX, userID string, direction repository.FriendRequestDirection) ([]repository.FriendRequestRow, error)
 	getFriendshipFn             func(ctx context.Context, db repository.DBTX, friendshipID string) (string, string, string, error)
 	acceptFriendRequestFn       func(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
 	deletePendingRequestFn      func(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
@@ -38,7 +38,7 @@ type fakeSocialRepo struct {
 func (f *fakeSocialRepo) EffectivePremiumActive(ctx context.Context, db repository.DBTX, userID string) (bool, error) {
 	return f.effectivePremiumActiveFn(ctx, db, userID)
 }
-func (f *fakeSocialRepo) RegisterDevice(ctx context.Context, db repository.DBTX, userID, fcmToken, platform string) error {
+func (f *fakeSocialRepo) RegisterDevice(ctx context.Context, db repository.DBTX, userID, fcmToken string, platform repository.DevicePlatform) error {
 	return f.registerDeviceFn(ctx, db, userID, fcmToken, platform)
 }
 func (f *fakeSocialRepo) UnregisterDevice(ctx context.Context, db repository.DBTX, userID, fcmToken string) error {
@@ -56,7 +56,7 @@ func (f *fakeSocialRepo) CreateFriendRequest(ctx context.Context, db repository.
 func (f *fakeSocialRepo) ListFriends(ctx context.Context, db repository.DBTX, userID string, page, limit int) ([]repository.FriendRow, repository.PaginationResult, error) {
 	return f.listFriendsFn(ctx, db, userID, page, limit)
 }
-func (f *fakeSocialRepo) ListFriendRequests(ctx context.Context, db repository.DBTX, userID, direction string) ([]repository.FriendRequestRow, error) {
+func (f *fakeSocialRepo) ListFriendRequests(ctx context.Context, db repository.DBTX, userID string, direction repository.FriendRequestDirection) ([]repository.FriendRequestRow, error) {
 	return f.listFriendRequestsFn(ctx, db, userID, direction)
 }
 func (f *fakeSocialRepo) GetFriendship(ctx context.Context, db repository.DBTX, friendshipID string) (string, string, string, error) {
@@ -114,7 +114,7 @@ func silentLogger() *slog.Logger {
 func newFakeSocialRepo() *fakeSocialRepo {
 	return &fakeSocialRepo{
 		effectivePremiumActiveFn: func(context.Context, repository.DBTX, string) (bool, error) { return true, nil },
-		registerDeviceFn:         func(context.Context, repository.DBTX, string, string, string) error { return nil },
+		registerDeviceFn:         func(context.Context, repository.DBTX, string, string, repository.DevicePlatform) error { return nil },
 		unregisterDeviceFn:       func(context.Context, repository.DBTX, string, string) error { return nil },
 		findUserByExactUsernameFn: func(context.Context, repository.DBTX, string) (repository.BasicUserRow, error) {
 			return repository.BasicUserRow{}, nil
@@ -126,7 +126,7 @@ func newFakeSocialRepo() *fakeSocialRepo {
 		listFriendsFn: func(context.Context, repository.DBTX, string, int, int) ([]repository.FriendRow, repository.PaginationResult, error) {
 			return nil, repository.PaginationResult{}, nil
 		},
-		listFriendRequestsFn: func(context.Context, repository.DBTX, string, string) ([]repository.FriendRequestRow, error) {
+		listFriendRequestsFn: func(context.Context, repository.DBTX, string, repository.FriendRequestDirection) ([]repository.FriendRequestRow, error) {
 			return nil, nil
 		},
 		getFriendshipFn: func(context.Context, repository.DBTX, string) (string, string, string, error) {

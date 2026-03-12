@@ -839,12 +839,12 @@ func TestWebhook_UUIDFastPath_MergesEntitlementLookup(t *testing.T) {
 
 // fakeOverrideChecker implements overrideChecker.
 type fakeOverrideChecker struct {
-	getActiveOverrideFn func(ctx context.Context, db repository.DBTX, userID, entitlement string) (repository.OverrideRow, error)
+	getActiveOverrideFn func(ctx context.Context, db repository.DBTX, userID string, entitlement repository.Entitlement) (repository.OverrideRow, error)
 }
 
 var _ overrideChecker = (*fakeOverrideChecker)(nil)
 
-func (f *fakeOverrideChecker) GetActiveOverride(ctx context.Context, db repository.DBTX, userID, entitlement string) (repository.OverrideRow, error) {
+func (f *fakeOverrideChecker) GetActiveOverride(ctx context.Context, db repository.DBTX, userID string, entitlement repository.Entitlement) (repository.OverrideRow, error) {
 	if f.getActiveOverrideFn != nil {
 		return f.getActiveOverrideFn(ctx, db, userID, entitlement)
 	}
@@ -895,11 +895,11 @@ func TestWebhook_ActiveGrantOverride_SkipsReconciliation(t *testing.T) {
 	}
 
 	oc := &fakeOverrideChecker{
-		getActiveOverrideFn: func(_ context.Context, _ repository.DBTX, userID, entitlement string) (repository.OverrideRow, error) {
+		getActiveOverrideFn: func(_ context.Context, _ repository.DBTX, userID string, entitlement repository.Entitlement) (repository.OverrideRow, error) {
 			return repository.OverrideRow{
 				UserID:      userID,
 				Entitlement: entitlement,
-				Action:      "grant",
+				Action:      repository.AdminOverrideGrant,
 			}, nil
 		},
 	}
@@ -942,11 +942,11 @@ func TestWebhook_ActiveRevokeOverride_SkipsReconciliation(t *testing.T) {
 	}
 
 	oc := &fakeOverrideChecker{
-		getActiveOverrideFn: func(_ context.Context, _ repository.DBTX, userID, entitlement string) (repository.OverrideRow, error) {
+		getActiveOverrideFn: func(_ context.Context, _ repository.DBTX, userID string, entitlement repository.Entitlement) (repository.OverrideRow, error) {
 			return repository.OverrideRow{
 				UserID:      userID,
 				Entitlement: entitlement,
-				Action:      "revoke",
+				Action:      repository.AdminOverrideRevoke,
 			}, nil
 		},
 	}
@@ -990,7 +990,7 @@ func TestWebhook_NoOverride_ReconcilesNormally(t *testing.T) {
 	}
 
 	oc := &fakeOverrideChecker{
-		getActiveOverrideFn: func(_ context.Context, _ repository.DBTX, _, _ string) (repository.OverrideRow, error) {
+		getActiveOverrideFn: func(_ context.Context, _ repository.DBTX, _ string, _ repository.Entitlement) (repository.OverrideRow, error) {
 			return repository.OverrideRow{}, repository.ErrNotFound
 		},
 	}
@@ -1080,7 +1080,7 @@ func TestWebhook_OverrideCheckError_ReturnsError(t *testing.T) {
 
 	overrideErr := errors.New("redis timeout")
 	oc := &fakeOverrideChecker{
-		getActiveOverrideFn: func(_ context.Context, _ repository.DBTX, _, _ string) (repository.OverrideRow, error) {
+		getActiveOverrideFn: func(_ context.Context, _ repository.DBTX, _ string, _ repository.Entitlement) (repository.OverrideRow, error) {
 			return repository.OverrideRow{}, overrideErr
 		},
 	}
@@ -1127,8 +1127,8 @@ func TestWebhook_RC404_ActiveOverride_SkipsInactiveUpsert(t *testing.T) {
 	}
 
 	oc := &fakeOverrideChecker{
-		getActiveOverrideFn: func(_ context.Context, _ repository.DBTX, _, _ string) (repository.OverrideRow, error) {
-			return repository.OverrideRow{Action: "grant"}, nil
+		getActiveOverrideFn: func(_ context.Context, _ repository.DBTX, _ string, _ repository.Entitlement) (repository.OverrideRow, error) {
+			return repository.OverrideRow{Action: repository.AdminOverrideGrant}, nil
 		},
 	}
 
@@ -1172,7 +1172,7 @@ func TestWebhook_RC404_OverrideCheckError_ReturnsError(t *testing.T) {
 
 	overrideErr := errors.New("db timeout on override check")
 	oc := &fakeOverrideChecker{
-		getActiveOverrideFn: func(context.Context, repository.DBTX, string, string) (repository.OverrideRow, error) {
+		getActiveOverrideFn: func(context.Context, repository.DBTX, string, repository.Entitlement) (repository.OverrideRow, error) {
 			return repository.OverrideRow{}, overrideErr
 		},
 	}
@@ -1231,9 +1231,9 @@ func TestWebhook_MultipleUsers_PartialOverride(t *testing.T) {
 	}
 
 	oc := &fakeOverrideChecker{
-		getActiveOverrideFn: func(_ context.Context, _ repository.DBTX, userID, _ string) (repository.OverrideRow, error) {
+		getActiveOverrideFn: func(_ context.Context, _ repository.DBTX, userID string, _ repository.Entitlement) (repository.OverrideRow, error) {
 			if userID == overriddenUID {
-				return repository.OverrideRow{Action: "grant"}, nil
+				return repository.OverrideRow{Action: repository.AdminOverrideGrant}, nil
 			}
 			return repository.OverrideRow{}, repository.ErrNotFound
 		},

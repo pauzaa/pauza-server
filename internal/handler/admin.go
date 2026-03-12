@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -13,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/IsorilovA/pauza-server/internal/apperror"
+	"github.com/IsorilovA/pauza-server/internal/repository"
 	"github.com/IsorilovA/pauza-server/internal/service"
 )
 
@@ -152,11 +152,7 @@ func (h *AdminHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(adminLoginResponse{AccessToken: out.Token}); err != nil {
-		h.logger.Error("encoding admin login response", "err", err)
-	}
+	writeJSON(w, h.logger, http.StatusOK, adminLoginResponse{AccessToken: out.Token}, "admin-login")
 }
 
 // ListUsers handles GET /api/v1/admin/users.
@@ -196,11 +192,7 @@ func (h *AdminHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		h.logger.Error("encoding admin list-users response", "err", err)
-	}
+	writeJSON(w, h.logger, http.StatusOK, resp, "admin-list-users")
 }
 
 // GetUserDetail handles GET /api/v1/admin/users/{id}.
@@ -240,11 +232,7 @@ func (h *AdminHandler) GetUserDetail(w http.ResponseWriter, r *http.Request) {
 		resp.CurrentPeriodEnd = &s
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		h.logger.Error("encoding admin user-detail response", "err", err)
-	}
+	writeJSON(w, h.logger, http.StatusOK, resp, "admin-user-detail")
 }
 
 // GetPlatformStats handles GET /api/v1/admin/stats.
@@ -265,11 +253,7 @@ func (h *AdminHandler) GetPlatformStats(w http.ResponseWriter, r *http.Request) 
 		AvgDailyFocusTimeMS:       out.AvgDailyFocusTimeMS,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		h.logger.Error("encoding admin stats response", "err", err)
-	}
+	writeJSON(w, h.logger, http.StatusOK, resp, "admin-stats")
 }
 
 // ManageEntitlement handles POST /api/v1/admin/users/{id}/entitlements.
@@ -314,8 +298,8 @@ func (h *AdminHandler) ManageEntitlement(w http.ResponseWriter, r *http.Request)
 
 	out, err := h.svc.ManageEntitlement(r.Context(), service.ManageEntitlementInput{
 		UserID:      userID,
-		Entitlement: req.Entitlement,
-		Action:      req.Action,
+		Entitlement: repository.Entitlement(req.Entitlement),
+		Action:      repository.AdminOverrideAction(req.Action),
 		ExpiresAt:   expiresAt,
 	})
 	if err != nil {
@@ -350,7 +334,7 @@ func (h *AdminHandler) ListEntitlements(w http.ResponseWriter, r *http.Request) 
 	out, err := h.svc.ListEntitlements(r.Context(), service.ListEntitlementsInput{
 		Page:        page,
 		Limit:       limit,
-		Entitlement: entitlement,
+		Entitlement: repository.Entitlement(entitlement),
 		IsActive:    isActive,
 	})
 	if err != nil {
@@ -384,9 +368,5 @@ func (h *AdminHandler) ListEntitlements(w http.ResponseWriter, r *http.Request) 
 		},
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		h.logger.Error("encoding admin list-entitlements response", "err", err)
-	}
+	writeJSON(w, h.logger, http.StatusOK, resp, "admin-list-entitlements")
 }

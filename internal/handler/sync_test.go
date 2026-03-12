@@ -255,7 +255,7 @@ func TestSync_EncodeFailureLogsWithInjectedLogger(t *testing.T) {
 	h.Sync(w, req)
 
 	logOutput := buf.String()
-	if !strings.Contains(logOutput, `"msg":"failed to encode sync response"`) {
+	if !strings.Contains(logOutput, `"msg":"encoding sync response"`) {
 		t.Fatalf("expected injected logger output, got %q", logOutput)
 	}
 	if !strings.Contains(logOutput, `"err":"io: read/write on closed pipe"`) {

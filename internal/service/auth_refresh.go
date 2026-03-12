@@ -1,0 +1,87 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/IsorilovA/pauza-server/internal/auth"
+	"github.com/IsorilovA/pauza-server/internal/repository"
+)
+
+// Refresh rotates a refresh token and issues a new access token pair.
+func (s *AuthService) Refresh(ctx context.Context, in RefreshInput) (RefreshOutput, error) {
+	tokenHash := auth.HashRefreshToken(in.RefreshToken)
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		s.logger.Error("beginning refresh transaction", "err", err)
+		return RefreshOutput{}, ErrInternal
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	tok, err := s.repo.GetRefreshTokenByHashForUpdate(ctx, tx, tokenHash)
+	if errors.Is(err, repository.ErrNotFound) {
+		return RefreshOutput{}, fmt.Errorf("%w: invalid refresh token", ErrUnauthorized)
+	}
+	if err != nil {
+		s.logger.Error("querying refresh token", "err", err)
+		return RefreshOutput{}, ErrInternal
+	}
+
+	if tok.Revoked {
+		if err := s.repo.RevokeAllRefreshTokens(ctx, tx, tok.UserID); err != nil {
+			s.logger.Error("revoking all refresh tokens after reuse", "err", err)
+			return RefreshOutput{}, ErrInternal
+		}
+		if err := tx.Commit(ctx); err != nil {
+			s.logger.Error("committing reuse-detection revoke-all", "err", err)
+			return RefreshOutput{}, ErrInternal
+		}
+		return RefreshOutput{}, fmt.Errorf("%w: invalid refresh token", ErrUnauthorized)
+	}
+
+	if time.Now().UTC().After(tok.ExpiresAt) {
+		return RefreshOutput{}, fmt.Errorf("%w: invalid refresh token", ErrUnauthorized)
+	}
+
+	if err := s.repo.RevokeRefreshToken(ctx, tx, tok.ID); err != nil {
+		s.logger.Error("revoking current refresh token", "err", err)
+		return RefreshOutput{}, ErrInternal
+	}
+
+	email, err := s.repo.GetUserEmailByID(ctx, tx, tok.UserID)
+	if err != nil {
+		s.logger.Error("querying user email for refresh", "err", err)
+		return RefreshOutput{}, ErrInternal
+	}
+
+	accessToken, err := auth.IssueAccessToken(tok.UserID, email, s.jwtSecret, s.jwtAccessTokenTTL)
+	if err != nil {
+		s.logger.Error("issuing access token", "err", err)
+		return RefreshOutput{}, ErrInternal
+	}
+
+	rawRefresh, hashRefresh, err := auth.GenerateRefreshToken()
+	if err != nil {
+		s.logger.Error("generating refresh token", "err", err)
+		return RefreshOutput{}, ErrInternal
+	}
+
+	refreshExpiresAt := time.Now().UTC().Add(s.jwtRefreshTokenTTL)
+	if err := s.repo.InsertRefreshToken(ctx, tx, tok.UserID, hashRefresh, refreshExpiresAt); err != nil {
+		s.logger.Error("inserting new refresh token", "err", err)
+		return RefreshOutput{}, ErrInternal
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		s.logger.Error("committing refresh transaction", "err", err)
+		return RefreshOutput{}, ErrInternal
+	}
+
+	return RefreshOutput{
+		AccessToken:  accessToken,
+		RefreshToken: rawRefresh,
+	}, nil
+}

@@ -22,13 +22,13 @@ type SocialService struct {
 
 type socialRepository interface {
 	EffectivePremiumActive(ctx context.Context, db repository.DBTX, userID string) (bool, error)
-	RegisterDevice(ctx context.Context, db repository.DBTX, userID, fcmToken, platform string) error
+	RegisterDevice(ctx context.Context, db repository.DBTX, userID, fcmToken string, platform repository.DevicePlatform) error
 	UnregisterDevice(ctx context.Context, db repository.DBTX, userID, fcmToken string) error
 	FindUserByExactUsername(ctx context.Context, db repository.DBTX, username string) (repository.BasicUserRow, error)
 	GetBasicUserByID(ctx context.Context, db repository.DBTX, userID string) (repository.BasicUserRow, error)
 	CreateFriendRequest(ctx context.Context, db repository.DBTX, requesterID, addresseeID string) (string, error)
 	ListFriends(ctx context.Context, db repository.DBTX, userID string, page, limit int) ([]repository.FriendRow, repository.PaginationResult, error)
-	ListFriendRequests(ctx context.Context, db repository.DBTX, userID, direction string) ([]repository.FriendRequestRow, error)
+	ListFriendRequests(ctx context.Context, db repository.DBTX, userID string, direction repository.FriendRequestDirection) ([]repository.FriendRequestRow, error)
 	GetFriendship(ctx context.Context, db repository.DBTX, friendshipID string) (string, string, string, error)
 	AcceptFriendRequest(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
 	DeletePendingRequest(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
@@ -51,7 +51,7 @@ func NewSocialService(pool repository.Pool, repo socialRepository, pushSender pu
 type DeviceInput struct {
 	UserID   string
 	FCMToken string
-	Platform string
+	Platform repository.DevicePlatform
 }
 
 type FriendRequestInput struct {
@@ -165,7 +165,7 @@ func (s *SocialService) ListFriends(ctx context.Context, userID string, page, li
 	return FriendListOutput{Friends: items, Pagination: pagination}, nil
 }
 
-func (s *SocialService) ListFriendRequests(ctx context.Context, userID, direction string) (FriendRequestsOutput, error) {
+func (s *SocialService) ListFriendRequests(ctx context.Context, userID string, direction repository.FriendRequestDirection) (FriendRequestsOutput, error) {
 	if err := s.requirePremium(ctx, userID); err != nil {
 		return FriendRequestsOutput{}, err
 	}

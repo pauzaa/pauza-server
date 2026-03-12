@@ -38,7 +38,7 @@ type captureSender struct {
 type capturedOTP struct {
 	To      string
 	OTP     string
-	Purpose string
+	Purpose mail.Purpose
 }
 
 type authEnvelope struct {
@@ -59,14 +59,14 @@ type authEnvelope struct {
 
 func (s *captureSender) Probe(context.Context) error { return nil }
 
-func (s *captureSender) SendOTP(_ context.Context, to, otp, purpose string) error {
+func (s *captureSender) SendOTP(_ context.Context, to, otp string, purpose mail.Purpose) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, capturedOTP{To: to, OTP: otp, Purpose: purpose})
 	return nil
 }
 
-func (s *captureSender) lastOTP(email, purpose string) string {
+func (s *captureSender) lastOTP(email string, purpose mail.Purpose) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := len(s.calls) - 1; i >= 0; i-- {

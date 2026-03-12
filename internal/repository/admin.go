@@ -64,8 +64,8 @@ type PlatformStatsRow struct {
 type OverrideRow struct {
 	ID          string
 	UserID      string
-	Entitlement string
-	Action      string
+	Entitlement Entitlement
+	Action      AdminOverrideAction
 	ExpiresAt   *time.Time
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
@@ -96,8 +96,8 @@ type ListUsersParams struct {
 // UpsertOverrideParams holds the fields for upserting an admin entitlement override.
 type UpsertOverrideParams struct {
 	UserID      string
-	Entitlement string
-	Action      string
+	Entitlement Entitlement
+	Action      AdminOverrideAction
 	ExpiresAt   *time.Time
 }
 
@@ -105,8 +105,8 @@ type UpsertOverrideParams struct {
 type ListEntitlementsParams struct {
 	Limit       int
 	Offset      int
-	Entitlement string // optional filter
-	IsActive    *bool  // optional filter
+	Entitlement Entitlement // optional filter
+	IsActive    *bool       // optional filter
 }
 
 // ---------------------------------------------------------------------------
@@ -122,8 +122,8 @@ type AdminRepository interface {
 	GetUserDetail(ctx context.Context, db DBTX, userID string) (AdminUserDetailRow, error)
 	GetPlatformStats(ctx context.Context, db DBTX) (PlatformStatsRow, error)
 	UpsertEntitlementOverride(ctx context.Context, db DBTX, params UpsertOverrideParams) error
-	DeleteEntitlementOverride(ctx context.Context, db DBTX, userID, entitlement string) error
-	GetActiveOverride(ctx context.Context, db DBTX, userID, entitlement string) (OverrideRow, error)
+	DeleteEntitlementOverride(ctx context.Context, db DBTX, userID string, entitlement Entitlement) error
+	GetActiveOverride(ctx context.Context, db DBTX, userID string, entitlement Entitlement) (OverrideRow, error)
 	ListEntitlements(ctx context.Context, db DBTX, params ListEntitlementsParams) ([]AdminEntitlementListRow, int, error)
 	UserExists(ctx context.Context, db DBTX, userID string) (bool, error)
 }
@@ -358,7 +358,7 @@ func (r *PgxAdminRepository) UpsertEntitlementOverride(ctx context.Context, db D
 		   action     = EXCLUDED.action,
 		   expires_at = EXCLUDED.expires_at,
 		   updated_at = now()`,
-		params.UserID, params.Entitlement, params.Action, params.ExpiresAt,
+		params.UserID, string(params.Entitlement), string(params.Action), params.ExpiresAt,
 	)
 	if err != nil {
 		return fmt.Errorf("upserting entitlement override: %w", err)
@@ -366,11 +366,11 @@ func (r *PgxAdminRepository) UpsertEntitlementOverride(ctx context.Context, db D
 	return nil
 }
 
-func (r *PgxAdminRepository) DeleteEntitlementOverride(ctx context.Context, db DBTX, userID, entitlement string) error {
+func (r *PgxAdminRepository) DeleteEntitlementOverride(ctx context.Context, db DBTX, userID string, entitlement Entitlement) error {
 	tag, err := db.Exec(ctx,
 		`DELETE FROM admin_entitlement_overrides
 		 WHERE user_id = $1 AND entitlement = $2`,
-		userID, entitlement,
+		userID, string(entitlement),
 	)
 	if err != nil {
 		return fmt.Errorf("deleting entitlement override: %w", err)
@@ -381,7 +381,7 @@ func (r *PgxAdminRepository) DeleteEntitlementOverride(ctx context.Context, db D
 	return nil
 }
 
-func (r *PgxAdminRepository) GetActiveOverride(ctx context.Context, db DBTX, userID, entitlement string) (OverrideRow, error) {
+func (r *PgxAdminRepository) GetActiveOverride(ctx context.Context, db DBTX, userID string, entitlement Entitlement) (OverrideRow, error) {
 	var o OverrideRow
 	err := db.QueryRow(ctx,
 		`SELECT id, user_id, entitlement, action, expires_at, created_at, updated_at
@@ -389,7 +389,7 @@ func (r *PgxAdminRepository) GetActiveOverride(ctx context.Context, db DBTX, use
 		 WHERE user_id = $1
 		   AND entitlement = $2
 		   AND (expires_at IS NULL OR expires_at > now())`,
-		userID, entitlement,
+		userID, string(entitlement),
 	).Scan(&o.ID, &o.UserID, &o.Entitlement, &o.Action, &o.ExpiresAt, &o.CreatedAt, &o.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OverrideRow{}, ErrNotFound
@@ -450,7 +450,7 @@ func (r *PgxAdminRepository) ListEntitlements(ctx context.Context, db DBTX, para
 
 	if params.Entitlement != "" {
 		whereClauses = append(whereClauses, fmt.Sprintf("m.entitlement = $%d", argIdx))
-		args = append(args, params.Entitlement)
+		args = append(args, string(params.Entitlement))
 		argIdx++
 	}
 	if params.IsActive != nil {

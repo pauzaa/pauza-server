@@ -77,16 +77,16 @@ type UserDetailOutput struct {
 // ManageEntitlementInput holds the fields for granting or revoking an entitlement.
 type ManageEntitlementInput struct {
 	UserID      string
-	Entitlement string
-	Action      string     // "grant" or "revoke"
-	ExpiresAt   *time.Time // optional expiration for the override
+	Entitlement repository.Entitlement
+	Action      repository.AdminOverrideAction
+	ExpiresAt   *time.Time
 }
 
 // ListEntitlementsInput holds pagination and optional filters for the admin entitlement listing.
 type ListEntitlementsInput struct {
 	Page        int
 	Limit       int
-	Entitlement string
+	Entitlement repository.Entitlement
 	IsActive    *bool
 }
 
@@ -294,10 +294,10 @@ func (s *AdminService) GetPlatformStats(ctx context.Context) (PlatformStatsOutpu
 // authorization while active; user_entitlements (the RevenueCat snapshot) is
 // not mutated so that temporary overrides expire cleanly.
 func (s *AdminService) ManageEntitlement(ctx context.Context, in ManageEntitlementInput) (MessageOutput, error) {
-	if in.Action != "grant" && in.Action != "revoke" {
+	if in.Action != repository.AdminOverrideGrant && in.Action != repository.AdminOverrideRevoke {
 		return MessageOutput{}, fmt.Errorf("%w: action must be grant or revoke", ErrInvalidAction)
 	}
-	if in.Entitlement != "premium" {
+	if in.Entitlement != repository.EntitlementPremium {
 		return MessageOutput{}, fmt.Errorf("%w: entitlement must be premium", ErrInvalidEntitlement)
 	}
 

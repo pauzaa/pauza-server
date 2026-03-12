@@ -111,30 +111,43 @@ const minAdminSeedPasswordLen = 8
 // validate performs semantic checks on configuration values that envconfig
 // cannot enforce via struct tags alone.
 func (c *Config) validate() error {
-	// Port range
 	if c.Port < 1 || c.Port > 65535 {
 		return fmt.Errorf("PORT must be between 1 and 65535, got %d", c.Port)
 	}
-
-	// Log level
-	if !validLogLevels[strings.ToLower(c.LogLevel)] {
-		return fmt.Errorf("LOG_LEVEL must be one of debug, info, warn, error; got %q", c.LogLevel)
-	}
-
-	// JWT secret minimum length
 	if len(c.JWTSecret) < minJWTSecretLen {
 		return fmt.Errorf("JWT_SECRET must be at least %d characters", minJWTSecretLen)
 	}
-
-	// JWT TTLs must be positive
-	if c.JWTAccessTokenTTL <= 0 {
-		return fmt.Errorf("JWT_ACCESS_TOKEN_TTL must be positive, got %s", c.JWTAccessTokenTTL)
+	if err := validateEnum("LOG_LEVEL", c.LogLevel, validLogLevels); err != nil {
+		return err
 	}
-	if c.JWTRefreshTokenTTL <= 0 {
-		return fmt.Errorf("JWT_REFRESH_TOKEN_TTL must be positive, got %s", c.JWTRefreshTokenTTL)
+	if err := validatePositiveDurationFields([]durationField{
+		{name: "JWT_ACCESS_TOKEN_TTL", value: c.JWTAccessTokenTTL},
+		{name: "JWT_REFRESH_TOKEN_TTL", value: c.JWTRefreshTokenTTL},
+		{name: "SMTP_TIMEOUT", value: c.SMTPTimeout},
+		{name: "AUTH_RATE_WINDOW", value: c.AuthRateWindow},
+		{name: "VERIFY_OTP_RATE_WINDOW", value: c.VerifyOTPRateWindow},
+		{name: "GENERAL_API_RATE_WINDOW", value: c.GeneralAPIRateWindow},
+		{name: "SYNC_RATE_WINDOW", value: c.SyncRateWindow},
+		{name: "WEBHOOK_RATE_WINDOW", value: c.WebhookRateWindow},
+		{name: "ADMIN_JWT_ACCESS_TOKEN_TTL", value: c.AdminJWTAccessTokenTTL},
+		{name: "ADMIN_RATE_WINDOW", value: c.AdminRateWindow},
+		{name: "CLEANUP_INTERVAL", value: c.CleanupInterval},
+		{name: "OTP_RETENTION_PERIOD", value: c.OTPRetentionPeriod},
+		{name: "REFRESH_TOKEN_REVOKED_RETENTION", value: c.RefreshTokenRevokedRetention},
+	}); err != nil {
+		return err
+	}
+	if err := validatePositiveIntFields([]intField{
+		{name: "AUTH_RATE_LIMIT", value: c.AuthRateLimit},
+		{name: "VERIFY_OTP_RATE_LIMIT", value: c.VerifyOTPRateLimit},
+		{name: "GENERAL_API_RATE_LIMIT", value: c.GeneralAPIRateLimit},
+		{name: "SYNC_RATE_LIMIT", value: c.SyncRateLimit},
+		{name: "WEBHOOK_RATE_LIMIT", value: c.WebhookRateLimit},
+		{name: "ADMIN_RATE_LIMIT", value: c.AdminRateLimit},
+	}); err != nil {
+		return err
 	}
 
-	// Admin seed: both must be set together; validate only when provided
 	hasUser := c.AdminSeedUsername != ""
 	hasPass := c.AdminSeedPassword != ""
 	if hasUser != hasPass {
@@ -149,94 +162,108 @@ func (c *Config) validate() error {
 		}
 	}
 
-	// SMTP timeout must be positive
-	if c.SMTPTimeout <= 0 {
-		return fmt.Errorf("SMTP_TIMEOUT must be positive, got %s", c.SMTPTimeout)
-	}
-
-	// SMTP TLS policy (normalize to lowercase)
 	c.SMTPTLSPolicy = strings.ToLower(c.SMTPTLSPolicy)
-	if !validSMTPTLSPolicies[c.SMTPTLSPolicy] {
-		return fmt.Errorf("SMTP_TLS_POLICY must be one of mandatory, opportunistic, none; got %q", c.SMTPTLSPolicy)
+	if err := validateEnum("SMTP_TLS_POLICY", c.SMTPTLSPolicy, validSMTPTLSPolicies); err != nil {
+		return err
+	}
+	if err := validateTrustedProxies(c.TrustedProxies); err != nil {
+		return err
+	}
+	if err := validateNonEmptyTrimmed("PHOTO_STORAGE_DIR", c.PhotoStorageDir); err != nil {
+		return err
+	}
+	if err := validateNonEmptyTrimmed("PHOTO_PUBLIC_BASE_URL", c.PhotoPublicBaseURL); err != nil {
+		return err
 	}
 
-	// Trusted proxies — validate that every entry is a valid IP or CIDR
-	if c.TrustedProxies != "" {
-		for _, entry := range strings.Split(c.TrustedProxies, ",") {
-			entry = strings.TrimSpace(entry)
-			if entry == "" {
-				continue
-			}
-			if strings.Contains(entry, "/") {
-				if _, _, err := net.ParseCIDR(entry); err != nil {
-					return fmt.Errorf("TRUSTED_PROXIES contains invalid CIDR %q: %w", entry, err)
-				}
-			} else {
-				if net.ParseIP(entry) == nil {
-					return fmt.Errorf("TRUSTED_PROXIES contains invalid IP %q", entry)
-				}
-			}
+	return nil
+}
+
+type durationField struct {
+	name  string
+	value time.Duration
+}
+
+type intField struct {
+	name  string
+	value int
+}
+
+func validatePositiveDurationFields(fields []durationField) error {
+	for _, field := range fields {
+		if err := validatePositiveDuration(field.name, field.value); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	// Rate limit values must be positive
-	if c.AuthRateLimit <= 0 {
-		return fmt.Errorf("AUTH_RATE_LIMIT must be positive, got %d", c.AuthRateLimit)
+func validatePositiveDuration(name string, value time.Duration) error {
+	if value <= 0 {
+		return fmt.Errorf("%s must be positive, got %s", name, value)
 	}
-	if c.AuthRateWindow <= 0 {
-		return fmt.Errorf("AUTH_RATE_WINDOW must be positive, got %s", c.AuthRateWindow)
-	}
-	if c.VerifyOTPRateLimit <= 0 {
-		return fmt.Errorf("VERIFY_OTP_RATE_LIMIT must be positive, got %d", c.VerifyOTPRateLimit)
-	}
-	if c.VerifyOTPRateWindow <= 0 {
-		return fmt.Errorf("VERIFY_OTP_RATE_WINDOW must be positive, got %s", c.VerifyOTPRateWindow)
-	}
-	if c.GeneralAPIRateLimit <= 0 {
-		return fmt.Errorf("GENERAL_API_RATE_LIMIT must be positive, got %d", c.GeneralAPIRateLimit)
-	}
-	if c.GeneralAPIRateWindow <= 0 {
-		return fmt.Errorf("GENERAL_API_RATE_WINDOW must be positive, got %s", c.GeneralAPIRateWindow)
-	}
-	if c.SyncRateLimit <= 0 {
-		return fmt.Errorf("SYNC_RATE_LIMIT must be positive, got %d", c.SyncRateLimit)
-	}
-	if c.SyncRateWindow <= 0 {
-		return fmt.Errorf("SYNC_RATE_WINDOW must be positive, got %s", c.SyncRateWindow)
-	}
-	if c.WebhookRateLimit <= 0 {
-		return fmt.Errorf("WEBHOOK_RATE_LIMIT must be positive, got %d", c.WebhookRateLimit)
-	}
-	if c.WebhookRateWindow <= 0 {
-		return fmt.Errorf("WEBHOOK_RATE_WINDOW must be positive, got %s", c.WebhookRateWindow)
-	}
-	if c.AdminJWTAccessTokenTTL <= 0 {
-		return fmt.Errorf("ADMIN_JWT_ACCESS_TOKEN_TTL must be positive, got %s", c.AdminJWTAccessTokenTTL)
-	}
-	if c.AdminRateLimit <= 0 {
-		return fmt.Errorf("ADMIN_RATE_LIMIT must be positive, got %d", c.AdminRateLimit)
-	}
-	if c.AdminRateWindow <= 0 {
-		return fmt.Errorf("ADMIN_RATE_WINDOW must be positive, got %s", c.AdminRateWindow)
-	}
+	return nil
+}
 
-	// Cleanup durations must be positive
-	if c.CleanupInterval <= 0 {
-		return fmt.Errorf("CLEANUP_INTERVAL must be positive, got %s", c.CleanupInterval)
+func validatePositiveIntFields(fields []intField) error {
+	for _, field := range fields {
+		if err := validatePositiveInt(field.name, field.value); err != nil {
+			return err
+		}
 	}
-	if c.OTPRetentionPeriod <= 0 {
-		return fmt.Errorf("OTP_RETENTION_PERIOD must be positive, got %s", c.OTPRetentionPeriod)
-	}
-	if c.RefreshTokenRevokedRetention <= 0 {
-		return fmt.Errorf("REFRESH_TOKEN_REVOKED_RETENTION must be positive, got %s", c.RefreshTokenRevokedRetention)
-	}
-	if strings.TrimSpace(c.PhotoStorageDir) == "" {
-		return fmt.Errorf("PHOTO_STORAGE_DIR must not be empty")
-	}
-	if strings.TrimSpace(c.PhotoPublicBaseURL) == "" {
-		return fmt.Errorf("PHOTO_PUBLIC_BASE_URL must not be empty")
-	}
+	return nil
+}
 
+func validatePositiveInt(name string, value int) error {
+	if value <= 0 {
+		return fmt.Errorf("%s must be positive, got %d", name, value)
+	}
+	return nil
+}
+
+func validateNonEmptyTrimmed(name, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s must not be empty", name)
+	}
+	return nil
+}
+
+func validateEnum(name, value string, allowed map[string]bool) error {
+	if !allowed[strings.ToLower(value)] {
+		return fmt.Errorf("%s must be one of %s; got %q", name, enumValues(allowed), value)
+	}
+	return nil
+}
+
+func enumValues(allowed map[string]bool) string {
+	values := make([]string, 0, len(allowed))
+	for _, value := range []string{"debug", "info", "warn", "error", "mandatory", "opportunistic", "none"} {
+		if allowed[value] {
+			values = append(values, value)
+		}
+	}
+	return strings.Join(values, ", ")
+}
+
+func validateTrustedProxies(value string) error {
+	if value == "" {
+		return nil
+	}
+	for _, entry := range strings.Split(value, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if strings.Contains(entry, "/") {
+			if _, _, err := net.ParseCIDR(entry); err != nil {
+				return fmt.Errorf("TRUSTED_PROXIES contains invalid CIDR %q: %w", entry, err)
+			}
+			continue
+		}
+		if net.ParseIP(entry) == nil {
+			return fmt.Errorf("TRUSTED_PROXIES contains invalid IP %q", entry)
+		}
+	}
 	return nil
 }
 

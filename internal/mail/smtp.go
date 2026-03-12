@@ -93,7 +93,7 @@ func (s *SMTPSender) newClient() (*gomail.Client, error) {
 // subjectForPurpose returns an email subject line for the given OTP purpose.
 // It returns an empty string for unrecognized purposes; callers must validate
 // before invoking this helper.
-func subjectForPurpose(purpose string) string {
+func subjectForPurpose(purpose Purpose) string {
 	switch purpose {
 	case PurposeAuthLogin:
 		return "Your Pauza sign-in code"
@@ -138,7 +138,7 @@ func (s *SMTPSender) Probe(ctx context.Context) error {
 	return nil
 }
 
-func (s *SMTPSender) SendOTP(ctx context.Context, to, otp, purpose string) error {
+func (s *SMTPSender) SendOTP(ctx context.Context, to, otp string, purpose Purpose) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("sending otp email: %w", err)
 	}
@@ -147,7 +147,7 @@ func (s *SMTPSender) SendOTP(ctx context.Context, to, otp, purpose string) error
 		return fmt.Errorf("sending otp email: to, otp, and purpose must be non-empty")
 	}
 
-	if containsCRLF(s.host) || containsCRLF(s.from) || containsCRLF(s.username) || containsCRLF(s.password) || containsCRLF(to) || containsCRLF(otp) || containsCRLF(purpose) {
+	if containsCRLF(s.host) || containsCRLF(s.from) || containsCRLF(s.username) || containsCRLF(s.password) || containsCRLF(to) || containsCRLF(otp) || containsCRLF(string(purpose)) {
 		return fmt.Errorf("sending otp email: header injection detected")
 	}
 
@@ -156,7 +156,7 @@ func (s *SMTPSender) SendOTP(ctx context.Context, to, otp, purpose string) error
 		return fmt.Errorf("sending otp email: unknown purpose %q", purpose)
 	}
 
-	s.logger.InfoContext(ctx, "sending otp email", "to", redact.Email(to), "purpose", purpose)
+	s.logger.InfoContext(ctx, "sending otp email", "to", redact.Email(to), "purpose", string(purpose))
 
 	body := fmt.Sprintf(
 		"Your Pauza verification code is: %s\r\n\r\n"+

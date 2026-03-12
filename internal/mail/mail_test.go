@@ -213,12 +213,12 @@ func TestSendOTP_HeaderInjection(t *testing.T) {
 		name    string
 		to      string
 		otp     string
-		purpose string
+		purpose Purpose
 	}{
 		{"newline in to", "evil@example.com\nBcc: spy@evil.com", "123456", PurposeAuthLogin},
 		{"cr in to", "evil@example.com\rBcc: spy@evil.com", "123456", PurposeAuthLogin},
 		{"newline in otp", "ok@example.com", "123\nBcc: spy@evil.com", PurposeAuthLogin},
-		{"newline in purpose", "ok@example.com", "123456", "verify\nBcc: spy@evil.com"},
+		{"newline in purpose", "ok@example.com", "123456", Purpose("verify\nBcc: spy@evil.com")},
 	}
 
 	for _, tt := range tests {
@@ -277,7 +277,7 @@ func TestSendOTP_EmptyParams(t *testing.T) {
 		name    string
 		to      string
 		otp     string
-		purpose string
+		purpose Purpose
 	}{
 		{"empty to", "", "123456", PurposeAuthLogin},
 		{"empty otp", "ok@example.com", "", PurposeAuthLogin},
@@ -299,7 +299,7 @@ func TestSendOTP_EmptyParams(t *testing.T) {
 
 func TestSendOTP_UnknownPurpose(t *testing.T) {
 	s := newTestSender()
-	err := s.SendOTP(context.Background(), "ok@example.com", "123456", "bogus_purpose")
+	err := s.SendOTP(context.Background(), "ok@example.com", "123456", Purpose("bogus_purpose"))
 	if err == nil {
 		t.Fatal("expected error for unknown purpose")
 	}

@@ -73,13 +73,13 @@ type fakeAuthRepo struct {
 	updatePushEnabledFn                       func(ctx context.Context, db repository.DBTX, userID string, pushEnabled bool) (bool, error)
 	isUsernameTakenFn                         func(ctx context.Context, db repository.DBTX, username string, excludeUserID string) (bool, error)
 	deleteUserFn                              func(ctx context.Context, db repository.DBTX, userID string) error
-	insertOTPFn                               func(ctx context.Context, db repository.DBTX, email string, userID *string, codeHash, purpose string, expiresAt time.Time) (string, error)
-	getActiveOTPForUpdateFn                   func(ctx context.Context, db repository.DBTX, email, purpose string) (repository.OTPRow, error)
-	countFailedOTPAttemptsSinceForUpdateFn    func(ctx context.Context, db repository.DBTX, email, purpose string, since time.Time) (int, error)
-	getOldestFailedOTPAttemptSinceForUpdateFn func(ctx context.Context, db repository.DBTX, email, purpose string, since time.Time) (time.Time, error)
-	insertFailedOTPAttemptFn                  func(ctx context.Context, db repository.DBTX, email string, userID *string, purpose string, attemptedAt time.Time) error
+	insertOTPFn                               func(ctx context.Context, db repository.DBTX, email string, userID *string, codeHash string, purpose mail.Purpose, expiresAt time.Time) (string, error)
+	getActiveOTPForUpdateFn                   func(ctx context.Context, db repository.DBTX, email string, purpose mail.Purpose) (repository.OTPRow, error)
+	countFailedOTPAttemptsSinceForUpdateFn    func(ctx context.Context, db repository.DBTX, email string, purpose mail.Purpose, since time.Time) (int, error)
+	getOldestFailedOTPAttemptSinceForUpdateFn func(ctx context.Context, db repository.DBTX, email string, purpose mail.Purpose, since time.Time) (time.Time, error)
+	insertFailedOTPAttemptFn                  func(ctx context.Context, db repository.DBTX, email string, userID *string, purpose mail.Purpose, attemptedAt time.Time) error
 	markOTPUsedFn                             func(ctx context.Context, db repository.DBTX, otpID string) error
-	deleteOTPsByEmailAndPurposeFn             func(ctx context.Context, db repository.DBTX, email, purpose string) error
+	deleteOTPsByEmailAndPurposeFn             func(ctx context.Context, db repository.DBTX, email string, purpose mail.Purpose) error
 	deleteOTPByIDFn                           func(ctx context.Context, db repository.DBTX, otpID string) error
 	insertRefreshTokenFn                      func(ctx context.Context, db repository.DBTX, userID, tokenHash string, expiresAt time.Time) error
 	getRefreshTokenByHashForUpdateFn          func(ctx context.Context, db repository.DBTX, tokenHash string) (repository.RefreshTokenRow, error)
@@ -121,25 +121,25 @@ func (f *fakeAuthRepo) IsUsernameTaken(ctx context.Context, db repository.DBTX, 
 func (f *fakeAuthRepo) DeleteUser(ctx context.Context, db repository.DBTX, userID string) error {
 	return f.deleteUserFn(ctx, db, userID)
 }
-func (f *fakeAuthRepo) InsertOTP(ctx context.Context, db repository.DBTX, email string, userID *string, codeHash, purpose string, expiresAt time.Time) (string, error) {
+func (f *fakeAuthRepo) InsertOTP(ctx context.Context, db repository.DBTX, email string, userID *string, codeHash string, purpose mail.Purpose, expiresAt time.Time) (string, error) {
 	return f.insertOTPFn(ctx, db, email, userID, codeHash, purpose, expiresAt)
 }
-func (f *fakeAuthRepo) GetActiveOTPForUpdate(ctx context.Context, db repository.DBTX, email, purpose string) (repository.OTPRow, error) {
+func (f *fakeAuthRepo) GetActiveOTPForUpdate(ctx context.Context, db repository.DBTX, email string, purpose mail.Purpose) (repository.OTPRow, error) {
 	return f.getActiveOTPForUpdateFn(ctx, db, email, purpose)
 }
-func (f *fakeAuthRepo) CountFailedOTPAttemptsSinceForUpdate(ctx context.Context, db repository.DBTX, email, purpose string, since time.Time) (int, error) {
+func (f *fakeAuthRepo) CountFailedOTPAttemptsSinceForUpdate(ctx context.Context, db repository.DBTX, email string, purpose mail.Purpose, since time.Time) (int, error) {
 	return f.countFailedOTPAttemptsSinceForUpdateFn(ctx, db, email, purpose, since)
 }
-func (f *fakeAuthRepo) GetOldestFailedOTPAttemptSinceForUpdate(ctx context.Context, db repository.DBTX, email, purpose string, since time.Time) (time.Time, error) {
+func (f *fakeAuthRepo) GetOldestFailedOTPAttemptSinceForUpdate(ctx context.Context, db repository.DBTX, email string, purpose mail.Purpose, since time.Time) (time.Time, error) {
 	return f.getOldestFailedOTPAttemptSinceForUpdateFn(ctx, db, email, purpose, since)
 }
-func (f *fakeAuthRepo) InsertFailedOTPAttempt(ctx context.Context, db repository.DBTX, email string, userID *string, purpose string, attemptedAt time.Time) error {
+func (f *fakeAuthRepo) InsertFailedOTPAttempt(ctx context.Context, db repository.DBTX, email string, userID *string, purpose mail.Purpose, attemptedAt time.Time) error {
 	return f.insertFailedOTPAttemptFn(ctx, db, email, userID, purpose, attemptedAt)
 }
 func (f *fakeAuthRepo) MarkOTPUsed(ctx context.Context, db repository.DBTX, otpID string) error {
 	return f.markOTPUsedFn(ctx, db, otpID)
 }
-func (f *fakeAuthRepo) DeleteOTPsByEmailAndPurpose(ctx context.Context, db repository.DBTX, email, purpose string) error {
+func (f *fakeAuthRepo) DeleteOTPsByEmailAndPurpose(ctx context.Context, db repository.DBTX, email string, purpose mail.Purpose) error {
 	return f.deleteOTPsByEmailAndPurposeFn(ctx, db, email, purpose)
 }
 func (f *fakeAuthRepo) DeleteOTPByID(ctx context.Context, db repository.DBTX, otpID string) error {
@@ -170,14 +170,14 @@ func (f *fakeAuthRepo) GetEntitlementSnapshot(ctx context.Context, db repository
 type fakeSendOTPCall struct {
 	To      string
 	OTP     string
-	Purpose string
+	Purpose mail.Purpose
 }
 
 type fakeSender struct {
 	mu        sync.Mutex
 	calls     []fakeSendOTPCall
 	probeFn   func(ctx context.Context) error
-	sendOTPFn func(ctx context.Context, to, otp, purpose string) error
+	sendOTPFn func(ctx context.Context, to, otp string, purpose mail.Purpose) error
 }
 
 var _ mail.Sender = (*fakeSender)(nil)
@@ -189,7 +189,7 @@ func (f *fakeSender) Probe(ctx context.Context) error {
 	return nil
 }
 
-func (f *fakeSender) SendOTP(ctx context.Context, to, otp, purpose string) error {
+func (f *fakeSender) SendOTP(ctx context.Context, to, otp string, purpose mail.Purpose) error {
 	f.mu.Lock()
 	f.calls = append(f.calls, fakeSendOTPCall{To: to, OTP: otp, Purpose: purpose})
 	f.mu.Unlock()

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/IsorilovA/pauza-server/internal/apperror"
+	"github.com/IsorilovA/pauza-server/internal/mail"
 	"github.com/IsorilovA/pauza-server/internal/middleware"
 	"github.com/IsorilovA/pauza-server/internal/service"
 )
@@ -23,7 +24,7 @@ import (
 type mockEmailSender struct{}
 
 func (m *mockEmailSender) Probe(_ context.Context) error { return nil }
-func (m *mockEmailSender) SendOTP(_ context.Context, _, _, _ string) error {
+func (m *mockEmailSender) SendOTP(_ context.Context, _, _ string, _ mail.Purpose) error {
 	return nil
 }
 

@@ -2,14 +2,12 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/IsorilovA/pauza-server/internal/apperror"
-	"github.com/IsorilovA/pauza-server/internal/middleware"
 	"github.com/IsorilovA/pauza-server/internal/service"
 	"github.com/IsorilovA/pauza-server/internal/syncmodel"
 )
@@ -163,9 +161,8 @@ type streakDailyAggregateRequest struct {
 }
 
 func (h *SyncHandler) Sync(w http.ResponseWriter, r *http.Request) {
-	authUser, ok := middleware.UserFromContext(r.Context())
+	userID, ok := requireUser(w, r)
 	if !ok {
-		apperror.Unauthorized(w, "missing or invalid authentication")
 		return
 	}
 
@@ -227,18 +224,13 @@ func (h *SyncHandler) Sync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := h.svc.Sync(r.Context(), service.SyncInput{UserID: authUser.UserID, Tables: out})
+	res, err := h.svc.Sync(r.Context(), service.SyncInput{UserID: userID, Tables: out})
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(res); err != nil {
-		h.logger.Error("failed to encode sync response", "err", err)
-		return
-	}
+	writeJSON(w, h.logger, http.StatusOK, res, "sync")
 }
 
 func validateTableCursor(fields apperror.FieldErrors, tablePath string, cursor *int64) {

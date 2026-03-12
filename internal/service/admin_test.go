@@ -22,8 +22,8 @@ type fakeAdminRepo struct {
 	getUserDetailFn             func(ctx context.Context, db repository.DBTX, userID string) (repository.AdminUserDetailRow, error)
 	getPlatformStatsFn          func(ctx context.Context, db repository.DBTX) (repository.PlatformStatsRow, error)
 	upsertEntitlementOverrideFn func(ctx context.Context, db repository.DBTX, params repository.UpsertOverrideParams) error
-	deleteEntitlementOverrideFn func(ctx context.Context, db repository.DBTX, userID, entitlement string) error
-	getActiveOverrideFn         func(ctx context.Context, db repository.DBTX, userID, entitlement string) (repository.OverrideRow, error)
+	deleteEntitlementOverrideFn func(ctx context.Context, db repository.DBTX, userID string, entitlement repository.Entitlement) error
+	getActiveOverrideFn         func(ctx context.Context, db repository.DBTX, userID string, entitlement repository.Entitlement) (repository.OverrideRow, error)
 	listEntitlementsFn          func(ctx context.Context, db repository.DBTX, params repository.ListEntitlementsParams) ([]repository.AdminEntitlementListRow, int, error)
 	userExistsFn                func(ctx context.Context, db repository.DBTX, userID string) (bool, error)
 }
@@ -65,14 +65,14 @@ func (f *fakeAdminRepo) UpsertEntitlementOverride(ctx context.Context, db reposi
 	return nil
 }
 
-func (f *fakeAdminRepo) DeleteEntitlementOverride(ctx context.Context, db repository.DBTX, userID, entitlement string) error {
+func (f *fakeAdminRepo) DeleteEntitlementOverride(ctx context.Context, db repository.DBTX, userID string, entitlement repository.Entitlement) error {
 	if f.deleteEntitlementOverrideFn != nil {
 		return f.deleteEntitlementOverrideFn(ctx, db, userID, entitlement)
 	}
 	return nil
 }
 
-func (f *fakeAdminRepo) GetActiveOverride(ctx context.Context, db repository.DBTX, userID, entitlement string) (repository.OverrideRow, error) {
+func (f *fakeAdminRepo) GetActiveOverride(ctx context.Context, db repository.DBTX, userID string, entitlement repository.Entitlement) (repository.OverrideRow, error) {
 	if f.getActiveOverrideFn != nil {
 		return f.getActiveOverrideFn(ctx, db, userID, entitlement)
 	}
@@ -495,8 +495,8 @@ func TestManageEntitlement_Grant_HappyPath(t *testing.T) {
 
 	out, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
 		UserID:      "user-001",
-		Entitlement: "premium",
-		Action:      "grant",
+		Entitlement: repository.EntitlementPremium,
+		Action:      repository.AdminOverrideGrant,
 	})
 	if err != nil {
 		t.Fatalf("ManageEntitlement() error = %v, want nil", err)
@@ -509,11 +509,11 @@ func TestManageEntitlement_Grant_HappyPath(t *testing.T) {
 	if overrideParams.UserID != "user-001" {
 		t.Errorf("override UserID = %q, want %q", overrideParams.UserID, "user-001")
 	}
-	if overrideParams.Action != "grant" {
-		t.Errorf("override Action = %q, want %q", overrideParams.Action, "grant")
+	if overrideParams.Action != repository.AdminOverrideGrant {
+		t.Errorf("override Action = %q, want %q", overrideParams.Action, repository.AdminOverrideGrant)
 	}
-	if overrideParams.Entitlement != "premium" {
-		t.Errorf("override Entitlement = %q, want %q", overrideParams.Entitlement, "premium")
+	if overrideParams.Entitlement != repository.EntitlementPremium {
+		t.Errorf("override Entitlement = %q, want %q", overrideParams.Entitlement, repository.EntitlementPremium)
 	}
 }
 
@@ -536,15 +536,15 @@ func TestManageEntitlement_Revoke_SetsOverrideAction(t *testing.T) {
 
 	_, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
 		UserID:      "user-001",
-		Entitlement: "premium",
-		Action:      "revoke",
+		Entitlement: repository.EntitlementPremium,
+		Action:      repository.AdminOverrideRevoke,
 	})
 	if err != nil {
 		t.Fatalf("ManageEntitlement() error = %v, want nil", err)
 	}
 
-	if overrideParams.Action != "revoke" {
-		t.Errorf("override Action = %q, want %q", overrideParams.Action, "revoke")
+	if overrideParams.Action != repository.AdminOverrideRevoke {
+		t.Errorf("override Action = %q, want %q", overrideParams.Action, repository.AdminOverrideRevoke)
 	}
 }
 
@@ -568,8 +568,8 @@ func TestManageEntitlement_TemporaryGrant_SetsExpiry(t *testing.T) {
 
 	_, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
 		UserID:      "user-001",
-		Entitlement: "premium",
-		Action:      "grant",
+		Entitlement: repository.EntitlementPremium,
+		Action:      repository.AdminOverrideGrant,
 		ExpiresAt:   &expiresAt,
 	})
 	if err != nil {
@@ -583,8 +583,8 @@ func TestManageEntitlement_TemporaryGrant_SetsExpiry(t *testing.T) {
 	if !overrideParams.ExpiresAt.Equal(expiresAt) {
 		t.Errorf("override ExpiresAt = %v, want %v", *overrideParams.ExpiresAt, expiresAt)
 	}
-	if overrideParams.Action != "grant" {
-		t.Errorf("override Action = %q, want %q", overrideParams.Action, "grant")
+	if overrideParams.Action != repository.AdminOverrideGrant {
+		t.Errorf("override Action = %q, want %q", overrideParams.Action, repository.AdminOverrideGrant)
 	}
 }
 
@@ -607,8 +607,8 @@ func TestManageEntitlement_PermanentGrant_NilExpiry(t *testing.T) {
 
 	_, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
 		UserID:      "user-001",
-		Entitlement: "premium",
-		Action:      "grant",
+		Entitlement: repository.EntitlementPremium,
+		Action:      repository.AdminOverrideGrant,
 	})
 	if err != nil {
 		t.Fatalf("ManageEntitlement() error = %v, want nil", err)
@@ -627,8 +627,8 @@ func TestManageEntitlement_InvalidAction_ReturnsError(t *testing.T) {
 
 	_, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
 		UserID:      "user-001",
-		Entitlement: "premium",
-		Action:      "suspend",
+		Entitlement: repository.EntitlementPremium,
+		Action:      repository.AdminOverrideAction("suspend"),
 	})
 	if !errors.Is(err, ErrInvalidAction) {
 		t.Fatalf("ManageEntitlement() error = %v, want ErrInvalidAction", err)
@@ -642,8 +642,8 @@ func TestManageEntitlement_InvalidEntitlement_ReturnsError(t *testing.T) {
 
 	_, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
 		UserID:      "user-001",
-		Entitlement: "gold",
-		Action:      "grant",
+		Entitlement: repository.Entitlement("gold"),
+		Action:      repository.AdminOverrideGrant,
 	})
 	if !errors.Is(err, ErrInvalidEntitlement) {
 		t.Fatalf("ManageEntitlement() error = %v, want ErrInvalidEntitlement", err)
@@ -663,8 +663,8 @@ func TestManageEntitlement_UserNotFound_ReturnsNotFound(t *testing.T) {
 
 	_, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
 		UserID:      "nonexistent",
-		Entitlement: "premium",
-		Action:      "grant",
+		Entitlement: repository.EntitlementPremium,
+		Action:      repository.AdminOverrideGrant,
 	})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("ManageEntitlement() error = %v, want ErrNotFound", err)
@@ -684,8 +684,8 @@ func TestManageEntitlement_UserExistsDBError_ReturnsInternal(t *testing.T) {
 
 	_, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
 		UserID:      "user-001",
-		Entitlement: "premium",
-		Action:      "grant",
+		Entitlement: repository.EntitlementPremium,
+		Action:      repository.AdminOverrideGrant,
 	})
 	if !errors.Is(err, ErrInternal) {
 		t.Fatalf("ManageEntitlement() error = %v, want ErrInternal", err)
@@ -708,8 +708,8 @@ func TestManageEntitlement_OverrideUpsertError_ReturnsInternal(t *testing.T) {
 
 	_, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
 		UserID:      "user-001",
-		Entitlement: "premium",
-		Action:      "grant",
+		Entitlement: repository.EntitlementPremium,
+		Action:      repository.AdminOverrideGrant,
 	})
 	if !errors.Is(err, ErrInternal) {
 		t.Fatalf("ManageEntitlement() error = %v, want ErrInternal", err)
@@ -758,9 +758,9 @@ func TestManageEntitlement_DoesNotMutateUserEntitlements(t *testing.T) {
 func TestManageEntitlement_MessageFormat(t *testing.T) {
 	t.Parallel()
 
-	for _, action := range []string{"grant", "revoke"} {
+	for _, action := range []repository.AdminOverrideAction{repository.AdminOverrideGrant, repository.AdminOverrideRevoke} {
 		action := action
-		t.Run(action, func(t *testing.T) {
+		t.Run(string(action), func(t *testing.T) {
 			t.Parallel()
 
 			adminRepo := &fakeAdminRepo{
@@ -776,7 +776,7 @@ func TestManageEntitlement_MessageFormat(t *testing.T) {
 
 			out, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
 				UserID:      "user-001",
-				Entitlement: "premium",
+				Entitlement: repository.EntitlementPremium,
 				Action:      action,
 			})
 			if err != nil {

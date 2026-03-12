@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/IsorilovA/pauza-server/internal/mail"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -74,13 +75,13 @@ type AuthRepository interface {
 	IsUsernameTaken(ctx context.Context, db DBTX, username string, excludeUserID string) (bool, error)
 	DeleteUser(ctx context.Context, db DBTX, userID string) error
 
-	InsertOTP(ctx context.Context, db DBTX, email string, userID *string, codeHash, purpose string, expiresAt time.Time) (string, error)
-	GetActiveOTPForUpdate(ctx context.Context, db DBTX, email, purpose string) (OTPRow, error)
-	CountFailedOTPAttemptsSinceForUpdate(ctx context.Context, db DBTX, email, purpose string, since time.Time) (int, error)
-	GetOldestFailedOTPAttemptSinceForUpdate(ctx context.Context, db DBTX, email, purpose string, since time.Time) (time.Time, error)
-	InsertFailedOTPAttempt(ctx context.Context, db DBTX, email string, userID *string, purpose string, attemptedAt time.Time) error
+	InsertOTP(ctx context.Context, db DBTX, email string, userID *string, codeHash string, purpose mail.Purpose, expiresAt time.Time) (string, error)
+	GetActiveOTPForUpdate(ctx context.Context, db DBTX, email string, purpose mail.Purpose) (OTPRow, error)
+	CountFailedOTPAttemptsSinceForUpdate(ctx context.Context, db DBTX, email string, purpose mail.Purpose, since time.Time) (int, error)
+	GetOldestFailedOTPAttemptSinceForUpdate(ctx context.Context, db DBTX, email string, purpose mail.Purpose, since time.Time) (time.Time, error)
+	InsertFailedOTPAttempt(ctx context.Context, db DBTX, email string, userID *string, purpose mail.Purpose, attemptedAt time.Time) error
 	MarkOTPUsed(ctx context.Context, db DBTX, otpID string) error
-	DeleteOTPsByEmailAndPurpose(ctx context.Context, db DBTX, email, purpose string) error
+	DeleteOTPsByEmailAndPurpose(ctx context.Context, db DBTX, email string, purpose mail.Purpose) error
 	DeleteOTPByID(ctx context.Context, db DBTX, otpID string) error
 
 	InsertRefreshToken(ctx context.Context, db DBTX, userID, tokenHash string, expiresAt time.Time) error
@@ -302,13 +303,13 @@ func (r *PgxAuthRepository) DeleteUser(ctx context.Context, db DBTX, userID stri
 	return nil
 }
 
-func (r *PgxAuthRepository) InsertOTP(ctx context.Context, db DBTX, email string, userID *string, codeHash, purpose string, expiresAt time.Time) (string, error) {
+func (r *PgxAuthRepository) InsertOTP(ctx context.Context, db DBTX, email string, userID *string, codeHash string, purpose mail.Purpose, expiresAt time.Time) (string, error) {
 	var id string
 	err := db.QueryRow(ctx,
 		`INSERT INTO otp_codes (email, user_id, code_hash, purpose, expires_at)
 		 VALUES ($1, $2, $3, $4, $5)
 		 RETURNING id`,
-		email, userID, codeHash, purpose, expiresAt,
+		email, userID, codeHash, string(purpose), expiresAt,
 	).Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("inserting otp: %w", err)
@@ -316,7 +317,7 @@ func (r *PgxAuthRepository) InsertOTP(ctx context.Context, db DBTX, email string
 	return id, nil
 }
 
-func (r *PgxAuthRepository) GetActiveOTPForUpdate(ctx context.Context, db DBTX, email, purpose string) (OTPRow, error) {
+func (r *PgxAuthRepository) GetActiveOTPForUpdate(ctx context.Context, db DBTX, email string, purpose mail.Purpose) (OTPRow, error) {
 	var o OTPRow
 	err := db.QueryRow(ctx,
 		`SELECT id, code_hash
@@ -328,7 +329,7 @@ func (r *PgxAuthRepository) GetActiveOTPForUpdate(ctx context.Context, db DBTX, 
 		 ORDER BY created_at DESC
 		 LIMIT 1
 		 FOR UPDATE`,
-		email, purpose,
+		email, string(purpose),
 	).Scan(&o.ID, &o.CodeHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OTPRow{}, ErrNotFound
@@ -339,7 +340,7 @@ func (r *PgxAuthRepository) GetActiveOTPForUpdate(ctx context.Context, db DBTX, 
 	return o, nil
 }
 
-func (r *PgxAuthRepository) CountFailedOTPAttemptsSinceForUpdate(ctx context.Context, db DBTX, email, purpose string, since time.Time) (int, error) {
+func (r *PgxAuthRepository) CountFailedOTPAttemptsSinceForUpdate(ctx context.Context, db DBTX, email string, purpose mail.Purpose, since time.Time) (int, error) {
 	var attempts int
 	err := db.QueryRow(ctx,
 		`SELECT COUNT(*)
@@ -351,7 +352,7 @@ func (r *PgxAuthRepository) CountFailedOTPAttemptsSinceForUpdate(ctx context.Con
 		 	  AND attempted_at >= $3
 		 	FOR UPDATE
 		 ) AS locked_attempts`,
-		email, purpose, since,
+		email, string(purpose), since,
 	).Scan(&attempts)
 	if err != nil {
 		return 0, fmt.Errorf("counting failed otp attempts since for update: %w", err)
@@ -359,7 +360,7 @@ func (r *PgxAuthRepository) CountFailedOTPAttemptsSinceForUpdate(ctx context.Con
 	return attempts, nil
 }
 
-func (r *PgxAuthRepository) GetOldestFailedOTPAttemptSinceForUpdate(ctx context.Context, db DBTX, email, purpose string, since time.Time) (time.Time, error) {
+func (r *PgxAuthRepository) GetOldestFailedOTPAttemptSinceForUpdate(ctx context.Context, db DBTX, email string, purpose mail.Purpose, since time.Time) (time.Time, error) {
 	var attemptedAt time.Time
 	err := db.QueryRow(ctx,
 		`SELECT attempted_at
@@ -370,7 +371,7 @@ func (r *PgxAuthRepository) GetOldestFailedOTPAttemptSinceForUpdate(ctx context.
 		 ORDER BY attempted_at ASC
 		 LIMIT 1
 		 FOR UPDATE`,
-		email, purpose, since,
+		email, string(purpose), since,
 	).Scan(&attemptedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, ErrNotFound
@@ -381,11 +382,11 @@ func (r *PgxAuthRepository) GetOldestFailedOTPAttemptSinceForUpdate(ctx context.
 	return attemptedAt, nil
 }
 
-func (r *PgxAuthRepository) InsertFailedOTPAttempt(ctx context.Context, db DBTX, email string, userID *string, purpose string, attemptedAt time.Time) error {
+func (r *PgxAuthRepository) InsertFailedOTPAttempt(ctx context.Context, db DBTX, email string, userID *string, purpose mail.Purpose, attemptedAt time.Time) error {
 	_, err := db.Exec(ctx,
 		`INSERT INTO otp_failed_attempts (email, user_id, purpose, attempted_at)
 		 VALUES ($1, $2, $3, $4)`,
-		email, userID, purpose, attemptedAt,
+		email, userID, string(purpose), attemptedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting failed otp attempt: %w", err)
@@ -404,10 +405,10 @@ func (r *PgxAuthRepository) MarkOTPUsed(ctx context.Context, db DBTX, otpID stri
 	return nil
 }
 
-func (r *PgxAuthRepository) DeleteOTPsByEmailAndPurpose(ctx context.Context, db DBTX, email, purpose string) error {
+func (r *PgxAuthRepository) DeleteOTPsByEmailAndPurpose(ctx context.Context, db DBTX, email string, purpose mail.Purpose) error {
 	_, err := db.Exec(ctx,
 		`DELETE FROM otp_codes WHERE lower(email) = lower($1) AND purpose = $2`,
-		email, purpose,
+		email, string(purpose),
 	)
 	if err != nil {
 		return fmt.Errorf("deleting otps by email and purpose: %w", err)

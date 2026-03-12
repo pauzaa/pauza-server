@@ -68,16 +68,18 @@ var errBoom = errors.New("boom")
 func TestStart_ReplacesExistingOTPAndSendsEmail(t *testing.T) {
 	t.Parallel()
 
-	var deletedEmail, deletedPurpose string
-	var insertedEmail, insertedPurpose string
+	var deletedEmail string
+	var deletedPurpose mail.Purpose
+	var insertedEmail string
+	var insertedPurpose mail.Purpose
 
 	repo := &fakeAuthRepo{
-		deleteOTPsByEmailAndPurposeFn: func(_ context.Context, _ repository.DBTX, email, purpose string) error {
+		deleteOTPsByEmailAndPurposeFn: func(_ context.Context, _ repository.DBTX, email string, purpose mail.Purpose) error {
 			deletedEmail = email
 			deletedPurpose = purpose
 			return nil
 		},
-		insertOTPFn: func(_ context.Context, _ repository.DBTX, email string, userID *string, _ string, purpose string, _ time.Time) (string, error) {
+		insertOTPFn: func(_ context.Context, _ repository.DBTX, email string, userID *string, _ string, purpose mail.Purpose, _ time.Time) (string, error) {
 			if userID != nil {
 				t.Fatal("expected auth login OTP to be inserted without user_id")
 			}
@@ -116,8 +118,8 @@ func TestStart_SendFailure_CleansUpOTP(t *testing.T) {
 
 	var deletedOTP atomic.Bool
 	repo := &fakeAuthRepo{
-		deleteOTPsByEmailAndPurposeFn: func(context.Context, repository.DBTX, string, string) error { return nil },
-		insertOTPFn: func(context.Context, repository.DBTX, string, *string, string, string, time.Time) (string, error) {
+		deleteOTPsByEmailAndPurposeFn: func(context.Context, repository.DBTX, string, mail.Purpose) error { return nil },
+		insertOTPFn: func(context.Context, repository.DBTX, string, *string, string, mail.Purpose, time.Time) (string, error) {
 			return "otp-id", nil
 		},
 		deleteOTPByIDFn: func(_ context.Context, _ repository.DBTX, otpID string) error {
@@ -128,7 +130,7 @@ func TestStart_SendFailure_CleansUpOTP(t *testing.T) {
 		},
 	}
 	sender := &fakeSender{
-		sendOTPFn: func(context.Context, string, string, string) error { return errBoom },
+		sendOTPFn: func(context.Context, string, string, mail.Purpose) error { return errBoom },
 	}
 	svc := newTestService(repo, sender)
 
@@ -145,10 +147,10 @@ func TestVerifyOTP_CreatesUserAndReturnsTokens(t *testing.T) {
 	t.Parallel()
 
 	repo := &fakeAuthRepo{
-		getActiveOTPForUpdateFn: func(context.Context, repository.DBTX, string, string) (repository.OTPRow, error) {
+		getActiveOTPForUpdateFn: func(context.Context, repository.DBTX, string, mail.Purpose) (repository.OTPRow, error) {
 			return repository.OTPRow{ID: "otp-id", CodeHash: mustHashOTP("123456")}, nil
 		},
-		countFailedOTPAttemptsSinceForUpdateFn: func(context.Context, repository.DBTX, string, string, time.Time) (int, error) {
+		countFailedOTPAttemptsSinceForUpdateFn: func(context.Context, repository.DBTX, string, mail.Purpose, time.Time) (int, error) {
 			return 0, nil
 		},
 		markOTPUsedFn: func(context.Context, repository.DBTX, string) error { return nil },
@@ -194,20 +196,21 @@ func TestVerifyOTP_CreatesUserAndReturnsTokens(t *testing.T) {
 func TestVerifyOTP_WrongCode_RecordsAttempt(t *testing.T) {
 	t.Parallel()
 
-	var recordedEmail, recordedPurpose string
+	var recordedEmail string
+	var recordedPurpose mail.Purpose
 	repo := &fakeAuthRepo{
-		getActiveOTPForUpdateFn: func(context.Context, repository.DBTX, string, string) (repository.OTPRow, error) {
+		getActiveOTPForUpdateFn: func(context.Context, repository.DBTX, string, mail.Purpose) (repository.OTPRow, error) {
 			return repository.OTPRow{ID: "otp-id", CodeHash: mustHashOTP("123456")}, nil
 		},
-		countFailedOTPAttemptsSinceForUpdateFn: func(context.Context, repository.DBTX, string, string, time.Time) (int, error) {
+		countFailedOTPAttemptsSinceForUpdateFn: func(context.Context, repository.DBTX, string, mail.Purpose, time.Time) (int, error) {
 			return 0, nil
 		},
-		insertFailedOTPAttemptFn: func(_ context.Context, _ repository.DBTX, email string, _ *string, purpose string, _ time.Time) error {
+		insertFailedOTPAttemptFn: func(_ context.Context, _ repository.DBTX, email string, _ *string, purpose mail.Purpose, _ time.Time) error {
 			recordedEmail = email
 			recordedPurpose = purpose
 			return nil
 		},
-		getOldestFailedOTPAttemptSinceForUpdateFn: func(context.Context, repository.DBTX, string, string, time.Time) (time.Time, error) {
+		getOldestFailedOTPAttemptSinceForUpdateFn: func(context.Context, repository.DBTX, string, mail.Purpose, time.Time) (time.Time, error) {
 			return time.Now().UTC(), nil
 		},
 	}
@@ -229,13 +232,13 @@ func TestVerifyOTP_RateLimited(t *testing.T) {
 	t.Parallel()
 
 	repo := &fakeAuthRepo{
-		getActiveOTPForUpdateFn: func(context.Context, repository.DBTX, string, string) (repository.OTPRow, error) {
+		getActiveOTPForUpdateFn: func(context.Context, repository.DBTX, string, mail.Purpose) (repository.OTPRow, error) {
 			return repository.OTPRow{ID: "otp-id", CodeHash: mustHashOTP("123456")}, nil
 		},
-		countFailedOTPAttemptsSinceForUpdateFn: func(context.Context, repository.DBTX, string, string, time.Time) (int, error) {
+		countFailedOTPAttemptsSinceForUpdateFn: func(context.Context, repository.DBTX, string, mail.Purpose, time.Time) (int, error) {
 			return auth.MaxOTPAttempts, nil
 		},
-		getOldestFailedOTPAttemptSinceForUpdateFn: func(context.Context, repository.DBTX, string, string, time.Time) (time.Time, error) {
+		getOldestFailedOTPAttemptSinceForUpdateFn: func(context.Context, repository.DBTX, string, mail.Purpose, time.Time) (time.Time, error) {
 			return time.Now().UTC().Add(-2 * time.Minute), nil
 		},
 	}
@@ -258,10 +261,10 @@ func TestVerifyOTP_RetriesUsernameCollision(t *testing.T) {
 
 	var attempts atomic.Int32
 	repo := &fakeAuthRepo{
-		getActiveOTPForUpdateFn: func(context.Context, repository.DBTX, string, string) (repository.OTPRow, error) {
+		getActiveOTPForUpdateFn: func(context.Context, repository.DBTX, string, mail.Purpose) (repository.OTPRow, error) {
 			return repository.OTPRow{ID: "otp-id", CodeHash: mustHashOTP("123456")}, nil
 		},
-		countFailedOTPAttemptsSinceForUpdateFn: func(context.Context, repository.DBTX, string, string, time.Time) (int, error) {
+		countFailedOTPAttemptsSinceForUpdateFn: func(context.Context, repository.DBTX, string, mail.Purpose, time.Time) (int, error) {
 			return 0, nil
 		},
 		markOTPUsedFn: func(context.Context, repository.DBTX, string) error { return nil },

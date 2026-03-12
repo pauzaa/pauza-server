@@ -57,7 +57,7 @@ type LeaderboardRow struct {
 
 type DeviceTokenRow struct {
 	FCMToken string
-	Platform string
+	Platform DevicePlatform
 }
 
 type EntitlementListRow struct {
@@ -92,7 +92,7 @@ func (r *SocialRepository) EffectivePremiumActive(ctx context.Context, db DBTX, 
 	return active, nil
 }
 
-func (r *SocialRepository) RegisterDevice(ctx context.Context, db DBTX, userID, fcmToken, platform string) error {
+func (r *SocialRepository) RegisterDevice(ctx context.Context, db DBTX, userID, fcmToken string, platform DevicePlatform) error {
 	_, err := db.Exec(ctx, `
 		INSERT INTO device_tokens (user_id, fcm_token, platform, created_at, updated_at)
 		VALUES ($1, $2, $3, now(), now())
@@ -100,7 +100,7 @@ func (r *SocialRepository) RegisterDevice(ctx context.Context, db DBTX, userID, 
 		SET user_id = EXCLUDED.user_id,
 		    platform = EXCLUDED.platform,
 		    updated_at = now()
-	`, userID, fcmToken, platform)
+	`, userID, fcmToken, string(platform))
 	if err != nil {
 		return fmt.Errorf("registering device: %w", err)
 	}
@@ -227,10 +227,10 @@ func (r *SocialRepository) ListFriends(ctx context.Context, db DBTX, userID stri
 	return out, PaginationResult{Page: page, Limit: limit, Total: total}, rows.Err()
 }
 
-func (r *SocialRepository) ListFriendRequests(ctx context.Context, db DBTX, userID, direction string) ([]FriendRequestRow, error) {
+func (r *SocialRepository) ListFriendRequests(ctx context.Context, db DBTX, userID string, direction FriendRequestDirection) ([]FriendRequestRow, error) {
 	column := "requester_id"
 	joinExpr := "f.addressee_id"
-	if direction == "incoming" {
+	if direction == FriendRequestIncoming {
 		column = "addressee_id"
 		joinExpr = "f.requester_id"
 	}

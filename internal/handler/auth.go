@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/IsorilovA/pauza-server/internal/apperror"
-	"github.com/IsorilovA/pauza-server/internal/middleware"
 	"github.com/IsorilovA/pauza-server/internal/photostore"
 	"github.com/IsorilovA/pauza-server/internal/service"
 	"github.com/IsorilovA/pauza-server/internal/validate"
@@ -269,11 +268,7 @@ func (h *AuthHandler) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(startResponse{OTPRequired: out.OTPRequired}); err != nil {
-		h.logger.Error("encoding auth start response", "err", err)
-	}
+	writeJSON(w, h.logger, http.StatusOK, startResponse{OTPRequired: out.OTPRequired}, "auth-start")
 }
 
 // VerifyOTP handles POST /api/v1/auth/verify.
@@ -304,11 +299,7 @@ func (h *AuthHandler) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(authOutputToResponse(out)); err != nil {
-		h.logger.Error("encoding verify-otp response", "err", err)
-	}
+	writeJSON(w, h.logger, http.StatusOK, authOutputToResponse(out), "verify-otp")
 }
 
 // Refresh handles POST /api/v1/auth/refresh.
@@ -333,37 +324,27 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(refreshOutputToResponse(out)); err != nil {
-		h.logger.Error("encoding refresh response", "err", err)
-	}
+	writeJSON(w, h.logger, http.StatusOK, refreshOutputToResponse(out), "refresh")
 }
 
 func (h *AuthHandler) GetMe(w http.ResponseWriter, r *http.Request) {
-	user, ok := middleware.UserFromContext(r.Context())
-	if !ok || user.UserID == "" {
-		apperror.Unauthorized(w, "Missing or invalid authentication")
+	userID, ok := requireUser(w, r)
+	if !ok {
 		return
 	}
 
-	out, err := h.svc.GetMe(r.Context(), service.GetMeInput{UserID: user.UserID})
+	out, err := h.svc.GetMe(r.Context(), service.GetMeInput{UserID: userID})
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(userProfileToResponse(out)); err != nil {
-		h.logger.Error("encoding get-me response", "err", err)
-	}
+	writeJSON(w, h.logger, http.StatusOK, userProfileToResponse(out), "get-me")
 }
 
 func (h *AuthHandler) UpdateMe(w http.ResponseWriter, r *http.Request) {
-	user, ok := middleware.UserFromContext(r.Context())
-	if !ok || user.UserID == "" {
-		apperror.Unauthorized(w, "Missing or invalid authentication")
+	userID, ok := requireUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -389,7 +370,7 @@ func (h *AuthHandler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out, err := h.svc.UpdateMe(r.Context(), service.UpdateMeInput{
-		UserID:   user.UserID,
+		UserID:   userID,
 		Name:     req.Name,
 		Username: req.Username,
 	})
@@ -398,17 +379,12 @@ func (h *AuthHandler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(userProfileToResponse(out)); err != nil {
-		h.logger.Error("encoding update-me response", "err", err)
-	}
+	writeJSON(w, h.logger, http.StatusOK, userProfileToResponse(out), "update-me")
 }
 
 func (h *AuthHandler) UsernameAvailable(w http.ResponseWriter, r *http.Request) {
-	user, ok := middleware.UserFromContext(r.Context())
-	if !ok || user.UserID == "" {
-		apperror.Unauthorized(w, "Missing or invalid authentication")
+	userID, ok := requireUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -421,7 +397,7 @@ func (h *AuthHandler) UsernameAvailable(w http.ResponseWriter, r *http.Request) 
 	}
 
 	out, err := h.svc.CheckUsernameAvailable(r.Context(), service.UsernameAvailableInput{
-		UserID:   user.UserID,
+		UserID:   userID,
 		Username: username,
 	})
 	if err != nil {
@@ -429,37 +405,27 @@ func (h *AuthHandler) UsernameAvailable(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(usernameAvailableResponse{Available: out.Available}); err != nil {
-		h.logger.Error("encoding username-available response", "err", err)
-	}
+	writeJSON(w, h.logger, http.StatusOK, usernameAvailableResponse{Available: out.Available}, "username-available")
 }
 
 func (h *AuthHandler) GetNotificationPreferences(w http.ResponseWriter, r *http.Request) {
-	user, ok := middleware.UserFromContext(r.Context())
-	if !ok || user.UserID == "" {
-		apperror.Unauthorized(w, "Missing or invalid authentication")
+	userID, ok := requireUser(w, r)
+	if !ok {
 		return
 	}
 
-	out, err := h.svc.GetNotificationPreferences(r.Context(), service.GetNotificationPreferencesInput{UserID: user.UserID})
+	out, err := h.svc.GetNotificationPreferences(r.Context(), service.GetNotificationPreferencesInput{UserID: userID})
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(notificationPreferencesToResponse(out)); err != nil {
-		h.logger.Error("encoding get-notification-preferences response", "err", err)
-	}
+	writeJSON(w, h.logger, http.StatusOK, notificationPreferencesToResponse(out), "get-notification-preferences")
 }
 
 func (h *AuthHandler) UpdateNotificationPreferences(w http.ResponseWriter, r *http.Request) {
-	user, ok := middleware.UserFromContext(r.Context())
-	if !ok || user.UserID == "" {
-		apperror.Unauthorized(w, "Missing or invalid authentication")
+	userID, ok := requireUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -469,7 +435,7 @@ func (h *AuthHandler) UpdateNotificationPreferences(w http.ResponseWriter, r *ht
 	}
 
 	out, err := h.svc.UpdateNotificationPreferences(r.Context(), service.UpdateNotificationPreferencesInput{
-		UserID:      user.UserID,
+		UserID:      userID,
 		PushEnabled: req.PushEnabled,
 	})
 	if err != nil {
@@ -477,37 +443,27 @@ func (h *AuthHandler) UpdateNotificationPreferences(w http.ResponseWriter, r *ht
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(notificationPreferencesToResponse(out)); err != nil {
-		h.logger.Error("encoding update-notification-preferences response", "err", err)
-	}
+	writeJSON(w, h.logger, http.StatusOK, notificationPreferencesToResponse(out), "update-notification-preferences")
 }
 
 func (h *AuthHandler) GetPrivacyPreferences(w http.ResponseWriter, r *http.Request) {
-	user, ok := middleware.UserFromContext(r.Context())
-	if !ok || user.UserID == "" {
-		apperror.Unauthorized(w, "Missing or invalid authentication")
+	userID, ok := requireUser(w, r)
+	if !ok {
 		return
 	}
 
-	out, err := h.svc.GetPrivacyPreferences(r.Context(), service.GetPrivacyPreferencesInput{UserID: user.UserID})
+	out, err := h.svc.GetPrivacyPreferences(r.Context(), service.GetPrivacyPreferencesInput{UserID: userID})
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(privacyPreferencesToResponse(out)); err != nil {
-		h.logger.Error("encoding get-privacy-preferences response", "err", err)
-	}
+	writeJSON(w, h.logger, http.StatusOK, privacyPreferencesToResponse(out), "get-privacy-preferences")
 }
 
 func (h *AuthHandler) UpdatePrivacyPreferences(w http.ResponseWriter, r *http.Request) {
-	user, ok := middleware.UserFromContext(r.Context())
-	if !ok || user.UserID == "" {
-		apperror.Unauthorized(w, "Missing or invalid authentication")
+	userID, ok := requireUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -517,7 +473,7 @@ func (h *AuthHandler) UpdatePrivacyPreferences(w http.ResponseWriter, r *http.Re
 	}
 
 	out, err := h.svc.UpdatePrivacyPreferences(r.Context(), service.UpdatePrivacyPreferencesInput{
-		UserID:             user.UserID,
+		UserID:             userID,
 		LeaderboardVisible: req.LeaderboardVisible,
 	})
 	if err != nil {
@@ -525,17 +481,12 @@ func (h *AuthHandler) UpdatePrivacyPreferences(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(privacyPreferencesToResponse(out)); err != nil {
-		h.logger.Error("encoding update-privacy-preferences response", "err", err)
-	}
+	writeJSON(w, h.logger, http.StatusOK, privacyPreferencesToResponse(out), "update-privacy-preferences")
 }
 
 func (h *AuthHandler) UploadPhoto(w http.ResponseWriter, r *http.Request) {
-	user, ok := middleware.UserFromContext(r.Context())
-	if !ok || user.UserID == "" {
-		apperror.Unauthorized(w, "Missing or invalid authentication")
+	userID, ok := requireUser(w, r)
+	if !ok {
 		return
 	}
 	if h.photoStore == nil {
@@ -573,7 +524,7 @@ func (h *AuthHandler) UploadPhoto(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out, err := h.svc.UpdateProfilePhoto(r.Context(), service.UpdateProfilePhotoInput{
-		UserID:            user.UserID,
+		UserID:            userID,
 		ProfilePictureURL: photoURL,
 	})
 	if err != nil {
@@ -582,21 +533,16 @@ func (h *AuthHandler) UploadPhoto(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]string{"profile_picture_url": derefString(out.ProfilePictureURL)}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		h.logger.Error("encoding upload-photo response", "err", err)
-	}
+	writeJSON(w, h.logger, http.StatusOK, resp, "upload-photo")
 }
 
 func (h *AuthHandler) DeleteRequest(w http.ResponseWriter, r *http.Request) {
-	user, ok := middleware.UserFromContext(r.Context())
-	if !ok || user.UserID == "" {
-		apperror.Unauthorized(w, "Missing or invalid authentication")
+	userID, ok := requireUser(w, r)
+	if !ok {
 		return
 	}
 
-	out, err := h.svc.RequestAccountDeletion(r.Context(), service.DeleteAccountRequestInput{UserID: user.UserID})
+	out, err := h.svc.RequestAccountDeletion(r.Context(), service.DeleteAccountRequestInput{UserID: userID})
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -606,9 +552,8 @@ func (h *AuthHandler) DeleteRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuthHandler) DeleteConfirm(w http.ResponseWriter, r *http.Request) {
-	user, ok := middleware.UserFromContext(r.Context())
-	if !ok || user.UserID == "" {
-		apperror.Unauthorized(w, "Missing or invalid authentication")
+	userID, ok := requireUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -622,7 +567,7 @@ func (h *AuthHandler) DeleteConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out, err := h.svc.ConfirmAccountDeletion(r.Context(), service.DeleteAccountConfirmInput{
-		UserID: user.UserID,
+		UserID: userID,
 		OTP:    req.OTP,
 	})
 	if err != nil {
@@ -649,14 +594,6 @@ func ValidatePhotoUpload(file multipart.File) string {
 		return ""
 	default:
 		return "photo must be a JPEG or PNG"
-	}
-}
-
-func writeMessageResponse(w http.ResponseWriter, logger *slog.Logger, status int, message string, op string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(messageResponse{Message: message}); err != nil {
-		logger.Error("encoding "+op+" response", "err", err)
 	}
 }
 
