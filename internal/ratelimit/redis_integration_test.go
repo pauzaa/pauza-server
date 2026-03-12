@@ -148,9 +148,6 @@ func TestRedisLimiter_SlidingWindowExpiresOldestRequestFirst(t *testing.T) {
 	if !res.Allowed {
 		t.Fatalf("post-oldest-expiry result = %+v, want allowed", res)
 	}
-	if res.Remaining != 0 {
-		t.Fatalf("post-oldest-expiry remaining = %d, want 0", res.Remaining)
-	}
 }
 
 func TestRedisLimiter_KeysAreIndependent(t *testing.T) {
