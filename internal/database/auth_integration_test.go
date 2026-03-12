@@ -29,8 +29,8 @@ func insertTestUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool, email
 	t.Helper()
 	var userID string
 	err := pool.QueryRow(ctx,
-		`INSERT INTO users (email, username, email_verified)
-		 VALUES ($1, $2, true)
+		`INSERT INTO users (email, username)
+		 VALUES ($1, $2)
 		 RETURNING id`,
 		email, username,
 	).Scan(&userID)

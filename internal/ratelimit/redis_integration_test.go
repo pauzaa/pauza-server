@@ -111,7 +111,7 @@ func TestRedisLimiter_WindowReset(t *testing.T) {
 func TestRedisLimiter_SlidingWindowExpiresOldestRequestFirst(t *testing.T) {
 	client := testRedisClient(t)
 	ctx := context.Background()
-	lim := ratelimit.NewRedisLimiter(client, 2, 250*time.Millisecond, ratelimit.WithPrefix(testRedisPrefix(t)))
+	lim := ratelimit.NewRedisLimiter(client, 2, 2*time.Second, ratelimit.WithPrefix(testRedisPrefix(t)))
 
 	res, err := lim.Allow(ctx, "verify:127.0.0.1")
 	if err != nil {
@@ -121,7 +121,7 @@ func TestRedisLimiter_SlidingWindowExpiresOldestRequestFirst(t *testing.T) {
 		t.Fatalf("first result = %+v, want allowed with remaining 1", res)
 	}
 
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 
 	res, err = lim.Allow(ctx, "verify:127.0.0.1")
 	if err != nil {
@@ -139,7 +139,7 @@ func TestRedisLimiter_SlidingWindowExpiresOldestRequestFirst(t *testing.T) {
 		t.Fatalf("third result = %+v, want denied", res)
 	}
 
-	time.Sleep(120 * time.Millisecond)
+	time.Sleep(1000 * time.Millisecond)
 
 	res, err = lim.Allow(ctx, "verify:127.0.0.1")
 	if err != nil {

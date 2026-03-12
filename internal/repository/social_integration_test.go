@@ -88,7 +88,6 @@ func insertAggregateRow(t *testing.T, pool DBTX, userID, localDay string, effect
 }
 
 func TestSocialRepository_LeaderboardQueries(t *testing.T) {
-	t.Parallel()
 
 	pool := testSocialRepoPool(t)
 	repo := NewSocialRepository()
@@ -177,7 +176,6 @@ func TestSocialRepository_LeaderboardQueries(t *testing.T) {
 }
 
 func TestPgxSyncRepository_SyncStreakDailyAggregates_RefreshesLeaderboardMetrics(t *testing.T) {
-	t.Parallel()
 
 	pool := testSocialRepoPool(t)
 	repo := NewPgxSyncRepository()

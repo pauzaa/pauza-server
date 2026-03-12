@@ -227,7 +227,7 @@ func TestIntegration_Sync_FirstSync_AllTables(t *testing.T) {
 		t.Fatalf("insert restriction_session: %v", err)
 	}
 	_, err = pool.Exec(ctx, `INSERT INTO restriction_lifecycle_events (user_id, id, session_id, mode_id, action, source, reason, occurred_at, created_at)
-		VALUES ($1,'ev1','sess1','mode1','START','manual','x',1000,1100)`, auth.User.ID)
+		VALUES ($1,'ev1','sess1','mode1','START','manual','manual',1000,1100)`, auth.User.ID)
 	if err != nil {
 		t.Fatalf("insert restriction_lifecycle_event: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestIntegration_Sync_RestrictionLifecycleCursorUsesCreatedAt(t *testing.T) 
 		t.Fatalf("insert session: %v", err)
 	}
 	_, err = pool.Exec(ctx, `INSERT INTO restriction_lifecycle_events (user_id, id, session_id, mode_id, action, source, reason, occurred_at, created_at)
-		VALUES ($1,'ev1','sess1','mode1','START','manual','x',900,1000)`, auth.User.ID)
+		VALUES ($1,'ev1','sess1','mode1','START','manual','manual',900,1000)`, auth.User.ID)
 	if err != nil {
 		t.Fatalf("insert event: %v", err)
 	}
@@ -460,7 +460,7 @@ func TestIntegration_Sync_CascadeTombstonesReturnedOnFullRestore(t *testing.T) {
 		t.Fatalf("insert session: %v", err)
 	}
 	_, err = pool.Exec(ctx, `INSERT INTO restriction_lifecycle_events (user_id, id, session_id, mode_id, action, source, reason, occurred_at, created_at)
-		VALUES ($1,'ev1','sess1','mode1','START','manual','x',1000,1100)`, auth.User.ID)
+		VALUES ($1,'ev1','sess1','mode1','START','manual','manual',1000,1100)`, auth.User.ID)
 	if err != nil {
 		t.Fatalf("insert event: %v", err)
 	}

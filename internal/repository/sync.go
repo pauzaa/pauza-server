@@ -512,7 +512,7 @@ func (r *PgxSyncRepository) SyncRestrictionLifecycleEvents(ctx context.Context, 
 
 	rows, err := db.Query(ctx, `SELECT id, session_id, mode_id, action, source, reason, occurred_at, created_at
 		FROM restriction_lifecycle_events
-		WHERE user_id = $1 AND ($2 = 0 OR server_created_at > $2)
+		WHERE user_id = $1 AND ($2 = 0 OR created_at > $2)
 		ORDER BY id`, userID, in.LastSyncedAt)
 	if err != nil {
 		return syncmodel.TableChanges[syncmodel.RestrictionLifecycleEvent, string]{}, fmt.Errorf("listing changed restriction_lifecycle_events: %w", err)

@@ -528,10 +528,10 @@ func leaderboardEntriesQuery(metric LeaderboardMetric) string {
 			       COALESCE(m.total_focus_time_ms, 0) AS total_focus_time_ms
 			FROM users u
 			LEFT JOIN leaderboard_metrics m ON m.user_id = u.id
-			WHERE u.leaderboard_visible = true
 		)
 		SELECT rank, id, name, username, profile_picture_url, leaderboard_visible, current_streak_days, total_focus_time_ms
 		FROM ranked
+		WHERE leaderboard_visible = true
 		ORDER BY rank
 		LIMIT $1 OFFSET $2
 	`, leaderboardMetricOrderExpr(metric))

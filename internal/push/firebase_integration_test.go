@@ -95,8 +95,8 @@ func TestFirebaseSenderIntegrationDeletesUnregisteredToken(t *testing.T) {
 		responses: []*messaging.BatchResponse{
 			{
 				Responses: []*messaging.SendResponse{
-					{Success: true},
 					{Success: false, Error: errors.New("gone")},
+					{Success: true},
 				},
 			},
 		},
