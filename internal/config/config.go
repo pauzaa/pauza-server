@@ -77,6 +77,14 @@ type Config struct {
 	AdminRateLimit         int           `envconfig:"ADMIN_RATE_LIMIT" default:"30"`
 	AdminRateWindow        time.Duration `envconfig:"ADMIN_RATE_WINDOW" default:"1m"`
 
+	// AI analysis (optional; endpoints are disabled when AIProvider is empty)
+	AIProvider   string        `envconfig:"AI_PROVIDER"`
+	OpenAIAPIKey string        `envconfig:"OPENAI_API_KEY"`
+	GeminiAPIKey string        `envconfig:"GEMINI_API_KEY"`
+	AIModel      string        `envconfig:"AI_MODEL"`
+	AIRateLimit  int           `envconfig:"AI_RATE_LIMIT" default:"10"`
+	AIRateWindow time.Duration `envconfig:"AI_RATE_WINDOW" default:"1h"`
+
 	// Cleanup job
 	CleanupInterval    time.Duration `envconfig:"CLEANUP_INTERVAL" default:"1h"`
 	OTPRetentionPeriod time.Duration `envconfig:"OTP_RETENTION_PERIOD" default:"24h"`
@@ -175,6 +183,10 @@ func (c *Config) validate() error {
 		return err
 	}
 
+	if err := c.validateAI(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -236,6 +248,38 @@ func validateEnum(name, value string, allowed map[string]bool, ordered []string)
 
 func enumValues(ordered []string) string {
 	return strings.Join(ordered, ", ")
+}
+
+var validAIProviders = map[string]bool{
+	"openai": true,
+	"gemini": true,
+}
+
+func (c *Config) validateAI() error {
+	if c.AIProvider == "" {
+		return nil
+	}
+	c.AIProvider = strings.ToLower(c.AIProvider)
+	if err := validateEnum("AI_PROVIDER", c.AIProvider, validAIProviders, []string{"openai", "gemini"}); err != nil {
+		return err
+	}
+	switch c.AIProvider {
+	case "openai":
+		if strings.TrimSpace(c.OpenAIAPIKey) == "" {
+			return fmt.Errorf("OPENAI_API_KEY is required when AI_PROVIDER is openai")
+		}
+	case "gemini":
+		if strings.TrimSpace(c.GeminiAPIKey) == "" {
+			return fmt.Errorf("GEMINI_API_KEY is required when AI_PROVIDER is gemini")
+		}
+	}
+	if c.AIRateLimit <= 0 {
+		return fmt.Errorf("AI_RATE_LIMIT must be positive, got %d", c.AIRateLimit)
+	}
+	if c.AIRateWindow <= 0 {
+		return fmt.Errorf("AI_RATE_WINDOW must be positive, got %s", c.AIRateWindow)
+	}
+	return nil
 }
 
 func validateTrustedProxies(value string) error {
@@ -316,6 +360,23 @@ func LoadSeedAdmin() (*SeedAdminConfig, error) {
 		return nil, fmt.Errorf("validating seed-admin config: %w", err)
 	}
 	return &cfg, nil
+}
+
+// AIEnabled reports whether AI analysis endpoints should be mounted.
+func (c *Config) AIEnabled() bool {
+	return c.AIProvider != ""
+}
+
+// AIAPIKey returns the API key for the configured AI provider.
+func (c *Config) AIAPIKey() string {
+	switch c.AIProvider {
+	case "openai":
+		return c.OpenAIAPIKey
+	case "gemini":
+		return c.GeminiAPIKey
+	default:
+		return ""
+	}
 }
 
 // ParseTrustedProxies parses the comma-separated TrustedProxies string into

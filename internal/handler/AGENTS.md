@@ -2,7 +2,7 @@
 > See `/AGENTS.md` for shared HTTP rules and `internal/AGENTS.md` for layer boundaries.
 
 ## OVERVIEW
-`internal/handler` is the HTTP boundary. Handlers decode requests, validate fields, call services, and translate service results into stable JSON responses across auth, profile, social, sync, admin, and webhook domains.
+`internal/handler` is the HTTP boundary. Handlers decode requests, validate fields, call services, and translate service results into stable JSON responses across auth, profile, social, sync, admin, webhook, and AI analysis domains.
 
 ## WHERE TO LOOK
 | Task | Location | Notes |
@@ -12,6 +12,7 @@
 | Sync endpoint | `internal/handler/sync.go` | table sync request validation + service bridge |
 | Admin endpoints | `internal/handler/admin.go` | admin login, users/stats, entitlement override operations |
 | RevenueCat webhook endpoint | `internal/handler/webhook.go` | signature verification + webhook dispatch |
+| AI analysis endpoints | `internal/handler/ai.go` | usage analysis, focus schedule, daily report, addiction check |
 | Health probes | `internal/handler/health.go` | `/live` and `/ready` contracts |
 | Handler integration tests | `internal/handler/*_integration_test.go` | production router + DB-backed auth/social/sync flows |
 | JSON error envelope | `internal/apperror/apperror.go` | standard codes, messages, details |

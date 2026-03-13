@@ -158,7 +158,10 @@ func setupTestServer(t *testing.T) (*httptest.Server, *pgxpool.Pool, *captureSen
 	cfg.PhotoStorageDir = photoDir
 	cfg.PhotoPublicBaseURL = "https://api.test/photos"
 
-	srv, cleanup := server.New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, sender, nil, nil)
+	srv, cleanup, err := server.New(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, sender, nil, nil)
+	if err != nil {
+		t.Fatalf("creating server: %v", err)
+	}
 	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(func() {
 		ts.Close()

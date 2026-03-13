@@ -18,6 +18,7 @@
 | SMTP and OTP delivery | `internal/mail/` | `mail.Sender` abstraction and SMTP sender |
 | Push delivery and user opt-outs | `internal/push/` | noop/firebase senders and preference gate |
 | RevenueCat integration | `internal/revenuecat/` | API client + entitlement reconciliation inputs |
+| AI provider abstraction | `internal/ai/` | OpenAI and Gemini behind `ai.Provider` interface |
 | Sync payload models | `internal/syncmodel/` | request/response protocol models and validation conversion |
 | Env parsing/validation | `internal/config/` | `envconfig` tags, defaults, semantic checks |
 
@@ -29,7 +30,7 @@
 - `middleware/` owns request-scoped cross-cutting behavior; ordering in `internal/server/server.go` is significant.
 - `server/` owns router composition only; handlers/services/repositories own request logic.
 - `database/` is for process/runtime helpers, not feature-specific request queries.
-- `mail/`, `validate/`, `apperror/`, and `redact/` are shared support packages; keep their contracts narrow.
+- `mail/`, `validate/`, `apperror/`, `redact/`, and `ai/` are shared support packages; keep their contracts narrow.
 
 ## ANTI-PATTERNS
 - Do not open DB transactions in handlers.
@@ -50,3 +51,4 @@
 - `internal/server/AGENTS.md`
 - `internal/service/AGENTS.md`
 - `internal/syncmodel/AGENTS.md`
+- `internal/ai/AGENTS.md`

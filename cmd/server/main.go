@@ -110,7 +110,13 @@ func main() {
 	}
 
 	// 7. Create HTTP server
-	srv, cleanup := server.New(cfg, logger, pool, emailSender, pushSender, redisClient)
+	srv, cleanup, err := server.New(context.Background(), cfg, logger, pool, emailSender, pushSender, redisClient)
+	if err != nil {
+		logger.Error("failed to create HTTP server", "err", err)
+		_ = redisClient.Close()
+		pool.Close()
+		os.Exit(1)
+	}
 
 	// 8. Start background cleanup job for stale auth data.
 	// The process context is cancelled during shutdown so the cleanup

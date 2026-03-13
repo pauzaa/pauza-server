@@ -29,6 +29,8 @@ tags:
     description: RevenueCat subscription webhooks
   - name: Admin
     description: Admin dashboard endpoints
+  - name: AI
+    description: AI-powered usage analysis (premium, rate-limited)
 
 # ---------------------------------------------------------------------------
 # Security schemes
@@ -1615,6 +1617,181 @@ components:
         pagination:
           $ref: "#/components/schemas/AdminPagination"
 
+    # -- AI Analysis --------------------------------------------------------
+    AppUsageItem:
+      type: object
+      required: [app_identifier, app_name, total_time_ms, launch_count]
+      properties:
+        app_identifier:
+          type: string
+          description: Platform bundle/package identifier.
+        app_name:
+          type: string
+        total_time_ms:
+          type: integer
+          format: int64
+        launch_count:
+          type: integer
+        category:
+          type: string
+          description: Optional app category (e.g. social, entertainment).
+
+    AnalyzeUsageRequest:
+      type: object
+      additionalProperties: false
+      required: [period, app_usage]
+      properties:
+        period:
+          type: string
+          enum: [daily, weekly]
+        app_usage:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppUsageItem"
+          minItems: 1
+        total_screen_time_ms:
+          type: integer
+          format: int64
+        total_unlocks:
+          type: integer
+
+    ScheduleSlot:
+      type: object
+      properties:
+        days:
+          type: array
+          items:
+            type: integer
+        start_minute:
+          type: integer
+        end_minute:
+          type: integer
+
+    SuggestScheduleRequest:
+      type: object
+      additionalProperties: false
+      required: [app_usage, preferred_focus_hours, timezone]
+      properties:
+        app_usage:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppUsageItem"
+          minItems: 1
+        current_schedules:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScheduleSlot"
+        preferred_focus_hours:
+          type: integer
+          minimum: 1
+          maximum: 16
+        timezone:
+          type: string
+
+    FocusSessionSummary:
+      type: object
+      properties:
+        started_at:
+          type: integer
+          format: int64
+        ended_at:
+          type: integer
+          format: int64
+        pause_count:
+          type: integer
+        effective_ms:
+          type: integer
+          format: int64
+
+    DailyReportRequest:
+      type: object
+      additionalProperties: false
+      required: [date, app_usage]
+      properties:
+        date:
+          type: string
+          format: date
+        app_usage:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppUsageItem"
+          minItems: 1
+        focus_sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/FocusSessionSummary"
+        total_screen_time_ms:
+          type: integer
+          format: int64
+        total_unlocks:
+          type: integer
+        streak_days:
+          type: integer
+
+    DayAppUsage:
+      type: object
+      required: [date, apps]
+      properties:
+        date:
+          type: string
+          format: date
+        apps:
+          type: array
+          items:
+            $ref: "#/components/schemas/AppUsageItem"
+
+    DayScreenTime:
+      type: object
+      required: [date, total_screen_time_ms, total_unlocks]
+      properties:
+        date:
+          type: string
+          format: date
+        total_screen_time_ms:
+          type: integer
+          format: int64
+        total_unlocks:
+          type: integer
+
+    DayFirstUnlock:
+      type: object
+      required: [date, time_of_day_minute]
+      properties:
+        date:
+          type: string
+          format: date
+        time_of_day_minute:
+          type: integer
+          description: Minute of day (0-1439) when the user first unlocked their phone.
+
+    DetectAddictionRequest:
+      type: object
+      additionalProperties: false
+      required: [app_usage_history, daily_screen_time_history]
+      properties:
+        app_usage_history:
+          type: array
+          items:
+            $ref: "#/components/schemas/DayAppUsage"
+          minItems: 1
+        daily_screen_time_history:
+          type: array
+          items:
+            $ref: "#/components/schemas/DayScreenTime"
+          minItems: 1
+        first_unlock_times:
+          type: array
+          items:
+            $ref: "#/components/schemas/DayFirstUnlock"
+
+    AnalysisResponse:
+      type: object
+      required: [analysis]
+      properties:
+        analysis:
+          type: string
+          description: AI-generated analysis text (may contain markdown).
+
   # -------------------------------------------------------------------------
   # Reusable response components
   # -------------------------------------------------------------------------
@@ -3187,6 +3364,190 @@ paths:
                 $ref: "#/components/schemas/AdminListEntitlementsResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # =========================================================================
+  # AI Analysis (premium, rate-limited 10 req/hour per user)
+  # =========================================================================
+  /api/v1/ai/usage-analysis:
+    post:
+      operationId: aiAnalyzeUsage
+      tags: [AI]
+      summary: Analyze phone usage patterns
+      description: |
+        Sends the client-provided app usage data to an AI provider for analysis.
+        Requires a user JWT and an active premium subscription.
+        Rate limited to 10 requests per hour per user (configurable via `AI_RATE_LIMIT` / `AI_RATE_WINDOW`).
+        Request body limit is 5 MiB.
+      security:
+        - UserJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnalyzeUsageRequest"
+      responses:
+        "200":
+          description: AI-generated usage analysis.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalysisResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/SubscriptionRequired"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/ai/focus-schedule:
+    post:
+      operationId: aiSuggestSchedule
+      tags: [AI]
+      summary: Suggest focus schedules
+      description: |
+        Suggests optimal focus schedules based on app usage patterns.
+        Requires a user JWT and an active premium subscription.
+        Rate limited to 10 requests per hour per user.
+        Request body limit is 5 MiB.
+      security:
+        - UserJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SuggestScheduleRequest"
+      responses:
+        "200":
+          description: AI-generated schedule suggestion.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalysisResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/SubscriptionRequired"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/ai/daily-report:
+    post:
+      operationId: aiDailyReport
+      tags: [AI]
+      summary: Generate daily usage report
+      description: |
+        Generates a daily screen time report with highlights, wins, and improvement areas.
+        Requires a user JWT and an active premium subscription.
+        Rate limited to 10 requests per hour per user.
+        Request body limit is 5 MiB.
+      security:
+        - UserJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DailyReportRequest"
+      responses:
+        "200":
+          description: AI-generated daily report.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalysisResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/SubscriptionRequired"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/ai/addiction-check:
+    post:
+      operationId: aiDetectAddiction
+      tags: [AI]
+      summary: Detect addictive behavior patterns
+      description: |
+        Analyzes multi-day usage history for addictive patterns such as escalating usage,
+        excessive social media, high unlock frequency, and early-morning phone checking.
+        Requires a user JWT and an active premium subscription.
+        Rate limited to 10 requests per hour per user.
+        Request body limit is 5 MiB.
+      security:
+        - UserJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DetectAddictionRequest"
+      responses:
+        "200":
+          description: AI-generated addiction risk assessment.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalysisResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/SubscriptionRequired"
         "422":
           $ref: "#/components/responses/ValidationError"
         "429":

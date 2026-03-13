@@ -88,6 +88,17 @@ func mountRoutes(r chi.Router, cfg *config.Config, logger *slog.Logger, pool *pg
 			})
 
 			r.With(authmw.RateLimit(limiters.sync, cfg.SyncRateLimit, authmw.UserIDKey)).Post("/sync", deps.syncHandler.Sync)
+
+			if deps.aiHandler != nil {
+				r.Route("/ai", func(r chi.Router) {
+					r.Use(limitBodySize(5 << 20))
+					r.Use(authmw.RateLimit(limiters.ai, cfg.AIRateLimit, authmw.UserIDKey))
+					r.Post("/usage-analysis", deps.aiHandler.AnalyzeUsage)
+					r.Post("/focus-schedule", deps.aiHandler.SuggestSchedule)
+					r.Post("/daily-report", deps.aiHandler.GenerateDailyReport)
+					r.Post("/addiction-check", deps.aiHandler.DetectAddiction)
+				})
+			}
 		})
 	})
 }

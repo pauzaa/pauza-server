@@ -5,6 +5,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/IsorilovA/pauza-server/internal/ai"
 	"github.com/IsorilovA/pauza-server/internal/config"
 	"github.com/IsorilovA/pauza-server/internal/handler"
 	"github.com/IsorilovA/pauza-server/internal/mail"
@@ -21,9 +22,10 @@ type appDependencies struct {
 	socialHandler  *handler.SocialHandler
 	adminHandler   *handler.AdminHandler
 	webhookHandler *handler.WebhookHandler
+	aiHandler      *handler.AIHandler // nil when AI_PROVIDER is not configured
 }
 
-func buildDependencies(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mail.Sender, pushSender push.Sender) appDependencies {
+func buildDependencies(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mail.Sender, pushSender push.Sender, aiProvider ai.Provider) appDependencies {
 	authRepo := repository.NewPgxAuthRepository()
 	adminRepo := repository.NewPgxAdminRepository()
 	entitlementRepo := repository.NewPgxEntitlementRepository()
@@ -63,11 +65,19 @@ func buildDependencies(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Po
 	webhookService := service.NewWebhookService(pool, entitlementRepo, rcClient, authRepo, logger, service.WithOverrideChecker(adminRepo))
 	webhookHandler := handler.NewWebhookHandler(webhookService, cfg.RevenueCatWebhookSecret, logger)
 
+	var aiHandler *handler.AIHandler
+	if aiProvider != nil {
+		socialRepo := repository.NewSocialRepository()
+		aiService := service.NewAIService(aiProvider, pool, socialRepo, logger)
+		aiHandler = handler.NewAIHandler(aiService, logger)
+	}
+
 	return appDependencies{
 		authHandler:    authHandler,
 		syncHandler:    syncHandler,
 		socialHandler:  socialHandler,
 		adminHandler:   adminHandler,
 		webhookHandler: webhookHandler,
+		aiHandler:      aiHandler,
 	}
 }

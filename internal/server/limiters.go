@@ -17,6 +17,7 @@ type appLimiters struct {
 	sync      ratelimit.Limiter
 	webhook   ratelimit.Limiter
 	admin     ratelimit.Limiter
+	ai        ratelimit.Limiter // nil when AI is not configured
 }
 
 func buildLimiters(cfg *config.Config, logger *slog.Logger, redisClient *redis.Client) (appLimiters, func()) {
@@ -34,6 +35,10 @@ func buildLimiters(cfg *config.Config, logger *slog.Logger, redisClient *redis.C
 		admin:     newLimiter("admin", cfg.AdminRateLimit, cfg.AdminRateWindow),
 	}
 
+	if cfg.AIEnabled() {
+		limiters.ai = newLimiter("ai", cfg.AIRateLimit, cfg.AIRateWindow)
+	}
+
 	cleanup := func() {
 		limiters.auth.Stop()
 		limiters.verifyOTP.Stop()
@@ -41,6 +46,9 @@ func buildLimiters(cfg *config.Config, logger *slog.Logger, redisClient *redis.C
 		limiters.sync.Stop()
 		limiters.webhook.Stop()
 		limiters.admin.Stop()
+		if limiters.ai != nil {
+			limiters.ai.Stop()
+		}
 	}
 
 	return limiters, cleanup

@@ -36,6 +36,7 @@ Child docs:
 - `internal/server/AGENTS.md`
 - `internal/service/AGENTS.md`
 - `internal/syncmodel/AGENTS.md`
+- `internal/ai/AGENTS.md`
 - `docs/AGENTS.md`
 - `migrations/AGENTS.md`
 
@@ -49,6 +50,7 @@ Child docs:
 | HTTP boundary | `internal/handler/` | request decoding, validation, response/error mapping |
 | JWT/OTP/password primitives | `internal/auth/` | token and credential primitives |
 | Rate limiting | `internal/ratelimit/` + `internal/middleware/ratelimit.go` | Redis backends + HTTP header behavior |
+| AI provider abstraction | `internal/ai/` | OpenAI and Gemini behind a `Provider` interface |
 | DB runtime helpers | `internal/database/` | connect, migrate, seed, cleanup, destructive integration test helpers |
 | API contract | `docs/openapi.yaml` + `BACKEND_SPEC.md` | stable response and error semantics |
 
@@ -56,13 +58,13 @@ Child docs:
 - Env is loaded via `envconfig`; `internal/config/config.go` owns defaults and validation.
 - Migrations are applied with `cmd/migrate`, not during `cmd/server` startup.
 - Health probes stay outside `/api/v1`: `/live` is process-only, `/ready` pings Postgres.
-- Layering is `handler -> service -> repository`; support packages (`auth`, `middleware`, `ratelimit`, `mail`, `revenuecat`) stay narrowly scoped.
+- Layering is `handler -> service -> repository`; support packages (`auth`, `middleware`, `ratelimit`, `mail`, `revenuecat`, `ai`) stay narrowly scoped.
 - Request IDs are echoed back in `X-Request-Id`.
 - Request bodies default to 1 MiB and use explicit overrides only where needed (e.g. photo upload).
 - Runtime rate limiting is Redis-backed and wrapped with fail-open behavior so backend outages degrade gracefully after startup.
 
 ## ANTI-PATTERNS
-- Never log or commit secrets (`JWT_SECRET`, DB URLs, SMTP creds, Firebase keys, webhook secrets, `.env.dev`, `.env.prod`).
+- Never log or commit secrets (`JWT_SECRET`, DB URLs, SMTP creds, Firebase keys, webhook secrets, AI API keys, `.env.dev`, `.env.prod`).
 - Do not widen `TRUSTED_PROXIES` casually; incorrect trust lets clients spoof source IPs.
 - Do not move business logic into handlers or HTTP concerns into repositories.
 - Do not use unbounded/non-parameterized SQL in repositories.

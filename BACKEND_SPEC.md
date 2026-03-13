@@ -15,6 +15,7 @@
 11. [Error Handling](#11-error-handling)
 12. [Deployment](#12-deployment)
 13. [Out of Scope](#13-out-of-scope)
+14. [AI Analysis](#14-ai-analysis)
 
 ---
 
@@ -1527,6 +1528,162 @@ When the database is unreachable:
 }
 ```
 
+### 5.11 AI Analysis
+
+All AI endpoints require a user JWT and an active premium subscription. They are
+rate limited to 10 requests per hour per user (configurable via `AI_RATE_LIMIT` /
+`AI_RATE_WINDOW`). Request body limit is 5 MiB. The AI provider (OpenAI or
+Gemini) is selected via the `AI_PROVIDER` environment variable; endpoints are
+disabled when `AI_PROVIDER` is not set.
+
+Usage data is sent by the client in each request and is not persisted on the
+server. The server composes a system prompt, forwards the data to the AI
+provider, and returns the AI-generated text.
+
+**Common response shape:**
+
+```json
+{
+  "analysis": "AI-generated markdown text..."
+}
+```
+
+#### `POST /api/v1/ai/usage-analysis`
+
+Analyze phone usage patterns for a daily or weekly period.
+
+**Request:**
+
+```json
+{
+  "period": "daily",
+  "app_usage": [
+    {
+      "app_identifier": "com.instagram.android",
+      "app_name": "Instagram",
+      "total_time_ms": 3600000,
+      "launch_count": 45,
+      "category": "social"
+    }
+  ],
+  "total_screen_time_ms": 28800000,
+  "total_unlocks": 120
+}
+```
+
+**Validation:**
+
+- `period`: required, must be `daily` or `weekly`.
+- `app_usage`: required, must have at least one entry.
+
+| Status | Condition |
+|---|---|
+| `200` | AI analysis returned |
+| `401` | Missing or invalid JWT |
+| `403` | No active premium subscription |
+| `422` | Invalid request body |
+| `429` | Rate limit exceeded |
+| `500` | AI provider error |
+
+#### `POST /api/v1/ai/focus-schedule`
+
+Suggest optimal focus schedules based on usage patterns.
+
+**Request:**
+
+```json
+{
+  "app_usage": [ ... ],
+  "current_schedules": [
+    { "days": [1,2,3,4,5], "start_minute": 540, "end_minute": 1020 }
+  ],
+  "preferred_focus_hours": 4,
+  "timezone": "Asia/Almaty"
+}
+```
+
+**Validation:**
+
+- `app_usage`: required, at least one entry.
+- `preferred_focus_hours`: required, 1-16.
+- `timezone`: required, non-empty.
+
+| Status | Condition |
+|---|---|
+| `200` | Schedule suggestion returned |
+| `401` | Missing or invalid JWT |
+| `403` | No active premium subscription |
+| `422` | Invalid request body |
+| `429` | Rate limit exceeded |
+| `500` | AI provider error |
+
+#### `POST /api/v1/ai/daily-report`
+
+Generate a daily screen time report with highlights and improvement areas.
+
+**Request:**
+
+```json
+{
+  "date": "2026-03-14",
+  "app_usage": [ ... ],
+  "focus_sessions": [
+    { "started_at": 1710400000000, "ended_at": 1710403600000, "pause_count": 2, "effective_ms": 3200000 }
+  ],
+  "total_screen_time_ms": 25200000,
+  "total_unlocks": 95,
+  "streak_days": 5
+}
+```
+
+**Validation:**
+
+- `date`: required, non-empty.
+- `app_usage`: required, at least one entry.
+
+| Status | Condition |
+|---|---|
+| `200` | Daily report returned |
+| `401` | Missing or invalid JWT |
+| `403` | No active premium subscription |
+| `422` | Invalid request body |
+| `429` | Rate limit exceeded |
+| `500` | AI provider error |
+
+#### `POST /api/v1/ai/addiction-check`
+
+Analyze multi-day usage history for addictive behavior patterns.
+
+**Request:**
+
+```json
+{
+  "app_usage_history": [
+    { "date": "2026-03-14", "apps": [ ... ] }
+  ],
+  "daily_screen_time_history": [
+    { "date": "2026-03-14", "total_screen_time_ms": 28800000, "total_unlocks": 120 }
+  ],
+  "first_unlock_times": [
+    { "date": "2026-03-14", "time_of_day_minute": 420 }
+  ]
+}
+```
+
+**Validation:**
+
+- `app_usage_history`: required, at least one entry.
+- `daily_screen_time_history`: required, at least one entry.
+
+| Status | Condition |
+|---|---|
+| `200` | Addiction risk assessment returned |
+| `401` | Missing or invalid JWT |
+| `403` | No active premium subscription |
+| `422` | Invalid request body |
+| `429` | Rate limit exceeded |
+| `500` | AI provider error |
+
 ---
 
 ## 6. Subscription System
@@ -1716,6 +1873,7 @@ limit return HTTP `429 Too Many Requests` with a `Retry-After` header.
 | General API (all other authenticated endpoints) | 60 requests / minute | Per authenticated user |
 | Admin endpoints (`/admin/*`) | 30 requests / minute | Per admin |
 | Webhooks (`/webhooks/*`) | 100 requests / minute | Per IP address |
+| AI analysis (`/ai/*`) | 10 requests / hour | Per authenticated user |
 
 `/auth/verify` is subject to both limits above: the shared auth-endpoint per-IP
 limit and the endpoint-specific per-email OTP verification limit.
@@ -1919,6 +2077,12 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api ./p
 | `GENERAL_API_RATE_WINDOW` | Window for general authenticated API budget | No |
 | `SYNC_RATE_LIMIT` | Replication request budget per window | No |
 | `SYNC_RATE_WINDOW` | Window for replication request budget | No |
+| `AI_PROVIDER` | AI provider: `openai` or `gemini` (empty disables AI endpoints) | No |
+| `OPENAI_API_KEY` | OpenAI API key (required when `AI_PROVIDER=openai`) | When AI enabled |
+| `GEMINI_API_KEY` | Google Gemini API key (required when `AI_PROVIDER=gemini`) | When AI enabled |
+| `AI_MODEL` | Optional model override (e.g. `gpt-4o`, `gemini-2.5-flash`) | No |
+| `AI_RATE_LIMIT` | AI endpoint request budget per window (default `10`) | No |
+| `AI_RATE_WINDOW` | Window for AI request budget (default `1h`) | No |
 | `CLEANUP_INTERVAL` | Interval for auth/replication cleanup jobs | No |
 | `OTP_RETENTION_PERIOD` | How long expired/used OTP artifacts are kept before cleanup | No |
 | `REFRESH_TOKEN_REVOKED_RETENTION` | How long revoked/expired refresh-token rows are retained before cleanup | No |
@@ -1949,7 +2113,7 @@ The following items are intentionally excluded from this specification:
 
 | Item | Reason |
 |---|---|
-| **Usage stats collection** | Device usage data comes from OS APIs (Android UsageStatsManager, iOS Screen Time). This data is collected natively on the device and is not sent to or processed by the backend. |
+| **Usage stats persistence** | Device usage data comes from OS APIs (Android UsageStatsManager, iOS Screen Time). The client sends usage data per-request to AI analysis endpoints, but usage stats are not stored on the server. |
 | **App blocking enforcement** | Blocking is enforced natively on the device via platform-specific APIs. The backend has no role in enforcement. |
 | **Specific premium feature definitions** | Which exact product capabilities are included in free vs premium is a product decision outside this backend contract. This spec only defines entitlement enforcement boundaries. |
 | **User blocking** | The ability to block other users (preventing friend requests, hiding from search) is deferred to a future iteration. |

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/IsorilovA/pauza-server/internal/ai"
 	"github.com/IsorilovA/pauza-server/internal/config"
 	"github.com/IsorilovA/pauza-server/internal/mail"
 	authmw "github.com/IsorilovA/pauza-server/internal/middleware"
@@ -93,7 +95,7 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 // live backend.
 // The returned cleanup function stops background goroutines (e.g. rate-limiter
 // eviction loops) and must be called during graceful shutdown.
-func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mail.Sender, pushSender push.Sender, redisClient *redis.Client) (*http.Server, func()) {
+func New(ctx context.Context, cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mail.Sender, pushSender push.Sender, redisClient *redis.Client) (*http.Server, func(), error) {
 	r := chi.NewRouter()
 
 	// Base middleware stack.
@@ -103,9 +105,19 @@ func New(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Pool, mailer mai
 	r.Use(requestLogger(logger))                           // log each request with structured fields
 	r.Use(authmw.Recoverer(logger))                        // recover from panics with structured logging
 
-	deps := buildDependencies(cfg, logger, pool, mailer, pushSender)
+	var aiProvider ai.Provider
+	if cfg.AIEnabled() {
+		var err error
+		aiProvider, err = ai.NewProvider(ctx, cfg.AIProvider, cfg.AIAPIKey(), cfg.AIModel)
+		if err != nil {
+			return nil, nil, err
+		}
+		logger.Info("AI analysis enabled", "provider", cfg.AIProvider)
+	}
+
+	deps := buildDependencies(cfg, logger, pool, mailer, pushSender, aiProvider)
 	limiters, cleanup := buildLimiters(cfg, logger, redisClient)
 	mountRoutes(r, cfg, logger, pool, deps, limiters)
 
-	return newHTTPServer(cfg, r), cleanup
+	return newHTTPServer(cfg, r), cleanup, nil
 }

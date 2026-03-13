@@ -8,8 +8,8 @@
 | Task | Location | Notes |
 | --- | --- | --- |
 | Router + base middleware | `internal/server/server.go` | request ID echo, trusted proxy IP, logging, panic recovery |
-| Route map | `internal/server/routes.go` | health, auth, admin, social, sync, webhook, photo routes |
-| Dependency wiring | `internal/server/modules.go` | repository/service/handler composition |
+| Route map | `internal/server/routes.go` | health, auth, admin, social, sync, webhook, photo, AI routes |
+| Dependency wiring | `internal/server/modules.go` | repository/service/handler composition (incl. optional AI provider) |
 | Limiter construction | `internal/server/limiters.go` | Redis limiter creation + fail-open wrappers |
 | HTTP server timeouts | `internal/server/http_server.go` | read/write/idle timeout defaults |
 

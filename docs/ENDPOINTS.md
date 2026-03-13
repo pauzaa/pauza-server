@@ -1,6 +1,6 @@
 # API Endpoints Reference
 
-> Derived from source code. This document covers all **37 endpoints** currently
+> Derived from source code. This document covers all **41 endpoints** currently
 > wired in `internal/server/routes.go`.
 
 ---
@@ -12,7 +12,7 @@
 | **Base URL** | `https://<host>` — all `/api/v1/*` paths are relative to this. |
 | **Content-Type** | `application/json` for all request and response bodies (except `POST /api/v1/me/photo` which uses `multipart/form-data`). |
 | **Request ID** | Every response includes an `X-Request-Id` header echoed from the inbound request (or auto-generated). |
-| **Body limit** | Request bodies are capped at **1 MiB** globally. Exceeding this limit returns a `VALIDATION_ERROR`. |
+| **Body limit** | Request bodies are capped at **1 MiB** globally. `POST /api/v1/me/photo` and all `/api/v1/ai/*` endpoints use a **5 MiB** limit. Exceeding the limit returns a `VALIDATION_ERROR`. |
 | **Timestamps** | All timestamps in JSON responses use **UTC RFC 3339** (e.g. `2025-01-15T08:30:00Z`). Sync-table timestamps are **Unix milliseconds** (`int64`). |
 | **Pagination** | Endpoints that paginate accept `?page=` (default `1`) and `?limit=` (default `20`, max `100`). Invalid or out-of-range values are silently clamped to defaults rather than rejected. |
 | **Authentication** | Protected endpoints require `Authorization: Bearer <access_token>`. Admin endpoints require an admin JWT. The webhook endpoint uses a separate Bearer secret. |
@@ -1712,3 +1712,133 @@ upsert/deletion types described above.
 | `UNAUTHORIZED` (401) | Missing or invalid JWT, or user not found |
 | `RATE_LIMITED` (429) | Too many requests |
 | `INTERNAL_ERROR` (500) | Transient server error |
+
+---
+
+## AI Analysis (`/api/v1/ai`)
+
+All AI endpoints require a user JWT and an active **premium subscription**.
+Rate limited to **10 requests / hour** per user (configurable via `AI_RATE_LIMIT` / `AI_RATE_WINDOW`).
+Request body limit is **5 MiB**. Endpoints are only mounted when `AI_PROVIDER` is configured.
+
+Usage data is sent by the client per-request and is **not** persisted on the server.
+The server composes a system prompt, forwards the data to the configured AI provider
+(OpenAI or Gemini), and returns the response.
+
+**Common response shape (200 OK):**
+
+```json
+{
+  "analysis": "AI-generated markdown text..."
+}
+```
+
+**Common errors:**
+
+| Code | When |
+|---|---|
+| `SUBSCRIPTION_REQUIRED` (403) | No active premium subscription |
+| `VALIDATION_ERROR` (422) | Missing required fields or invalid values |
+| `UNAUTHORIZED` (401) | Missing or invalid JWT |
+| `RATE_LIMITED` (429) | Exceeded AI rate limit |
+| `INTERNAL_ERROR` (500) | AI provider error or transient failure |
+
+### `POST /api/v1/ai/usage-analysis`
+
+Analyze phone usage patterns for a daily or weekly period.
+
+| Detail | Value |
+|---|---|
+| **Auth** | User JWT |
+| **Premium** | Required |
+| **Rate limit** | `ai` tier (10 req/hour per user) |
+| **Body limit** | 5 MiB |
+
+**Request body:**
+
+| Field | Type | Required | Validation |
+|---|---|---|---|
+| `period` | string | yes | `daily` or `weekly` |
+| `app_usage` | array | yes | At least one entry |
+| `app_usage[].app_identifier` | string | yes | — |
+| `app_usage[].app_name` | string | yes | — |
+| `app_usage[].total_time_ms` | int64 | yes | — |
+| `app_usage[].launch_count` | int | yes | — |
+| `app_usage[].category` | string | no | e.g. `social`, `entertainment` |
+| `total_screen_time_ms` | int64 | no | — |
+| `total_unlocks` | int | no | — |
+
+### `POST /api/v1/ai/focus-schedule`
+
+Suggest optimal focus schedules based on app usage and existing schedules.
+
+| Detail | Value |
+|---|---|
+| **Auth** | User JWT |
+| **Premium** | Required |
+| **Rate limit** | `ai` tier (10 req/hour per user) |
+| **Body limit** | 5 MiB |
+
+**Request body:**
+
+| Field | Type | Required | Validation |
+|---|---|---|---|
+| `app_usage` | array | yes | At least one entry (same shape as usage-analysis) |
+| `current_schedules` | array | no | Existing schedule slots |
+| `current_schedules[].days` | int[] | — | Day-of-week numbers |
+| `current_schedules[].start_minute` | int | — | 0-1439 |
+| `current_schedules[].end_minute` | int | — | 0-1439 |
+| `preferred_focus_hours` | int | yes | 1-16 |
+| `timezone` | string | yes | IANA timezone (e.g. `Asia/Almaty`) |
+
+### `POST /api/v1/ai/daily-report`
+
+Generate a daily screen time report with highlights, wins, and improvement areas.
+
+| Detail | Value |
+|---|---|
+| **Auth** | User JWT |
+| **Premium** | Required |
+| **Rate limit** | `ai` tier (10 req/hour per user) |
+| **Body limit** | 5 MiB |
+
+**Request body:**
+
+| Field | Type | Required | Validation |
+|---|---|---|---|
+| `date` | string | yes | `YYYY-MM-DD` |
+| `app_usage` | array | yes | At least one entry |
+| `focus_sessions` | array | no | Focus session summaries |
+| `focus_sessions[].started_at` | int64 | — | Unix ms |
+| `focus_sessions[].ended_at` | int64 | — | Unix ms |
+| `focus_sessions[].pause_count` | int | — | — |
+| `focus_sessions[].effective_ms` | int64 | — | — |
+| `total_screen_time_ms` | int64 | no | — |
+| `total_unlocks` | int | no | — |
+| `streak_days` | int | no | — |
+
+### `POST /api/v1/ai/addiction-check`
+
+Analyze multi-day usage history for addictive behavior patterns.
+
+| Detail | Value |
+|---|---|
+| **Auth** | User JWT |
+| **Premium** | Required |
+| **Rate limit** | `ai` tier (10 req/hour per user) |
+| **Body limit** | 5 MiB |
+
+**Request body:**
+
+| Field | Type | Required | Validation |
+|---|---|---|---|
+| `app_usage_history` | array | yes | At least one entry |
+| `app_usage_history[].date` | string | yes | `YYYY-MM-DD` |
+| `app_usage_history[].apps` | array | yes | Same `app_usage` item shape |
+| `daily_screen_time_history` | array | yes | At least one entry |
+| `daily_screen_time_history[].date` | string | yes | `YYYY-MM-DD` |
+| `daily_screen_time_history[].total_screen_time_ms` | int64 | yes | — |
+| `daily_screen_time_history[].total_unlocks` | int | yes | — |
+| `first_unlock_times` | array | no | — |
+| `first_unlock_times[].date` | string | — | `YYYY-MM-DD` |
+| `first_unlock_times[].time_of_day_minute` | int | — | 0-1439 |
