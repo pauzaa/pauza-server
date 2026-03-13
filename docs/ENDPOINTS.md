@@ -277,6 +277,33 @@ Exchange a refresh token for new access and refresh tokens.
 
 ---
 
+### `POST /api/v1/auth/logout`
+
+Revoke all refresh tokens for the authenticated user (logout everywhere).
+
+| Property | Value |
+|---|---|
+| **Auth** | Required — `Authorization: Bearer <JWT>` |
+| **Rate limit** | `general-api` tier — per user ID |
+
+**Request body**
+
+None.
+
+**Success — 204 No Content**
+
+_(empty body)_
+
+**Errors**
+
+| Code | When |
+|---|---|
+| `UNAUTHORIZED` (401) | Missing or invalid JWT |
+| `RATE_LIMITED` (429) | Too many requests |
+| `INTERNAL_ERROR` (500) | Transient server error |
+
+---
+
 ## Webhook (`/api/v1/webhooks`)
 
 ### `POST /api/v1/webhooks/revenuecat`

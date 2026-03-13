@@ -60,7 +60,9 @@ func mountRoutes(r chi.Router, cfg *config.Config, logger *slog.Logger, pool *pg
 			r.Group(func(r chi.Router) {
 				r.Use(authmw.RateLimit(limiters.general, cfg.GeneralAPIRateLimit, authmw.UserIDKey))
 
-				r.Get("/me", deps.authHandler.GetMe)
+				r.Post("/auth/logout", deps.authHandler.Logout)
+
+			r.Get("/me", deps.authHandler.GetMe)
 				r.Patch("/me", deps.authHandler.UpdateMe)
 				r.Get("/me/notification-preferences", deps.authHandler.GetNotificationPreferences)
 				r.Patch("/me/notification-preferences", deps.authHandler.UpdateNotificationPreferences)

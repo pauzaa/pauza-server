@@ -139,6 +139,23 @@ Client                          Server
 - If a revoked refresh token is reused, **all refresh tokens for that user are revoked** (indicates token theft).
 - Refresh-token rows will grow over time; cleanup is a later operational concern. A periodic cleanup job should eventually delete expired rows and revoked rows based on revocation time.
 
+**Logout flow:**
+
+```
+Client                          Server
+  |                               |
+  |  POST /auth/logout            |
+  |  Authorization: Bearer <JWT>  |
+  |------------------------------>|
+  |                               |  Revoke all refresh tokens for
+  |                               |  the authenticated user.
+  |  204 No Content               |
+  |<------------------------------|
+```
+
+- Logout revokes **all** refresh tokens for the user (logout-everywhere semantic).
+- Access tokens remain valid until their TTL expires (stateless JWT design).
+
 ### 2.4 Recovery Model
 
 - Because authentication is passwordless, there is no password reset flow.
@@ -763,6 +780,21 @@ Exchange a refresh token for a new token pair.
 |---|---|---|
 | `200` | `{ "access_token": "...", "refresh_token": "..." }` | Token valid |
 | `401` | `{ "error": { "code": "UNAUTHORIZED", ... } }` | Token invalid/revoked/expired |
+
+#### `POST /api/v1/auth/logout`
+
+Revoke all refresh tokens for the authenticated user (logout everywhere).
+
+**Auth:** Required (JWT).
+
+**Request:** No body.
+
+**Responses:**
+
+| Status | Body | Condition |
+|---|---|---|
+| `204` | _(empty)_ | Tokens revoked (or none existed) |
+| `401` | `{ "error": { "code": "UNAUTHORIZED", ... } }` | Missing or invalid JWT |
 
 
 ### 5.2 Replication

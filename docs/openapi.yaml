@@ -18,7 +18,7 @@ tags:
   - name: Static
     description: Static file serving (profile photos)
   - name: Auth
-    description: Passwordless authentication (start, verify, refresh)
+    description: Passwordless authentication (start, verify, refresh, logout)
   - name: Profile
     description: Current user profile management
   - name: Social
@@ -1897,6 +1897,37 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "422":
           $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/auth/logout:
+    post:
+      operationId: authLogout
+      tags: [Auth]
+      summary: Logout (revoke all sessions)
+      description: >-
+        Revokes all refresh tokens for the authenticated user, ending every active
+        session. Requires a user JWT. The access token itself remains valid until its
+        TTL expires (stateless JWT design). Returns 204 even if the user has no active
+        refresh tokens (idempotent). Rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      responses:
+        "204":
+          description: All refresh tokens revoked (or none existed).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":

@@ -143,6 +143,10 @@ type RefreshOutput struct {
 	RefreshToken string
 }
 
+type LogoutInput struct {
+	UserID string
+}
+
 type MessageOutput struct {
 	Message string
 }

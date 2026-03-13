@@ -21,6 +21,7 @@ type AuthSessionService interface {
 	Start(ctx context.Context, in service.StartAuthInput) (service.StartAuthOutput, error)
 	VerifyOTP(ctx context.Context, in service.VerifyOTPInput) (service.AuthOutput, error)
 	Refresh(ctx context.Context, in service.RefreshInput) (service.RefreshOutput, error)
+	Logout(ctx context.Context, in service.LogoutInput) error
 }
 
 type AuthProfileService interface {
@@ -285,6 +286,21 @@ func (h *AuthHandler) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, h.logger, http.StatusOK, authOutputToResponse(out), "verify-otp")
+}
+
+// Logout handles POST /api/v1/auth/logout.
+func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+
+	if err := h.svc.Logout(r.Context(), service.LogoutInput{UserID: userID}); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // Refresh handles POST /api/v1/auth/refresh.

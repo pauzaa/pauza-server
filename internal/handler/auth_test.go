@@ -107,6 +107,7 @@ type mockAuthService struct {
 	startFn                   func(ctx context.Context, in service.StartAuthInput) (service.StartAuthOutput, error)
 	verifyOTPFn               func(ctx context.Context, in service.VerifyOTPInput) (service.AuthOutput, error)
 	refreshFn                 func(ctx context.Context, in service.RefreshInput) (service.RefreshOutput, error)
+	logoutFn                  func(ctx context.Context, in service.LogoutInput) error
 	getMeFn                   func(ctx context.Context, in service.GetMeInput) (service.UserProfile, error)
 	updateMeFn                func(ctx context.Context, in service.UpdateMeInput) (service.UserProfile, error)
 	updateProfilePhotoFn      func(ctx context.Context, in service.UpdateProfilePhotoInput) (service.UserProfile, error)
@@ -127,6 +128,12 @@ func (m *mockAuthService) VerifyOTP(ctx context.Context, in service.VerifyOTPInp
 }
 func (m *mockAuthService) Refresh(ctx context.Context, in service.RefreshInput) (service.RefreshOutput, error) {
 	return m.refreshFn(ctx, in)
+}
+func (m *mockAuthService) Logout(ctx context.Context, in service.LogoutInput) error {
+	if m.logoutFn != nil {
+		return m.logoutFn(ctx, in)
+	}
+	return nil
 }
 func (m *mockAuthService) GetMe(ctx context.Context, in service.GetMeInput) (service.UserProfile, error) {
 	return m.getMeFn(ctx, in)

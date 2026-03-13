@@ -7,13 +7,14 @@
 ## WHERE TO LOOK
 | Task | Location | Notes |
 | --- | --- | --- |
-| HTTP server process | `cmd/server/main.go` | config, logger, DB, Redis, cleanup, signals |
+| HTTP server process | `cmd/server/main.go` | config, logger, DB, SMTP, Redis, push sender, cleanup, signals |
 | Apply migrations | `cmd/migrate/main.go` | minimal config loader + embedded migrations |
 | Seed admin | `cmd/seed-admin/main.go` | idempotent bootstrap against `admin_credentials` |
 
 ## CONVENTIONS
 - Keep `main.go` thin: parse config, assemble dependencies, hand off to `internal/...`.
 - Use the smallest config loader that fits the binary (`Load`, `LoadMigrate`, `LoadSeedAdmin`).
+- `cmd/server` fails fast when Redis is unavailable and falls back to noop push sender when Firebase credentials are not configured.
 - `cmd/server` owns graceful shutdown order: stop HTTP, cancel cleanup context, stop limiter cleanup, then close Redis and Postgres.
 - `cmd/migrate` is the only supported migration entrypoint; schema changes are explicit pre-start operations.
 - Binary names follow directory names.
