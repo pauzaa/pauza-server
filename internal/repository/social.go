@@ -83,7 +83,7 @@ func (r *SocialRepository) EffectivePremiumActive(ctx context.Context, db DBTX, 
 		WHERE u.id = $1
 	`, userID).Scan(&active)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return false, ErrNotFound
 		}
 		return false, fmt.Errorf("loading effective premium entitlement: %w", err)
@@ -333,12 +333,13 @@ func (r *SocialRepository) SearchUsers(ctx context.Context, db DBTX, prefix, exc
 }
 
 func (r *SocialRepository) LoadRecentDailyAggregates(ctx context.Context, db DBTX, userID string, days int) ([]struct {
-	LocalDay    string
-	EffectiveMS int
-	Qualified   bool
+	LocalDay     string
+	EffectiveMS  int
+	Qualified    bool
+	SessionCount int
 }, error) {
 	rows, err := db.Query(ctx, `
-		SELECT local_day, effective_ms, qualified
+		SELECT local_day, effective_ms, qualified, source_session_count
 		FROM streak_daily_aggregates
 		WHERE user_id = $1
 		ORDER BY local_day DESC
@@ -350,18 +351,20 @@ func (r *SocialRepository) LoadRecentDailyAggregates(ctx context.Context, db DBT
 	defer rows.Close()
 
 	var out []struct {
-		LocalDay    string
-		EffectiveMS int
-		Qualified   bool
+		LocalDay     string
+		EffectiveMS  int
+		Qualified    bool
+		SessionCount int
 	}
 	for rows.Next() {
 		var item struct {
-			LocalDay    string
-			EffectiveMS int
-			Qualified   bool
+			LocalDay     string
+			EffectiveMS  int
+			Qualified    bool
+			SessionCount int
 		}
 		var qualifiedInt int
-		if err := rows.Scan(&item.LocalDay, &item.EffectiveMS, &qualifiedInt); err != nil {
+		if err := rows.Scan(&item.LocalDay, &item.EffectiveMS, &qualifiedInt, &item.SessionCount); err != nil {
 			return nil, fmt.Errorf("scanning daily aggregate: %w", err)
 		}
 		item.Qualified = qualifiedInt == 1

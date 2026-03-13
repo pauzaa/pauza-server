@@ -36,9 +36,10 @@ type socialRepository interface {
 	RemoveFriend(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
 	SearchUsers(ctx context.Context, db repository.DBTX, prefix, excludeUserID string, limit int) ([]repository.BasicUserRow, error)
 	LoadRecentDailyAggregates(ctx context.Context, db repository.DBTX, userID string, days int) ([]struct {
-		LocalDay    string
-		EffectiveMS int
-		Qualified   bool
+		LocalDay     string
+		EffectiveMS  int
+		Qualified    bool
+		SessionCount int
 	}, error)
 	LoadAllDailyAggregates(ctx context.Context, db repository.DBTX, userID string) ([]struct {
 		LocalDay    string
@@ -135,7 +136,7 @@ func (s *SocialService) RequestFriend(ctx context.Context, in FriendRequestInput
 	}
 	target, err := s.repo.FindUserByExactUsername(ctx, s.pool, in.Username)
 	if errors.Is(err, repository.ErrNotFound) {
-		return FriendMutationOutput{}, UnauthorizedError("User not found")
+		return FriendMutationOutput{}, NotFoundError("User not found")
 	}
 	if err != nil {
 		s.logger.Error("loading friend target", "err", err)
@@ -379,16 +380,17 @@ func (s *SocialService) loadStatsForUser(ctx context.Context, userID string, day
 			LocalDay:     item.LocalDay,
 			EffectiveMS:  item.EffectiveMS,
 			Qualified:    item.Qualified,
-			SessionCount: 0,
+			SessionCount: item.SessionCount,
 		})
 	}
 	return out, nil
 }
 
 func consecutiveQualified(days []struct {
-	LocalDay    string
-	EffectiveMS int
-	Qualified   bool
+	LocalDay     string
+	EffectiveMS  int
+	Qualified    bool
+	SessionCount int
 }) int {
 	count := 0
 	for _, day := range days {

@@ -135,7 +135,7 @@ func (s *SyncService) Sync(ctx context.Context, in SyncInput) (SyncOutput, error
 		out.Tables.StreakDailyAggregates = &changes
 	}
 
-	serverTime, err := currentServerCursor(ctx, tx)
+	serverTime, err := s.repo.ServerCursor(ctx, tx)
 	if err != nil {
 		s.logger.Error("loading sync server cursor", "err", err)
 		return SyncOutput{}, ErrInternal
@@ -148,15 +148,6 @@ func (s *SyncService) Sync(ctx context.Context, in SyncInput) (SyncOutput, error
 
 	out.ServerTime = serverTime
 	return out, nil
-}
-
-func currentServerCursor(ctx context.Context, db repository.DBTX) (int64, error) {
-	var serverTime int64
-	err := db.QueryRow(ctx, `SELECT FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint`).Scan(&serverTime)
-	if err != nil {
-		return 0, err
-	}
-	return serverTime, nil
 }
 
 func (s *SyncService) syncInternal(stage string, err error) (SyncOutput, error) {

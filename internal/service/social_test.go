@@ -26,9 +26,10 @@ type fakeSocialRepo struct {
 	removeFriendFn              func(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
 	searchUsersFn               func(ctx context.Context, db repository.DBTX, prefix, excludeUserID string, limit int) ([]repository.BasicUserRow, error)
 	loadRecentDailyAggregatesFn func(ctx context.Context, db repository.DBTX, userID string, days int) ([]struct {
-		LocalDay    string
-		EffectiveMS int
-		Qualified   bool
+		LocalDay     string
+		EffectiveMS  int
+		Qualified    bool
+		SessionCount int
 	}, error)
 	loadAllDailyAggregatesFn func(ctx context.Context, db repository.DBTX, userID string) ([]struct {
 		LocalDay    string
@@ -80,9 +81,10 @@ func (f *fakeSocialRepo) SearchUsers(ctx context.Context, db repository.DBTX, pr
 	return f.searchUsersFn(ctx, db, prefix, excludeUserID, limit)
 }
 func (f *fakeSocialRepo) LoadRecentDailyAggregates(ctx context.Context, db repository.DBTX, userID string, days int) ([]struct {
-	LocalDay    string
-	EffectiveMS int
-	Qualified   bool
+	LocalDay     string
+	EffectiveMS  int
+	Qualified    bool
+	SessionCount int
 }, error) {
 	return f.loadRecentDailyAggregatesFn(ctx, db, userID, days)
 }
@@ -153,9 +155,10 @@ func newFakeSocialRepo() *fakeSocialRepo {
 			return nil, nil
 		},
 		loadRecentDailyAggregatesFn: func(context.Context, repository.DBTX, string, int) ([]struct {
-			LocalDay    string
-			EffectiveMS int
-			Qualified   bool
+			LocalDay     string
+			EffectiveMS  int
+			Qualified    bool
+			SessionCount int
 		}, error) {
 			return nil, nil
 		},

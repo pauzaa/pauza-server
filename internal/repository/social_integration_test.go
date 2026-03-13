@@ -178,7 +178,7 @@ func TestSocialRepository_LeaderboardQueries(t *testing.T) {
 func TestPgxSyncRepository_SyncStreakDailyAggregates_RefreshesLeaderboardMetrics(t *testing.T) {
 
 	pool := testSocialRepoPool(t)
-	repo := NewPgxSyncRepository()
+	repo := NewPgxSyncRepository(NewSocialRepository())
 
 	userID := "00000000-0000-0000-0000-000000000010"
 	insertLeaderboardUser(t, pool, userID, "sync@example.com", "syncer", true)

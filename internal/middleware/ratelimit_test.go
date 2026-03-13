@@ -380,7 +380,7 @@ func TestExtractAuthEmailKey_FallsBackToIP_WhenNoEmail(t *testing.T) {
 	}
 }
 
-func TestExtractAuthEmailKey_RewoundsBody(t *testing.T) {
+func TestExtractAuthEmailKey_RewindsBody(t *testing.T) {
 	body := `{"email":"user@example.com","otp":"123456"}`
 	req := httptest.NewRequest(http.MethodPost, "/auth/verify-otp",
 		strings.NewReader(body))

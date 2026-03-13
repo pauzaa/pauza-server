@@ -11,6 +11,7 @@ import (
 )
 
 type fakeSyncRepo struct {
+	serverCursorFn                   func(ctx context.Context, db repository.DBTX) (int64, error)
 	syncModesFn                      func(ctx context.Context, db repository.DBTX, userID string, in syncmodel.TableSync[syncmodel.Mode, string]) (syncmodel.TableChanges[syncmodel.Mode, string], error)
 	syncModeBlockedAppsFn            func(ctx context.Context, db repository.DBTX, userID string, in syncmodel.TableSync[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]) (syncmodel.TableChanges[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey], error)
 	syncSchedulesFn                  func(ctx context.Context, db repository.DBTX, userID string, in syncmodel.TableSync[syncmodel.Schedule, string]) (syncmodel.TableChanges[syncmodel.Schedule, string], error)
@@ -25,6 +26,13 @@ type fakeSyncRepo struct {
 var _ repository.SyncRepository = (*fakeSyncRepo)(nil)
 var _ syncUserVerifier = (*fakeAuthRepo)(nil)
 var _ syncUserVerifier = (*repository.PgxAuthRepository)(nil)
+
+func (f *fakeSyncRepo) ServerCursor(ctx context.Context, db repository.DBTX) (int64, error) {
+	if f.serverCursorFn != nil {
+		return f.serverCursorFn(ctx, db)
+	}
+	return 0, nil
+}
 
 func (f *fakeSyncRepo) SyncModes(ctx context.Context, db repository.DBTX, userID string, in syncmodel.TableSync[syncmodel.Mode, string]) (syncmodel.TableChanges[syncmodel.Mode, string], error) {
 	if f.syncModesFn != nil {

@@ -16,6 +16,7 @@
 - Keep helpers side-effect free except for randomness and hashing.
 - Service code owns persistence and transaction boundaries; `internal/auth` should not talk to Postgres or HTTP.
 - Access tokens use HS256 and must preserve issuer `pauza` and `sub=user_id` semantics.
+- JWT signing secrets must be at least 32 bytes; both `IssueAccessToken` and `ValidateAccessToken` enforce this.
 - Refresh tokens are opaque: only the raw token leaves the service layer; only the hash is stored.
 - OTP rules live here: 10 minute expiry and 3 attempt max.
 - Errors from JWT/password helpers are for service or middleware logging; handlers still return safe client messages.

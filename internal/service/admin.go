@@ -125,10 +125,6 @@ type PlatformStatsOutput struct {
 // Pagination defaults
 // ---------------------------------------------------------------------------
 
-var (
-	ErrInvalidAction      = errors.New("invalid action")
-	ErrInvalidEntitlement = errors.New("invalid entitlement")
-)
 
 // ---------------------------------------------------------------------------
 // Service

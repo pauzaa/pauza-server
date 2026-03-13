@@ -2,8 +2,10 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/IsorilovA/pauza-server/internal/apperror"
 	"github.com/IsorilovA/pauza-server/internal/service"
@@ -274,6 +276,16 @@ func (h *AIHandler) DetectAddiction(w http.ResponseWriter, r *http.Request) {
 
 // --- Validation helpers ---
 
+const dateLayout = "2006-01-02"
+
+func isValidDate(s string) bool {
+	if len(s) != 10 {
+		return false
+	}
+	_, err := time.Parse(dateLayout, s)
+	return err == nil
+}
+
 func validateAnalyzeUsage(req analyzeUsageRequest) apperror.FieldErrors {
 	fields := apperror.FieldErrors{}
 	if req.Period != "daily" && req.Period != "weekly" {
@@ -281,6 +293,23 @@ func validateAnalyzeUsage(req analyzeUsageRequest) apperror.FieldErrors {
 	}
 	if len(req.AppUsage) == 0 {
 		fields["app_usage"] = "app_usage is required"
+	} else if len(req.AppUsage) > 500 {
+		fields["app_usage"] = "app_usage must not exceed 500 items"
+	} else {
+		for i, item := range req.AppUsage {
+			if item.TotalTimeMS < 0 {
+				fields[fmt.Sprintf("app_usage[%d].total_time_ms", i)] = "total_time_ms must be >= 0"
+			}
+			if item.LaunchCount < 0 {
+				fields[fmt.Sprintf("app_usage[%d].launch_count", i)] = "launch_count must be >= 0"
+			}
+		}
+	}
+	if req.TotalScreenTimeMS < 0 {
+		fields["total_screen_time_ms"] = "total_screen_time_ms must be >= 0"
+	}
+	if req.TotalUnlocks < 0 {
+		fields["total_unlocks"] = "total_unlocks must be >= 0"
 	}
 	return fields
 }
@@ -289,12 +318,31 @@ func validateSuggestSchedule(req suggestScheduleRequest) apperror.FieldErrors {
 	fields := apperror.FieldErrors{}
 	if len(req.AppUsage) == 0 {
 		fields["app_usage"] = "app_usage is required"
+	} else if len(req.AppUsage) > 500 {
+		fields["app_usage"] = "app_usage must not exceed 500 items"
 	}
 	if req.PreferredFocusHours < 1 || req.PreferredFocusHours > 16 {
 		fields["preferred_focus_hours"] = "preferred_focus_hours must be between 1 and 16"
 	}
 	if req.Timezone == "" {
 		fields["timezone"] = "timezone is required"
+	}
+	for i, slot := range req.CurrentSchedules {
+		for j, d := range slot.Days {
+			if d < 0 || d > 6 {
+				fields[fmt.Sprintf("current_schedules[%d].days[%d]", i, j)] = "day must be between 0 and 6"
+			}
+		}
+		startOK := slot.StartMinute >= 0 && slot.StartMinute <= 1439
+		endOK := slot.EndMinute >= 0 && slot.EndMinute <= 1439
+		if !startOK {
+			fields[fmt.Sprintf("current_schedules[%d].start_minute", i)] = "start_minute must be between 0 and 1439"
+		}
+		if !endOK {
+			fields[fmt.Sprintf("current_schedules[%d].end_minute", i)] = "end_minute must be between 0 and 1439"
+		} else if startOK && slot.EndMinute <= slot.StartMinute {
+			fields[fmt.Sprintf("current_schedules[%d].end_minute", i)] = "end_minute must be greater than start_minute"
+		}
 	}
 	return fields
 }
@@ -303,9 +351,40 @@ func validateDailyReport(req dailyReportRequest) apperror.FieldErrors {
 	fields := apperror.FieldErrors{}
 	if req.Date == "" {
 		fields["date"] = "date is required"
+	} else if !isValidDate(req.Date) {
+		fields["date"] = "date must be in YYYY-MM-DD format"
 	}
 	if len(req.AppUsage) == 0 {
 		fields["app_usage"] = "app_usage is required"
+	} else if len(req.AppUsage) > 500 {
+		fields["app_usage"] = "app_usage must not exceed 500 items"
+	}
+	if req.TotalScreenTimeMS < 0 {
+		fields["total_screen_time_ms"] = "total_screen_time_ms must be >= 0"
+	}
+	if req.TotalUnlocks < 0 {
+		fields["total_unlocks"] = "total_unlocks must be >= 0"
+	}
+	if req.StreakDays < 0 {
+		fields["streak_days"] = "streak_days must be >= 0"
+	}
+	if len(req.FocusSessions) > 100 {
+		fields["focus_sessions"] = "focus_sessions must not exceed 100 items"
+	} else {
+		for i, s := range req.FocusSessions {
+			if s.StartedAt <= 0 {
+				fields[fmt.Sprintf("focus_sessions[%d].started_at", i)] = "started_at must be > 0"
+			}
+			if s.EndedAt <= 0 {
+				fields[fmt.Sprintf("focus_sessions[%d].ended_at", i)] = "ended_at must be > 0"
+			}
+			if s.EffectiveMS < 0 {
+				fields[fmt.Sprintf("focus_sessions[%d].effective_ms", i)] = "effective_ms must be >= 0"
+			}
+			if s.PauseCount < 0 {
+				fields[fmt.Sprintf("focus_sessions[%d].pause_count", i)] = "pause_count must be >= 0"
+			}
+		}
 	}
 	return fields
 }
@@ -314,9 +393,43 @@ func validateDetectAddiction(req detectAddictionRequest) apperror.FieldErrors {
 	fields := apperror.FieldErrors{}
 	if len(req.AppUsageHistory) == 0 {
 		fields["app_usage_history"] = "app_usage_history is required"
+	} else if len(req.AppUsageHistory) > 365 {
+		fields["app_usage_history"] = "app_usage_history must not exceed 365 items"
+	} else {
+		for i, day := range req.AppUsageHistory {
+			if !isValidDate(day.Date) {
+				fields[fmt.Sprintf("app_usage_history[%d].date", i)] = "date must be in YYYY-MM-DD format"
+			}
+		}
 	}
 	if len(req.DailyScreenTimeHistory) == 0 {
 		fields["daily_screen_time_history"] = "daily_screen_time_history is required"
+	} else if len(req.DailyScreenTimeHistory) > 365 {
+		fields["daily_screen_time_history"] = "daily_screen_time_history must not exceed 365 items"
+	} else {
+		for i, day := range req.DailyScreenTimeHistory {
+			if !isValidDate(day.Date) {
+				fields[fmt.Sprintf("daily_screen_time_history[%d].date", i)] = "date must be in YYYY-MM-DD format"
+			}
+			if day.TotalScreenTimeMS < 0 {
+				fields[fmt.Sprintf("daily_screen_time_history[%d].total_screen_time_ms", i)] = "total_screen_time_ms must be >= 0"
+			}
+			if day.TotalUnlocks < 0 {
+				fields[fmt.Sprintf("daily_screen_time_history[%d].total_unlocks", i)] = "total_unlocks must be >= 0"
+			}
+		}
+	}
+	if len(req.FirstUnlockTimes) > 365 {
+		fields["first_unlock_times"] = "first_unlock_times must not exceed 365 items"
+	} else {
+		for i, day := range req.FirstUnlockTimes {
+			if !isValidDate(day.Date) {
+				fields[fmt.Sprintf("first_unlock_times[%d].date", i)] = "date must be in YYYY-MM-DD format"
+			}
+			if day.TimeOfDayMinute < 0 || day.TimeOfDayMinute > 1439 {
+				fields[fmt.Sprintf("first_unlock_times[%d].time_of_day_minute", i)] = "time_of_day_minute must be between 0 and 1439"
+			}
+		}
 	}
 	return fields
 }

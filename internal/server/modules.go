@@ -48,7 +48,7 @@ func buildDependencies(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Po
 		logger,
 	)
 
-	syncService := service.NewSyncService(pool, repository.NewPgxSyncRepository(), authRepo, logger)
+	syncService := service.NewSyncService(pool, repository.NewPgxSyncRepository(repository.NewSocialRepository()), authRepo, logger)
 	syncHandler := handler.NewSyncHandler(syncService, logger)
 
 	if pushSender == nil {

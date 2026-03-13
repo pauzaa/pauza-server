@@ -221,7 +221,12 @@ func (h *SocialHandler) AcceptFriend(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	out, err := h.svc.AcceptFriend(r.Context(), userID, chi.URLParam(r, "id"))
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		apperror.ValidationFieldErrors(w, "Invalid request", apperror.FieldErrors{"id": "id is required"})
+		return
+	}
+	out, err := h.svc.AcceptFriend(r.Context(), userID, id)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -234,7 +239,12 @@ func (h *SocialHandler) DeclineFriend(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	out, err := h.svc.DeclineFriend(r.Context(), userID, chi.URLParam(r, "id"))
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		apperror.ValidationFieldErrors(w, "Invalid request", apperror.FieldErrors{"id": "id is required"})
+		return
+	}
+	out, err := h.svc.DeclineFriend(r.Context(), userID, id)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -247,7 +257,12 @@ func (h *SocialHandler) RemoveFriend(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	out, err := h.svc.RemoveFriend(r.Context(), userID, chi.URLParam(r, "id"))
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		apperror.ValidationFieldErrors(w, "Invalid request", apperror.FieldErrors{"id": "id is required"})
+		return
+	}
+	out, err := h.svc.RemoveFriend(r.Context(), userID, id)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -262,11 +277,11 @@ func (h *SocialHandler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query().Get("q")
 	if len(q) < 3 {
-		apperror.ValidationFieldErrors(w, "Invalid request body", apperror.FieldErrors{"q": "q must be at least 3 characters"})
+		apperror.ValidationFieldErrors(w, "Invalid query parameter", apperror.FieldErrors{"q": "q must be at least 3 characters"})
 		return
 	}
 	if len(q) > 50 {
-		apperror.ValidationFieldErrors(w, "Invalid request body", apperror.FieldErrors{"q": "q must not exceed 50 characters"})
+		apperror.ValidationFieldErrors(w, "Invalid query parameter", apperror.FieldErrors{"q": "q must not exceed 50 characters"})
 		return
 	}
 	users, err := h.svc.SearchUsers(r.Context(), userID, q)
@@ -282,13 +297,18 @@ func (h *SocialHandler) FriendStats(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		apperror.ValidationFieldErrors(w, "Invalid request", apperror.FieldErrors{"id": "id is required"})
+		return
+	}
 	days := 30
 	if raw := r.URL.Query().Get("days"); raw != "" {
 		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 90 {
 			days = parsed
 		}
 	}
-	out, err := h.svc.FriendStats(r.Context(), userID, chi.URLParam(r, "id"), days)
+	out, err := h.svc.FriendStats(r.Context(), userID, id, days)
 	if err != nil {
 		writeServiceError(w, err)
 		return

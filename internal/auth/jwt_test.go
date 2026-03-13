@@ -64,12 +64,12 @@ func TestValidateAccessToken_WrongSecret(t *testing.T) {
 	email := "test@example.com"
 	ttl := 15 * time.Minute
 
-	tokenStr, err := auth.IssueAccessToken(userID, email, "correct-secret", ttl)
+	tokenStr, err := auth.IssueAccessToken(userID, email, "correct-secret-that-is-at-least-32-bytes!", ttl)
 	if err != nil {
 		t.Fatalf("IssueAccessToken() error = %v", err)
 	}
 
-	_, err = auth.ValidateAccessToken(tokenStr, "wrong-secret")
+	_, err = auth.ValidateAccessToken(tokenStr, "wrong-secret-that-is-at-least-32-bytes!!")
 	if err == nil {
 		t.Fatal("ValidateAccessToken() with wrong secret returned nil error, want error")
 	}
@@ -132,8 +132,8 @@ func TestIssueAccessToken_EmptySecret(t *testing.T) {
 	if err == nil {
 		t.Fatal("IssueAccessToken() with empty secret returned nil error, want error")
 	}
-	if !strings.Contains(err.Error(), "secret must not be empty") {
-		t.Errorf("error = %q, want mention of empty secret", err.Error())
+	if !strings.Contains(err.Error(), "secret must be at least 32 bytes") {
+		t.Errorf("error = %q, want mention of secret length requirement", err.Error())
 	}
 }
 
@@ -149,7 +149,7 @@ func TestIssueAccessToken_EmptyUserID(t *testing.T) {
 
 func TestValidateAccessToken_EmptySecret(t *testing.T) {
 	// First issue a valid token with a real secret.
-	tokenStr, err := auth.IssueAccessToken("user-id", "a@b.com", "real-secret", 15*time.Minute)
+	tokenStr, err := auth.IssueAccessToken("user-id", "a@b.com", "test-secret-key-at-least-32-bytes!", 15*time.Minute)
 	if err != nil {
 		t.Fatalf("IssueAccessToken() error = %v", err)
 	}
@@ -158,8 +158,8 @@ func TestValidateAccessToken_EmptySecret(t *testing.T) {
 	if err == nil {
 		t.Fatal("ValidateAccessToken() with empty secret returned nil error, want error")
 	}
-	if !strings.Contains(err.Error(), "secret must not be empty") {
-		t.Errorf("error = %q, want mention of empty secret", err.Error())
+	if !strings.Contains(err.Error(), "secret must be at least 32 bytes") {
+		t.Errorf("error = %q, want mention of secret length requirement", err.Error())
 	}
 }
 

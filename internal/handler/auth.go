@@ -174,10 +174,6 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 		apperror.ValidationError(w, "Invalid request body", nil)
 		return false
 	}
-	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		apperror.ValidationError(w, "Invalid request body", nil)
-		return false
-	}
 
 	return true
 }
@@ -391,7 +387,7 @@ func (h *AuthHandler) UsernameAvailable(w http.ResponseWriter, r *http.Request) 
 
 	username := r.URL.Query().Get("username")
 	if msg := validate.Username(username); msg != "" {
-		apperror.ValidationFieldErrors(w, "Invalid request body", apperror.FieldErrors{
+		apperror.ValidationFieldErrors(w, "Invalid query parameter", apperror.FieldErrors{
 			"username": msg,
 		})
 		return

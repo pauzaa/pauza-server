@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 
 	"github.com/IsorilovA/pauza-server/internal/ai"
@@ -163,7 +162,7 @@ func (s *AIService) complete(ctx context.Context, systemPrompt string, userData 
 	userJSON, err := json.Marshal(userData)
 	if err != nil {
 		s.logger.Error("marshalling AI user data", "err", err)
-		return AnalysisOutput{}, fmt.Errorf("preparing AI request: %w", err)
+		return AnalysisOutput{}, ErrInternal
 	}
 
 	messages := []ai.Message{

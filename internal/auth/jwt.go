@@ -33,8 +33,8 @@ func issueToken(subject, email, role, secret string, ttl time.Duration) (string,
 	if subject == "" {
 		return "", fmt.Errorf("issuing access token: userID must not be empty")
 	}
-	if secret == "" {
-		return "", fmt.Errorf("issuing access token: secret must not be empty")
+	if len(secret) < 32 {
+		return "", fmt.Errorf("issuing access token: secret must be at least 32 bytes")
 	}
 
 	now := time.Now().UTC()
@@ -60,8 +60,8 @@ func issueToken(subject, email, role, secret string, ttl time.Duration) (string,
 // ValidateAccessToken parses and validates an HS256-signed JWT. It checks the
 // signature and expiry. On success it returns the decoded claims.
 func ValidateAccessToken(tokenString, secret string) (*Claims, error) {
-	if secret == "" {
-		return nil, fmt.Errorf("validating access token: secret must not be empty")
+	if len(secret) < 32 {
+		return nil, fmt.Errorf("validating access token: secret must be at least 32 bytes")
 	}
 
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(t *jwt.Token) (any, error) {

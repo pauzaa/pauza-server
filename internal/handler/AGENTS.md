@@ -25,6 +25,8 @@
 - Keep response timestamps human-readable and UTC RFC3339.
 - Passwordless auth responses must not leak whether an email already belongs to an existing user.
 - For sync endpoints, return field-specific validation errors using `apperror.ValidationFieldErrors`.
+- Use `"Invalid query parameter"` (not `"Invalid request body"`) as the top-level message when rejecting URL query params.
+- Always guard `chi.URLParam` results with a non-empty check before passing to the service layer.
 
 ## TESTING
 - Unit tests can parallelize; the integration suite is build-tagged and intentionally does not call `t.Parallel()`.

@@ -16,13 +16,16 @@
 
 ## CONVENTIONS
 - Keep all SQL parameterized and explicit-column.
-- Preserve `ErrNotFound` mapping for empty row results.
+- Preserve `ErrNotFound` mapping for empty row results (`pgx.ErrNoRows` → `ErrNotFound`).
 - Accept `DBTX` in repository methods so callers can use pool or explicit transactions.
 - Keep ordering and cursor semantics stable for paginated and sync reads.
 - Keep query responsibilities feature-local (auth/admin/social/sync/entitlements).
+- Cross-repo dependencies must be expressed as narrow interfaces (e.g. `LeaderboardRefresher` in `sync.go`) and injected at construction — never instantiated inline.
+- Sync cursor SQL (`ServerCursor`) lives in `SyncRepository`, not in the service layer.
 
 ## ANTI-PATTERNS
 - Do not import or depend on `net/http` from repository packages.
 - Do not leak pgx-specific errors past service boundary without wrapping/mapping.
 - Do not use `SELECT *` in application queries.
 - Do not perform cross-feature business policy checks here; keep those in services.
+- Do not instantiate a sibling repository struct directly inside another repository (use an injected interface instead).

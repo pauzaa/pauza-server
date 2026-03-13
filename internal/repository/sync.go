@@ -24,6 +24,7 @@ const (
 )
 
 type SyncRepository interface {
+	ServerCursor(ctx context.Context, db DBTX) (int64, error)
 	SyncModes(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.Mode, string]) (syncmodel.TableChanges[syncmodel.Mode, string], error)
 	SyncModeBlockedApps(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]) (syncmodel.TableChanges[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey], error)
 	SyncSchedules(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.Schedule, string]) (syncmodel.TableChanges[syncmodel.Schedule, string], error)
@@ -35,13 +36,31 @@ type SyncRepository interface {
 	SyncStreakDailyAggregates(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.StreakDailyAggregate, string]) (syncmodel.TableChanges[syncmodel.StreakDailyAggregate, string], error)
 }
 
-type PgxSyncRepository struct{}
+// LeaderboardRefresher is satisfied by any type that can recompute leaderboard
+// metrics for a single user. It allows SyncStreakDailyAggregates to trigger a
+// refresh without importing SocialRepository directly.
+type LeaderboardRefresher interface {
+	RefreshLeaderboardMetrics(ctx context.Context, db DBTX, userID string) error
+}
 
-func NewPgxSyncRepository() *PgxSyncRepository {
-	return &PgxSyncRepository{}
+type PgxSyncRepository struct {
+	leaderboard LeaderboardRefresher
+}
+
+func NewPgxSyncRepository(leaderboard LeaderboardRefresher) *PgxSyncRepository {
+	return &PgxSyncRepository{leaderboard: leaderboard}
 }
 
 var _ SyncRepository = (*PgxSyncRepository)(nil)
+
+func (r *PgxSyncRepository) ServerCursor(ctx context.Context, db DBTX) (int64, error) {
+	var cursor int64
+	err := db.QueryRow(ctx, `SELECT FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint`).Scan(&cursor)
+	if err != nil {
+		return 0, fmt.Errorf("reading server cursor: %w", err)
+	}
+	return cursor, nil
+}
 
 func (r *PgxSyncRepository) SyncModes(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.Mode, string]) (syncmodel.TableChanges[syncmodel.Mode, string], error) {
 	written := map[string]struct{}{}
@@ -512,7 +531,7 @@ func (r *PgxSyncRepository) SyncRestrictionLifecycleEvents(ctx context.Context, 
 
 	rows, err := db.Query(ctx, `SELECT id, session_id, mode_id, action, source, reason, occurred_at, created_at
 		FROM restriction_lifecycle_events
-		WHERE user_id = $1 AND ($2 = 0 OR created_at > $2)
+		WHERE user_id = $1 AND ($2 = 0 OR server_created_at > $2)
 		ORDER BY id`, userID, in.LastSyncedAt)
 	if err != nil {
 		return syncmodel.TableChanges[syncmodel.RestrictionLifecycleEvent, string]{}, fmt.Errorf("listing changed restriction_lifecycle_events: %w", err)
@@ -896,8 +915,8 @@ func (r *PgxSyncRepository) SyncStreakDailyAggregates(ctx context.Context, db DB
 		refreshMetrics = true
 	}
 
-	if refreshMetrics {
-		if err := (&SocialRepository{}).RefreshLeaderboardMetrics(ctx, db, userID); err != nil {
+	if refreshMetrics && r.leaderboard != nil {
+		if err := r.leaderboard.RefreshLeaderboardMetrics(ctx, db, userID); err != nil {
 			return syncmodel.TableChanges[syncmodel.StreakDailyAggregate, string]{}, err
 		}
 	}
@@ -1018,111 +1037,99 @@ func decodeStreakSessionDailyRollupKey(encoded string) (syncmodel.StreakSessionD
 func (r *PgxSyncRepository) collectModeCascade(ctx context.Context, db DBTX, userID, modeID string) (map[string][]string, error) {
 	out := map[string][]string{}
 
-	rows, err := db.Query(ctx, `SELECT mode_id, platform, app_identifier FROM mode_blocked_apps WHERE user_id = $1 AND mode_id = $2`, userID, modeID)
+	mbaRows, err := db.Query(ctx, `SELECT mode_id, platform, app_identifier FROM mode_blocked_apps WHERE user_id = $1 AND mode_id = $2`, userID, modeID)
 	if err != nil {
 		return nil, fmt.Errorf("querying mode_blocked_apps cascade: %w", err)
 	}
-	for rows.Next() {
+	defer mbaRows.Close()
+	for mbaRows.Next() {
 		var modeIDVal string
 		var platform string
 		var appIdentifier string
-		if err := rows.Scan(&modeIDVal, &platform, &appIdentifier); err != nil {
-			rows.Close()
+		if err := mbaRows.Scan(&modeIDVal, &platform, &appIdentifier); err != nil {
 			return nil, fmt.Errorf("scanning mode_blocked_apps cascade: %w", err)
 		}
 		key, err := encodeModeBlockedAppKey(syncmodel.ModeBlockedAppKey{ModeID: modeIDVal, Platform: syncmodel.DevicePlatform(platform), AppIdentifier: appIdentifier})
 		if err != nil {
-			rows.Close()
 			return nil, err
 		}
 		out[syncTableModeBlockedApps] = append(out[syncTableModeBlockedApps], key)
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
+	if err := mbaRows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating mode_blocked_apps cascade: %w", err)
 	}
-	rows.Close()
 
-	rows, err = db.Query(ctx, `SELECT id FROM schedules WHERE user_id = $1 AND mode_id = $2`, userID, modeID)
+	schedRows, err := db.Query(ctx, `SELECT id FROM schedules WHERE user_id = $1 AND mode_id = $2`, userID, modeID)
 	if err != nil {
 		return nil, fmt.Errorf("querying schedules cascade: %w", err)
 	}
-	for rows.Next() {
+	defer schedRows.Close()
+	for schedRows.Next() {
 		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+		if err := schedRows.Scan(&id); err != nil {
 			return nil, fmt.Errorf("scanning schedules cascade: %w", err)
 		}
 		out[syncTableSchedules] = append(out[syncTableSchedules], id)
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
+	if err := schedRows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating schedules cascade: %w", err)
 	}
-	rows.Close()
 
-	rows, err = db.Query(ctx, `SELECT session_id FROM restriction_sessions WHERE user_id = $1 AND mode_id = $2`, userID, modeID)
+	sessRows, err := db.Query(ctx, `SELECT session_id FROM restriction_sessions WHERE user_id = $1 AND mode_id = $2`, userID, modeID)
 	if err != nil {
 		return nil, fmt.Errorf("querying restriction_sessions cascade: %w", err)
 	}
+	defer sessRows.Close()
 	sessions := make([]string, 0)
-	for rows.Next() {
+	for sessRows.Next() {
 		var sessionID string
-		if err := rows.Scan(&sessionID); err != nil {
-			rows.Close()
+		if err := sessRows.Scan(&sessionID); err != nil {
 			return nil, fmt.Errorf("scanning restriction_sessions cascade: %w", err)
 		}
 		sessions = append(sessions, sessionID)
 		out[syncTableRestrictionSessions] = append(out[syncTableRestrictionSessions], sessionID)
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
+	if err := sessRows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating restriction_sessions cascade: %w", err)
 	}
-	rows.Close()
 
-	rows, err = db.Query(ctx, `SELECT id FROM restriction_lifecycle_events WHERE user_id = $1 AND mode_id = $2`, userID, modeID)
+	rleRows, err := db.Query(ctx, `SELECT id FROM restriction_lifecycle_events WHERE user_id = $1 AND mode_id = $2`, userID, modeID)
 	if err != nil {
 		return nil, fmt.Errorf("querying restriction_lifecycle_events cascade: %w", err)
 	}
-	for rows.Next() {
+	defer rleRows.Close()
+	for rleRows.Next() {
 		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+		if err := rleRows.Scan(&id); err != nil {
 			return nil, fmt.Errorf("scanning restriction_lifecycle_events cascade: %w", err)
 		}
 		out[syncTableRestrictionLifecycleEvents] = append(out[syncTableRestrictionLifecycleEvents], id)
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
+	if err := rleRows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating restriction_lifecycle_events cascade: %w", err)
 	}
-	rows.Close()
 
 	if len(sessions) > 0 {
-		rows, err = db.Query(ctx, `SELECT session_id, local_day FROM streak_session_daily_rollups WHERE user_id = $1 AND session_id = ANY($2)`, userID, sessions)
+		rollupRows, err := db.Query(ctx, `SELECT session_id, local_day FROM streak_session_daily_rollups WHERE user_id = $1 AND session_id = ANY($2)`, userID, sessions)
 		if err != nil {
 			return nil, fmt.Errorf("querying streak_session_daily_rollups cascade: %w", err)
 		}
-		for rows.Next() {
+		defer rollupRows.Close()
+		for rollupRows.Next() {
 			var sessionID string
 			var localDay string
-			if err := rows.Scan(&sessionID, &localDay); err != nil {
-				rows.Close()
+			if err := rollupRows.Scan(&sessionID, &localDay); err != nil {
 				return nil, fmt.Errorf("scanning streak_session_daily_rollups cascade: %w", err)
 			}
 			key, err := encodeStreakSessionDailyRollupKey(syncmodel.StreakSessionDailyRollupKey{SessionID: sessionID, LocalDay: localDay})
 			if err != nil {
-				rows.Close()
 				return nil, err
 			}
 			out[syncTableStreakSessionDailyRollups] = append(out[syncTableStreakSessionDailyRollups], key)
 		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
+		if err := rollupRows.Err(); err != nil {
 			return nil, fmt.Errorf("iterating streak_session_daily_rollups cascade: %w", err)
 		}
-		rows.Close()
 	}
 
 	return out, nil
@@ -1131,47 +1138,42 @@ func (r *PgxSyncRepository) collectModeCascade(ctx context.Context, db DBTX, use
 func (r *PgxSyncRepository) collectRestrictionSessionCascade(ctx context.Context, db DBTX, userID, sessionID string) (map[string][]string, error) {
 	out := map[string][]string{}
 
-	rows, err := db.Query(ctx, `SELECT id FROM restriction_lifecycle_events WHERE user_id = $1 AND session_id = $2`, userID, sessionID)
+	rleRows, err := db.Query(ctx, `SELECT id FROM restriction_lifecycle_events WHERE user_id = $1 AND session_id = $2`, userID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("querying restriction_lifecycle_events session cascade: %w", err)
 	}
-	for rows.Next() {
+	defer rleRows.Close()
+	for rleRows.Next() {
 		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+		if err := rleRows.Scan(&id); err != nil {
 			return nil, fmt.Errorf("scanning restriction_lifecycle_events session cascade: %w", err)
 		}
 		out[syncTableRestrictionLifecycleEvents] = append(out[syncTableRestrictionLifecycleEvents], id)
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
+	if err := rleRows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating restriction_lifecycle_events session cascade: %w", err)
 	}
-	rows.Close()
 
-	rows, err = db.Query(ctx, `SELECT session_id, local_day FROM streak_session_daily_rollups WHERE user_id = $1 AND session_id = $2`, userID, sessionID)
+	rollupRows, err := db.Query(ctx, `SELECT session_id, local_day FROM streak_session_daily_rollups WHERE user_id = $1 AND session_id = $2`, userID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("querying streak_session_daily_rollups session cascade: %w", err)
 	}
-	for rows.Next() {
+	defer rollupRows.Close()
+	for rollupRows.Next() {
 		var sessionIDVal string
 		var localDay string
-		if err := rows.Scan(&sessionIDVal, &localDay); err != nil {
-			rows.Close()
+		if err := rollupRows.Scan(&sessionIDVal, &localDay); err != nil {
 			return nil, fmt.Errorf("scanning streak_session_daily_rollups session cascade: %w", err)
 		}
 		key, err := encodeStreakSessionDailyRollupKey(syncmodel.StreakSessionDailyRollupKey{SessionID: sessionIDVal, LocalDay: localDay})
 		if err != nil {
-			rows.Close()
 			return nil, err
 		}
 		out[syncTableStreakSessionDailyRollups] = append(out[syncTableStreakSessionDailyRollups], key)
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
+	if err := rollupRows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating streak_session_daily_rollups session cascade: %w", err)
 	}
-	rows.Close()
 
 	return out, nil
 }
