@@ -24,7 +24,9 @@ Complete instructions for deploying the Pauza API server on a fresh Ubuntu VPS.
 11. [CI/CD Pipeline Overview](#11-cicd-pipeline-overview)
 12. [TLS Certificate Management](#12-tls-certificate-management)
 13. [Routine Operations](#13-routine-operations)
-14. [Troubleshooting](#14-troubleshooting)
+14. [Backups](#14-backups)
+15. [Log Rotation](#15-log-rotation)
+16. [Troubleshooting](#16-troubleshooting)
 
 ---
 
@@ -44,6 +46,7 @@ Before you begin, make sure you have:
   - Resend SMTP API key (for transactional email)
   - RevenueCat API key and webhook secret
   - Firebase service account JSON (for push notifications)
+  - OpenAI or Gemini API key (for AI analysis endpoints; optional)
 
 Generate secure passwords:
 
@@ -267,7 +270,7 @@ SMTP_FROM=noreply@mail.pauza.dev
 SMTP_TIMEOUT=30s
 SMTP_TLS_POLICY=mandatory
 
-# Admin account seeded on first migration
+# Admin account (used by cmd/seed-admin, not applied during migration)
 ADMIN_SEED_USERNAME=admin
 ADMIN_SEED_PASSWORD=<STRONG_ADMIN_PASSWORD>
 
@@ -285,6 +288,14 @@ REDIS_URL=redis://:<GENERATED_PASSWORD>@redis:6379/0
 # Photo storage
 PHOTO_STORAGE_DIR=/var/lib/pauza/photos
 PHOTO_PUBLIC_BASE_URL=https://api.pauza.dev/photos
+
+# AI analysis (leave AI_PROVIDER empty to disable AI endpoints)
+AI_PROVIDER=openai
+OPENAI_API_KEY=<YOUR_OPENAI_API_KEY>
+# GEMINI_API_KEY=
+# AI_MODEL=
+AI_RATE_LIMIT=10
+AI_RATE_WINDOW=1h
 
 # Cleanup intervals
 CLEANUP_INTERVAL=1h
@@ -382,7 +393,32 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api ./p
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 
-### 8.3 What happens on first start
+### 8.3 Seed the admin account
+
+The admin user is **not** created by migrations. You must run `cmd/seed-admin` separately. This binary is not included in the Docker image, so build and run it from the cloned repo on the server (requires Go installed):
+
+```bash
+cd /opt/pauza-server
+set -a; source .env.prod; set +a
+go run ./cmd/seed-admin
+```
+
+If Go is not installed on the server, you can build the binary locally and copy it:
+
+```bash
+# On your local machine
+CGO_ENABLED=0 GOOS=linux go build -o seed-admin ./cmd/seed-admin
+scp seed-admin deploy@YOUR_SERVER_IP:/opt/pauza-server/
+
+# On the server
+cd /opt/pauza-server
+set -a; source .env.prod; set +a
+./seed-admin
+```
+
+This only needs to run once (or whenever you need to reset the admin password).
+
+### 8.4 What happens on first start
 
 1. **db** and **redis** start and become healthy
 2. **api** starts, connects to db and redis, exposes port 8080 on localhost
@@ -618,8 +654,9 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f
 # Specific service, last 100 lines
 docker compose -f docker-compose.yml -f docker-compose.prod.yml logs api --tail=100
 
-# Shorthand alias (add to ~/.bashrc):
-alias dc="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
+# Shorthand alias — persist it in your shell profile:
+echo 'alias dc="docker compose -f docker-compose.yml -f docker-compose.prod.yml"' >> ~/.bashrc
+source ~/.bashrc
 # Then: dc logs -f api
 ```
 
@@ -638,7 +675,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml down
 ### Stop and remove volumes (destroys all data)
 
 ```bash
-# DANGER: This deletes the database, Redis data, and TLS certificates
+# DANGER: This deletes the database, Redis data, uploaded photos, and TLS certificates
 docker compose -f docker-compose.yml -f docker-compose.prod.yml down -v
 ```
 
@@ -675,6 +712,8 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml exec db \
 ### Connect to Redis
 
 ```bash
+# Source the env file first so $REDIS_PASSWORD is available to the shell
+set -a; source .env.prod; set +a
 docker compose -f docker-compose.yml -f docker-compose.prod.yml exec redis \
   redis-cli -a "$REDIS_PASSWORD"
 ```
@@ -693,7 +732,60 @@ docker image prune -af
 
 ---
 
-## 14. Troubleshooting
+## 14. Backups
+
+### 14.1 PostgreSQL
+
+Dump the database on a schedule (e.g. daily cron) and copy the file off-server:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml exec db \
+  pg_dump -U pauza -d pauza --format=custom -f /tmp/pauza_backup.dump
+
+docker cp "$(docker compose -f docker-compose.yml -f docker-compose.prod.yml ps -q db)":/tmp/pauza_backup.dump \
+  /opt/pauza-server/backups/pauza_$(date +%Y%m%d).dump
+```
+
+To restore:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T db \
+  pg_restore -U pauza -d pauza --clean --if-exists < /opt/pauza-server/backups/pauza_YYYYMMDD.dump
+```
+
+### 14.2 Photo uploads
+
+The `photodata` Docker volume holds user-uploaded profile photos. Back it up with:
+
+```bash
+docker run --rm -v pauza-server_photodata:/data -v /opt/pauza-server/backups:/backup \
+  alpine tar czf /backup/photos_$(date +%Y%m%d).tar.gz -C /data .
+```
+
+### 14.3 Redis
+
+Redis data (rate-limit counters) is ephemeral and does not need backup. The server recovers gracefully after a Redis data loss.
+
+---
+
+## 15. Log Rotation
+
+Docker container logs grow unbounded by default. Configure a size cap by adding a top-level `x-logging` anchor to `docker-compose.yml` or per-service `logging` blocks in the prod override:
+
+```yaml
+# Example: add to docker-compose.prod.yml under the api service
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+```
+
+Apply the same to `traefik`, `db`, and `redis` to prevent disk exhaustion on long-running servers.
+
+---
+
+## 16. Troubleshooting
 
 ### Traefik fails to get a certificate
 
