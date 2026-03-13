@@ -1,7 +1,7 @@
 # API Endpoints Reference
 
-> Derived from source code. This document covers all **31 endpoints** currently
-> wired in `internal/server/server.go`.
+> Derived from source code. This document covers all **37 endpoints** currently
+> wired in `internal/server/routes.go`.
 
 ---
 
@@ -130,6 +130,23 @@ Readiness probe. Pings the database to verify connectivity.
 
 ---
 
+### `GET /photos/*`
+
+Serves static profile photo files from the configured `PHOTO_STORAGE_DIR` on
+disk. The wildcard segment is the filename returned in `profile_picture_url`
+fields elsewhere in the API.
+
+| Property | Value |
+|---|---|
+| **Auth** | None |
+| **Rate limit** | None |
+
+**Success — 200 OK**: file content with appropriate `Content-Type`.
+
+**Errors**: 404 if the file does not exist.
+
+---
+
 ## Auth (`/api/v1/auth`)
 
 Public passwordless authentication. No JWT required.
@@ -196,6 +213,7 @@ Verify the OTP and obtain access/refresh tokens.
     "name": "",
     "username": "user123",
     "profile_picture_url": null,
+    "push_enabled": true,
     "leaderboard_visible": true,
     "created_at": "2025-01-15T08:30:00Z",
     "subscription": null
@@ -857,7 +875,7 @@ Upload a profile photo. Uses `multipart/form-data` instead of JSON.
 
 | Field | Type | Required | Validation |
 |---|---|---|---|
-| `photo` | file | yes | JPEG or PNG. Practical request cap is 1 MiB because the server enforces a global 1 MiB body limit before the upload handler runs. |
+| `photo` | file | yes | JPEG or PNG, max **5 MiB** (this endpoint overrides the global 1 MiB body cap). |
 
 **Success — 200 OK**
 
@@ -867,18 +885,18 @@ Upload a profile photo. Uses `multipart/form-data` instead of JSON.
 }
 ```
 
+Uploaded files are written to `PHOTO_STORAGE_DIR` on the deployed machine. A
+reverse proxy such as Nginx must expose that directory at the same public path
+configured by `PHOTO_PUBLIC_BASE_URL`.
+
 **Errors**
 
 | Code | When |
 |---|---|
-| `VALIDATION_ERROR` (422) | Missing photo, body exceeds 1 MiB, or invalid image format |
+| `VALIDATION_ERROR` (422) | Missing photo, body exceeds 5 MiB, or invalid image format |
 | `UNAUTHORIZED` (401) | Missing or invalid JWT |
-| `INTERNAL_ERROR` (500) | Photo storage failure |
-
-Uploaded files are written to `PHOTO_STORAGE_DIR` on the deployed machine. A
-reverse proxy such as Nginx must expose that directory at the same public path
-configured by `PHOTO_PUBLIC_BASE_URL`.
 | `RATE_LIMITED` (429) | Too many requests |
+| `INTERNAL_ERROR` (500) | Photo storage failure |
 
 ---
 
@@ -955,9 +973,6 @@ Unregister a device from push notifications.
 | Code | When |
 |---|---|
 | `VALIDATION_ERROR` (422) | Missing fcm_token |
-| `UNAUTHORIZED` (401) | Missing or invalid JWT |
-| `RATE_LIMITED` (429) | Too many requests |
-| `INTERNAL_ERROR` (500) | Transient server error |
 | `UNAUTHORIZED` (401) | Missing or invalid JWT |
 | `RATE_LIMITED` (429) | Too many requests |
 | `INTERNAL_ERROR` (500) | Transient server error |

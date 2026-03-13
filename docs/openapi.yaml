@@ -15,6 +15,8 @@ servers:
 tags:
   - name: Health
     description: Liveness and readiness probes
+  - name: Static
+    description: Static file serving (profile photos)
   - name: Auth
     description: Passwordless authentication (start, verify, refresh)
   - name: Profile
@@ -1754,6 +1756,41 @@ paths:
                 $ref: "#/components/schemas/ReadyHealthDegradedResponse"
 
   # =========================================================================
+  # Static files
+  # =========================================================================
+  /photos/{filepath}:
+    get:
+      operationId: getPhoto
+      tags: [Static]
+      summary: Serve a profile photo
+      description: >
+        Serves static profile photo files from the configured `PHOTO_STORAGE_DIR`
+        on disk. The `filepath` segment corresponds to the filename portion of
+        `profile_picture_url` values returned by other endpoints. No authentication
+        required; files are publicly accessible via the reverse proxy.
+      parameters:
+        - name: filepath
+          in: path
+          required: true
+          description: Filename (and optional sub-path) of the photo to serve.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Photo file returned with appropriate Content-Type.
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: File not found.
+
+  # =========================================================================
   # Auth
   # =========================================================================
   /api/v1/auth/start:
@@ -2123,7 +2160,7 @@ paths:
       operationId: uploadPhoto
       tags: [Profile]
       summary: Upload profile photo
-      description: Accepts a JPEG or PNG image. In practice the entire request is capped at 1 MiB by global middleware before the upload handler runs. Requires a user JWT and is rate limited by user ID using the `general-api` tier. Uploaded files are stored on machine-local disk and are expected to be served by a reverse proxy such as Nginx at the configured `PHOTO_PUBLIC_BASE_URL`.
+      description: Accepts a JPEG or PNG image up to 5 MiB. This endpoint applies its own 5 MiB body cap (overriding the global 1 MiB default). Requires a user JWT and is rate limited by user ID using the `general-api` tier. Uploaded files are stored on machine-local disk and are expected to be served by a reverse proxy such as Nginx at the configured `PHOTO_PUBLIC_BASE_URL`.
       security:
         - UserJWT: []
       requestBody:
