@@ -116,44 +116,62 @@ type StreakDailyAggregateRequest struct {
 	UpdatedAt          *int64 `json:"updated_at"`
 }
 
+type Request struct {
+	Tables RequestTables `json:"tables"`
+}
+
+// maxUpsertBatch is the maximum number of rows accepted per table per sync
+// request. PostgreSQL caps query parameters at 65535; with the largest row
+// having ~13 columns, this leaves comfortable headroom.
+const maxUpsertBatch = 5000
+
 func (r Request) ValidateAndConvert() (Tables, apperror.FieldErrors) {
 	fields := make(apperror.FieldErrors)
 	out := Tables{}
 
 	if r.Tables.Modes != nil {
 		validateTableCursor(fields, "tables.modes", r.Tables.Modes.LastSyncedAt)
+		validateBatchSize(fields, "tables.modes", len(r.Tables.Modes.Upserts))
 		out.Modes = convertModes(fields, *r.Tables.Modes)
 	}
 	if r.Tables.ModeBlockedApps != nil {
 		validateTableCursor(fields, "tables.mode_blocked_apps", r.Tables.ModeBlockedApps.LastSyncedAt)
+		validateBatchSize(fields, "tables.mode_blocked_apps", len(r.Tables.ModeBlockedApps.Upserts))
 		out.ModeBlockedApps = convertModeBlockedApps(fields, *r.Tables.ModeBlockedApps)
 	}
 	if r.Tables.Schedules != nil {
 		validateTableCursor(fields, "tables.schedules", r.Tables.Schedules.LastSyncedAt)
+		validateBatchSize(fields, "tables.schedules", len(r.Tables.Schedules.Upserts))
 		out.Schedules = convertSchedules(fields, *r.Tables.Schedules)
 	}
 	if r.Tables.RestrictionSessions != nil {
 		validateTableCursor(fields, "tables.restriction_sessions", r.Tables.RestrictionSessions.LastSyncedAt)
+		validateBatchSize(fields, "tables.restriction_sessions", len(r.Tables.RestrictionSessions.Upserts))
 		out.RestrictionSessions = convertRestrictionSessions(fields, *r.Tables.RestrictionSessions)
 	}
 	if r.Tables.RestrictionLifecycleEvents != nil {
 		validateTableCursor(fields, "tables.restriction_lifecycle_events", r.Tables.RestrictionLifecycleEvents.LastSyncedAt)
+		validateBatchSize(fields, "tables.restriction_lifecycle_events", len(r.Tables.RestrictionLifecycleEvents.Upserts))
 		out.RestrictionLifecycleEvents = convertRestrictionLifecycleEvents(fields, *r.Tables.RestrictionLifecycleEvents)
 	}
 	if r.Tables.NFCLinkedChips != nil {
 		validateTableCursor(fields, "tables.nfc_linked_chips", r.Tables.NFCLinkedChips.LastSyncedAt)
+		validateBatchSize(fields, "tables.nfc_linked_chips", len(r.Tables.NFCLinkedChips.Upserts))
 		out.NFCLinkedChips = convertNFCLinkedChips(fields, *r.Tables.NFCLinkedChips)
 	}
 	if r.Tables.QRLinkedCodes != nil {
 		validateTableCursor(fields, "tables.qr_linked_codes", r.Tables.QRLinkedCodes.LastSyncedAt)
+		validateBatchSize(fields, "tables.qr_linked_codes", len(r.Tables.QRLinkedCodes.Upserts))
 		out.QRLinkedCodes = convertQRLinkedCodes(fields, *r.Tables.QRLinkedCodes)
 	}
 	if r.Tables.StreakSessionDailyRollups != nil {
 		validateTableCursor(fields, "tables.streak_session_daily_rollups", r.Tables.StreakSessionDailyRollups.LastSyncedAt)
+		validateBatchSize(fields, "tables.streak_session_daily_rollups", len(r.Tables.StreakSessionDailyRollups.Upserts))
 		out.StreakSessionDailyRollups = convertStreakSessionDailyRollups(fields, *r.Tables.StreakSessionDailyRollups)
 	}
 	if r.Tables.StreakDailyAggregates != nil {
 		validateTableCursor(fields, "tables.streak_daily_aggregates", r.Tables.StreakDailyAggregates.LastSyncedAt)
+		validateBatchSize(fields, "tables.streak_daily_aggregates", len(r.Tables.StreakDailyAggregates.Upserts))
 		out.StreakDailyAggregates = convertStreakDailyAggregates(fields, *r.Tables.StreakDailyAggregates)
 	}
 
@@ -170,6 +188,12 @@ func validateTableCursor(fields apperror.FieldErrors, tablePath string, cursor *
 	}
 }
 
+func validateBatchSize(fields apperror.FieldErrors, tablePath string, count int) {
+	if count > maxUpsertBatch {
+		fields[tablePath+".upserts"] = "upserts exceeds maximum batch size of " + itoa(maxUpsertBatch)
+	}
+}
+
 func cursorValue(v *int64) int64 {
 	if v == nil {
 		return 0
@@ -178,7 +202,7 @@ func cursorValue(v *int64) int64 {
 }
 
 func convertModes(fields apperror.FieldErrors, in RequestTableSync[ModeRequest, string]) *TableSync[Mode, string] {
-	out := &TableSync[Mode, string]{LastSyncedAt: cursorValue(in.LastSyncedAt), Deletions: in.Deletions}
+	out := &TableSync[Mode, string]{LastSyncedAt: cursorValue(in.LastSyncedAt)}
 	for i, rec := range in.Upserts {
 		path := "tables.modes.upserts[" + itoa(i) + "]"
 		if strings.TrimSpace(rec.ID) == "" {
@@ -226,6 +250,13 @@ func convertModes(fields apperror.FieldErrors, in RequestTableSync[ModeRequest, 
 			UpdatedAt:             *rec.UpdatedAt,
 		})
 	}
+	for i, id := range in.Deletions {
+		if strings.TrimSpace(id) == "" {
+			fields["tables.modes.deletions["+itoa(i)+"]"] = "id is required"
+			continue
+		}
+		out.Deletions = append(out.Deletions, id)
+	}
 	return out
 }
 
@@ -270,7 +301,7 @@ func convertModeBlockedApps(fields apperror.FieldErrors, in RequestTableSync[Mod
 }
 
 func convertSchedules(fields apperror.FieldErrors, in RequestTableSync[ScheduleRequest, string]) *TableSync[Schedule, string] {
-	out := &TableSync[Schedule, string]{LastSyncedAt: cursorValue(in.LastSyncedAt), Deletions: in.Deletions}
+	out := &TableSync[Schedule, string]{LastSyncedAt: cursorValue(in.LastSyncedAt)}
 	for i, rec := range in.Upserts {
 		path := "tables.schedules.upserts[" + itoa(i) + "]"
 		if strings.TrimSpace(rec.ID) == "" {
@@ -308,11 +339,18 @@ func convertSchedules(fields apperror.FieldErrors, in RequestTableSync[ScheduleR
 		}
 		out.Upserts = append(out.Upserts, Schedule{ID: rec.ID, ModeID: rec.ModeID, Days: rec.Days, StartMinute: *rec.StartMinute, EndMinute: *rec.EndMinute, Enabled: *rec.Enabled, CreatedAt: *rec.CreatedAt, UpdatedAt: *rec.UpdatedAt})
 	}
+	for i, id := range in.Deletions {
+		if strings.TrimSpace(id) == "" {
+			fields["tables.schedules.deletions["+itoa(i)+"]"] = "id is required"
+			continue
+		}
+		out.Deletions = append(out.Deletions, id)
+	}
 	return out
 }
 
 func convertRestrictionSessions(fields apperror.FieldErrors, in RequestTableSync[RestrictionSessionRequest, string]) *TableSync[RestrictionSession, string] {
-	out := &TableSync[RestrictionSession, string]{LastSyncedAt: cursorValue(in.LastSyncedAt), Deletions: in.Deletions}
+	out := &TableSync[RestrictionSession, string]{LastSyncedAt: cursorValue(in.LastSyncedAt)}
 	for i, rec := range in.Upserts {
 		path := "tables.restriction_sessions.upserts[" + itoa(i) + "]"
 		if strings.TrimSpace(rec.SessionID) == "" {
@@ -364,11 +402,18 @@ func convertRestrictionSessions(fields apperror.FieldErrors, in RequestTableSync
 			UpdatedAt:         *rec.UpdatedAt,
 		})
 	}
+	for i, id := range in.Deletions {
+		if strings.TrimSpace(id) == "" {
+			fields["tables.restriction_sessions.deletions["+itoa(i)+"]"] = "id is required"
+			continue
+		}
+		out.Deletions = append(out.Deletions, id)
+	}
 	return out
 }
 
 func convertRestrictionLifecycleEvents(fields apperror.FieldErrors, in RequestTableSync[RestrictionLifecycleEventRequest, string]) *TableSync[RestrictionLifecycleEvent, string] {
-	out := &TableSync[RestrictionLifecycleEvent, string]{LastSyncedAt: cursorValue(in.LastSyncedAt), Deletions: in.Deletions}
+	out := &TableSync[RestrictionLifecycleEvent, string]{LastSyncedAt: cursorValue(in.LastSyncedAt)}
 	for i, rec := range in.Upserts {
 		path := "tables.restriction_lifecycle_events.upserts[" + itoa(i) + "]"
 		if strings.TrimSpace(rec.ID) == "" {
@@ -400,11 +445,18 @@ func convertRestrictionLifecycleEvents(fields apperror.FieldErrors, in RequestTa
 		}
 		out.Upserts = append(out.Upserts, RestrictionLifecycleEvent{ID: rec.ID, SessionID: rec.SessionID, ModeID: rec.ModeID, Action: rec.Action, Source: rec.Source, Reason: rec.Reason, OccurredAt: *rec.OccurredAt, CreatedAt: *rec.CreatedAt})
 	}
+	for i, id := range in.Deletions {
+		if strings.TrimSpace(id) == "" {
+			fields["tables.restriction_lifecycle_events.deletions["+itoa(i)+"]"] = "id is required"
+			continue
+		}
+		out.Deletions = append(out.Deletions, id)
+	}
 	return out
 }
 
 func convertNFCLinkedChips(fields apperror.FieldErrors, in RequestTableSync[NFCLinkedChipRequest, string]) *TableSync[NFCLinkedChip, string] {
-	out := &TableSync[NFCLinkedChip, string]{LastSyncedAt: cursorValue(in.LastSyncedAt), Deletions: in.Deletions}
+	out := &TableSync[NFCLinkedChip, string]{LastSyncedAt: cursorValue(in.LastSyncedAt)}
 	for i, rec := range in.Upserts {
 		path := "tables.nfc_linked_chips.upserts[" + itoa(i) + "]"
 		if strings.TrimSpace(rec.ID) == "" {
@@ -427,11 +479,18 @@ func convertNFCLinkedChips(fields apperror.FieldErrors, in RequestTableSync[NFCL
 		}
 		out.Upserts = append(out.Upserts, NFCLinkedChip{ID: rec.ID, ChipIdentifier: rec.ChipIdentifier, Name: rec.Name, CreatedAt: *rec.CreatedAt, UpdatedAt: *rec.UpdatedAt})
 	}
+	for i, id := range in.Deletions {
+		if strings.TrimSpace(id) == "" {
+			fields["tables.nfc_linked_chips.deletions["+itoa(i)+"]"] = "id is required"
+			continue
+		}
+		out.Deletions = append(out.Deletions, id)
+	}
 	return out
 }
 
 func convertQRLinkedCodes(fields apperror.FieldErrors, in RequestTableSync[QRLinkedCodeRequest, string]) *TableSync[QRLinkedCode, string] {
-	out := &TableSync[QRLinkedCode, string]{LastSyncedAt: cursorValue(in.LastSyncedAt), Deletions: in.Deletions}
+	out := &TableSync[QRLinkedCode, string]{LastSyncedAt: cursorValue(in.LastSyncedAt)}
 	for i, rec := range in.Upserts {
 		path := "tables.qr_linked_codes.upserts[" + itoa(i) + "]"
 		if strings.TrimSpace(rec.ID) == "" {
@@ -453,6 +512,13 @@ func convertQRLinkedCodes(fields apperror.FieldErrors, in RequestTableSync[QRLin
 			continue
 		}
 		out.Upserts = append(out.Upserts, QRLinkedCode{ID: rec.ID, ScanValue: rec.ScanValue, Name: rec.Name, CreatedAt: *rec.CreatedAt, UpdatedAt: *rec.UpdatedAt})
+	}
+	for i, id := range in.Deletions {
+		if strings.TrimSpace(id) == "" {
+			fields["tables.qr_linked_codes.deletions["+itoa(i)+"]"] = "id is required"
+			continue
+		}
+		out.Deletions = append(out.Deletions, id)
 	}
 	return out
 }
@@ -494,7 +560,7 @@ func convertStreakSessionDailyRollups(fields apperror.FieldErrors, in RequestTab
 }
 
 func convertStreakDailyAggregates(fields apperror.FieldErrors, in RequestTableSync[StreakDailyAggregateRequest, string]) *TableSync[StreakDailyAggregate, string] {
-	out := &TableSync[StreakDailyAggregate, string]{LastSyncedAt: cursorValue(in.LastSyncedAt), Deletions: in.Deletions}
+	out := &TableSync[StreakDailyAggregate, string]{LastSyncedAt: cursorValue(in.LastSyncedAt)}
 	for i, rec := range in.Upserts {
 		path := "tables.streak_daily_aggregates.upserts[" + itoa(i) + "]"
 		if !isLocalDay(rec.LocalDay) {
@@ -522,6 +588,13 @@ func convertStreakDailyAggregates(fields apperror.FieldErrors, in RequestTableSy
 			continue
 		}
 		out.Upserts = append(out.Upserts, StreakDailyAggregate{LocalDay: rec.LocalDay, EffectiveMS: *rec.EffectiveMS, Qualified: *rec.Qualified, SourceSessionCount: *rec.SourceSessionCount, UpdatedAt: *rec.UpdatedAt})
+	}
+	for i, id := range in.Deletions {
+		if !isLocalDay(id) {
+			fields["tables.streak_daily_aggregates.deletions["+itoa(i)+"]"] = "local_day must be YYYY-MM-DD"
+			continue
+		}
+		out.Deletions = append(out.Deletions, id)
 	}
 	return out
 }

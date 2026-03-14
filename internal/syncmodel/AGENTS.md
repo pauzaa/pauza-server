@@ -7,8 +7,8 @@
 ## WHERE TO LOOK
 | Task | Location | Notes |
 | --- | --- | --- |
-| Sync request schema | `internal/syncmodel/request.go` | generic request table wrappers and validation/conversion |
-| Sync response schema | `internal/syncmodel/types.go` | response table changes and row shapes |
+| Sync request schema + `Request` struct | `internal/syncmodel/request.go` | `Request`, `RequestTables`, per-table request wrappers, `ValidateAndConvert` |
+| Sync response schema | `internal/syncmodel/types.go` | response table changes, row shapes, and enum types |
 | Request validation tests | `internal/syncmodel/request_test.go` | field-level validation coverage |
 
 ## CONVENTIONS
@@ -16,6 +16,9 @@
 - Keep per-table cursor semantics consistent (`last_synced_at` in ms, `>= 0`).
 - Validate and convert input at the model boundary; handlers consume field errors.
 - Keep table type names stable to avoid silent protocol drift with clients.
+- Deletion IDs must be validated in every `convertXxx` function — never pass `in.Deletions` through raw. Simple-key tables check for blank IDs; composite-key tables check each component field; date-keyed tables validate YYYY-MM-DD format.
+- Upsert batch size is capped at `maxUpsertBatch` (5000 rows) to stay within PostgreSQL's ~65535 parameter limit. Check this in `ValidateAndConvert` via `validateBatchSize` before calling any convert function.
+- New enum types must use the `parseEnum[T]` generic helper in `UnmarshalJSON` rather than duplicating the switch+error pattern.
 
 ## ANTI-PATTERNS
 - Do not move sync validation logic into handlers.

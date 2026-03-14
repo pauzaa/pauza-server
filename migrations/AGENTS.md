@@ -17,6 +17,9 @@
 - Keep migrations forward-safe and compatible with existing production data.
 - Run migrations with `go run ./cmd/migrate` (or built migrate binary), not from server startup.
 
+## SCHEMA NOTES
+- `sync_tombstones` has a `UNIQUE (user_id, table_name, record_id)` constraint. Tombstone inserts must use `ON CONFLICT (user_id, table_name, record_id) DO NOTHING` — see `internal/repository/sync.go:insertTombstone`.
+
 ## ANTI-PATTERNS
 - Do not edit already-applied migrations in place.
 - Do not rely on app startup to perform schema changes.

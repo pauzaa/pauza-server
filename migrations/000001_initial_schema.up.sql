@@ -149,7 +149,8 @@ CREATE TABLE sync_tombstones (
   table_name        TEXT NOT NULL,
   record_id         TEXT NOT NULL,
   deleted_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-  server_deleted_at BIGINT NOT NULL DEFAULT 0
+  server_deleted_at BIGINT NOT NULL DEFAULT 0,
+  UNIQUE (user_id, table_name, record_id)
 );
 
 CREATE INDEX idx_sync_tombstones_user_time ON sync_tombstones (user_id, deleted_at);

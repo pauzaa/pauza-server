@@ -596,12 +596,14 @@ components:
           description: Required when the table object is present.
         upserts:
           type: array
+          maxItems: 5000
           items:
             $ref: "#/components/schemas/ModeInput"
         deletions:
           type: array
           items:
             type: string
+            minLength: 1
 
     SyncTableInput_ModeBlockedApp_ModeBlockedAppDeletion:
       type: object
@@ -615,6 +617,7 @@ components:
           description: Required when the table object is present.
         upserts:
           type: array
+          maxItems: 5000
           items:
             $ref: "#/components/schemas/ModeBlockedAppInput"
         deletions:
@@ -634,12 +637,14 @@ components:
           description: Required when the table object is present.
         upserts:
           type: array
+          maxItems: 5000
           items:
             $ref: "#/components/schemas/ScheduleInput"
         deletions:
           type: array
           items:
             type: string
+            minLength: 1
 
     SyncTableInput_RestrictionSession_string:
       type: object
@@ -653,12 +658,14 @@ components:
           description: Required when the table object is present.
         upserts:
           type: array
+          maxItems: 5000
           items:
             $ref: "#/components/schemas/RestrictionSessionInput"
         deletions:
           type: array
           items:
             type: string
+            minLength: 1
 
     SyncTableInput_RestrictionLifecycleEvent_string:
       type: object
@@ -672,12 +679,14 @@ components:
           description: Required when the table object is present.
         upserts:
           type: array
+          maxItems: 5000
           items:
             $ref: "#/components/schemas/RestrictionLifecycleEventInput"
         deletions:
           type: array
           items:
             type: string
+            minLength: 1
 
     SyncTableInput_NFCLinkedChip_string:
       type: object
@@ -691,12 +700,14 @@ components:
           description: Required when the table object is present.
         upserts:
           type: array
+          maxItems: 5000
           items:
             $ref: "#/components/schemas/NFCLinkedChipInput"
         deletions:
           type: array
           items:
             type: string
+            minLength: 1
 
     SyncTableInput_QRLinkedCode_string:
       type: object
@@ -710,12 +721,14 @@ components:
           description: Required when the table object is present.
         upserts:
           type: array
+          maxItems: 5000
           items:
             $ref: "#/components/schemas/QRLinkedCodeInput"
         deletions:
           type: array
           items:
             type: string
+            minLength: 1
 
     SyncTableInput_StreakSessionDailyRollup_StreakSessionDailyRollupDeletion:
       type: object
@@ -729,6 +742,7 @@ components:
           description: Required when the table object is present.
         upserts:
           type: array
+          maxItems: 5000
           items:
             $ref: "#/components/schemas/StreakSessionDailyRollupInput"
         deletions:
@@ -748,12 +762,14 @@ components:
           description: Required when the table object is present.
         upserts:
           type: array
+          maxItems: 5000
           items:
             $ref: "#/components/schemas/StreakDailyAggregateInput"
         deletions:
           type: array
           items:
             type: string
+            pattern: '^\d{4}-\d{2}-\d{2}$'
 
     # Sync upsert/row models (json tags from handler and syncmodel)
     ModeInput:

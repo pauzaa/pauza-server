@@ -7,6 +7,19 @@ import (
 	"github.com/IsorilovA/pauza-server/internal/domain"
 )
 
+// parseEnum checks whether raw maps to one of the allowed values and returns
+// the typed result. kind is included in the error message for debugging.
+func parseEnum[T ~string](kind, raw string, valid ...T) (T, error) {
+	v := T(raw)
+	for _, allowed := range valid {
+		if v == allowed {
+			return v, nil
+		}
+	}
+	var zero T
+	return zero, fmt.Errorf("invalid %s %q", kind, raw)
+}
+
 type ModeEndingPausingScenario string
 
 const (
@@ -15,25 +28,16 @@ const (
 	ModeEndingPausingScenarioQR     ModeEndingPausingScenario = "qr"
 )
 
-func parseModeEndingPausingScenario(raw string) (ModeEndingPausingScenario, error) {
-	switch ModeEndingPausingScenario(raw) {
-	case ModeEndingPausingScenarioManual, ModeEndingPausingScenarioNFC, ModeEndingPausingScenarioQR:
-		return ModeEndingPausingScenario(raw), nil
-	default:
-		return "", fmt.Errorf("invalid ending pausing scenario %q", raw)
-	}
-}
-
 func (s *ModeEndingPausingScenario) UnmarshalJSON(data []byte) error {
 	var raw string
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	value, err := parseModeEndingPausingScenario(raw)
+	v, err := parseEnum("ending pausing scenario", raw, ModeEndingPausingScenarioManual, ModeEndingPausingScenarioNFC, ModeEndingPausingScenarioQR)
 	if err != nil {
 		return err
 	}
-	*s = value
+	*s = v
 	return nil
 }
 
@@ -48,25 +52,16 @@ const (
 	RestrictionSessionSourceSchedule RestrictionSessionSource = "schedule"
 )
 
-func parseRestrictionSessionSource(raw string) (RestrictionSessionSource, error) {
-	switch RestrictionSessionSource(raw) {
-	case RestrictionSessionSourceManual, RestrictionSessionSourceSchedule:
-		return RestrictionSessionSource(raw), nil
-	default:
-		return "", fmt.Errorf("invalid restriction session source %q", raw)
-	}
-}
-
 func (s *RestrictionSessionSource) UnmarshalJSON(data []byte) error {
 	var raw string
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	value, err := parseRestrictionSessionSource(raw)
+	v, err := parseEnum("restriction session source", raw, RestrictionSessionSourceManual, RestrictionSessionSourceSchedule)
 	if err != nil {
 		return err
 	}
-	*s = value
+	*s = v
 	return nil
 }
 
@@ -77,25 +72,16 @@ const (
 	RestrictionSessionIntegrityStatusAnomaly RestrictionSessionIntegrityStatus = "anomaly"
 )
 
-func parseRestrictionSessionIntegrityStatus(raw string) (RestrictionSessionIntegrityStatus, error) {
-	switch RestrictionSessionIntegrityStatus(raw) {
-	case RestrictionSessionIntegrityStatusOK, RestrictionSessionIntegrityStatusAnomaly:
-		return RestrictionSessionIntegrityStatus(raw), nil
-	default:
-		return "", fmt.Errorf("invalid integrity status %q", raw)
-	}
-}
-
 func (s *RestrictionSessionIntegrityStatus) UnmarshalJSON(data []byte) error {
 	var raw string
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	value, err := parseRestrictionSessionIntegrityStatus(raw)
+	v, err := parseEnum("integrity status", raw, RestrictionSessionIntegrityStatusOK, RestrictionSessionIntegrityStatusAnomaly)
 	if err != nil {
 		return err
 	}
-	*s = value
+	*s = v
 	return nil
 }
 
@@ -108,25 +94,16 @@ const (
 	RestrictionLifecycleActionEnded   RestrictionLifecycleAction = "END"
 )
 
-func parseRestrictionLifecycleAction(raw string) (RestrictionLifecycleAction, error) {
-	switch RestrictionLifecycleAction(raw) {
-	case RestrictionLifecycleActionStarted, RestrictionLifecycleActionPaused, RestrictionLifecycleActionResumed, RestrictionLifecycleActionEnded:
-		return RestrictionLifecycleAction(raw), nil
-	default:
-		return "", fmt.Errorf("invalid lifecycle action %q", raw)
-	}
-}
-
 func (a *RestrictionLifecycleAction) UnmarshalJSON(data []byte) error {
 	var raw string
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	value, err := parseRestrictionLifecycleAction(raw)
+	v, err := parseEnum("lifecycle action", raw, RestrictionLifecycleActionStarted, RestrictionLifecycleActionPaused, RestrictionLifecycleActionResumed, RestrictionLifecycleActionEnded)
 	if err != nil {
 		return err
 	}
-	*a = value
+	*a = v
 	return nil
 }
 
@@ -139,25 +116,16 @@ const (
 	RestrictionLifecycleReasonTimer  RestrictionLifecycleReason = "timer"
 )
 
-func parseRestrictionLifecycleReason(raw string) (RestrictionLifecycleReason, error) {
-	switch RestrictionLifecycleReason(raw) {
-	case RestrictionLifecycleReasonManual, RestrictionLifecycleReasonNFC, RestrictionLifecycleReasonQR, RestrictionLifecycleReasonTimer:
-		return RestrictionLifecycleReason(raw), nil
-	default:
-		return "", fmt.Errorf("invalid lifecycle reason %q", raw)
-	}
-}
-
 func (r *RestrictionLifecycleReason) UnmarshalJSON(data []byte) error {
 	var raw string
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	value, err := parseRestrictionLifecycleReason(raw)
+	v, err := parseEnum("lifecycle reason", raw, RestrictionLifecycleReasonManual, RestrictionLifecycleReasonNFC, RestrictionLifecycleReasonQR, RestrictionLifecycleReasonTimer)
 	if err != nil {
 		return err
 	}
-	*r = value
+	*r = v
 	return nil
 }
 
@@ -283,10 +251,6 @@ type Tables struct {
 	QRLinkedCodes              *TableSync[QRLinkedCode, string]                                  `json:"qr_linked_codes,omitempty"`
 	StreakSessionDailyRollups  *TableSync[StreakSessionDailyRollup, StreakSessionDailyRollupKey] `json:"streak_session_daily_rollups,omitempty"`
 	StreakDailyAggregates      *TableSync[StreakDailyAggregate, string]                          `json:"streak_daily_aggregates,omitempty"`
-}
-
-type Request struct {
-	Tables RequestTables `json:"tables"`
 }
 
 type TableChangesByTable struct {

@@ -1534,8 +1534,8 @@ Each table key is **optional**. When present, it must contain:
 | Field | Type | Required | Validation |
 |---|---|---|---|
 | `last_synced_at` | int64 | yes | Unix ms timestamp, ≥ 0 |
-| `upserts` | array | no | Records to create/update |
-| `deletions` | array | no | Keys of records to delete |
+| `upserts` | array | no | Records to create/update; max **5000** items per table per request |
+| `deletions` | array | no | Keys of records to delete; each key is validated (see per-table rules below) |
 
 #### Table: `modes`
 
@@ -1554,7 +1554,7 @@ Each table key is **optional**. When present, it must contain:
 | `created_at` | int64 | yes | Unix ms |
 | `updated_at` | int64 | yes | Unix ms |
 
-**Deletion key:** `string` (mode ID)
+**Deletion key:** `string` (mode ID) — non-empty, whitespace-only values are rejected.
 
 #### Table: `mode_blocked_apps`
 
@@ -1585,7 +1585,7 @@ Each table key is **optional**. When present, it must contain:
 | `created_at` | int64 | yes | Unix ms |
 | `updated_at` | int64 | yes | Unix ms |
 
-**Deletion key:** `string` (schedule ID)
+**Deletion key:** `string` (schedule ID) — non-empty, whitespace-only values are rejected.
 
 #### Table: `restriction_sessions`
 
@@ -1607,7 +1607,7 @@ Each table key is **optional**. When present, it must contain:
 | `created_at` | int64 | yes | Unix ms |
 | `updated_at` | int64 | yes | Unix ms |
 
-**Deletion key:** `string` (session ID)
+**Deletion key:** `string` (session ID) — non-empty, whitespace-only values are rejected.
 
 #### Table: `restriction_lifecycle_events`
 
@@ -1624,7 +1624,7 @@ Each table key is **optional**. When present, it must contain:
 | `occurred_at` | int64 | yes | Unix ms |
 | `created_at` | int64 | yes | Unix ms |
 
-**Deletion key:** `string` (event ID)
+**Deletion key:** `string` (event ID) — non-empty, whitespace-only values are rejected.
 
 #### Table: `nfc_linked_chips`
 
@@ -1638,7 +1638,7 @@ Each table key is **optional**. When present, it must contain:
 | `created_at` | int64 | yes | Unix ms |
 | `updated_at` | int64 | yes | Unix ms |
 
-**Deletion key:** `string` (chip ID)
+**Deletion key:** `string` (chip ID) — non-empty, whitespace-only values are rejected.
 
 #### Table: `qr_linked_codes`
 
@@ -1652,7 +1652,7 @@ Each table key is **optional**. When present, it must contain:
 | `created_at` | int64 | yes | Unix ms |
 | `updated_at` | int64 | yes | Unix ms |
 
-**Deletion key:** `string` (code ID)
+**Deletion key:** `string` (code ID) — non-empty, whitespace-only values are rejected.
 
 #### Table: `streak_session_daily_rollups`
 
@@ -1679,7 +1679,7 @@ Each table key is **optional**. When present, it must contain:
 | `source_session_count` | int | yes | ≥ 0 |
 | `updated_at` | int64 | yes | Unix ms |
 
-**Deletion key:** `string` (local_day)
+**Deletion key:** `string` (local_day) — must be `YYYY-MM-DD` format.
 
 ---
 
@@ -1708,7 +1708,7 @@ upsert/deletion types described above.
 
 | Code | When |
 |---|---|
-| `VALIDATION_ERROR` (422) | Missing `last_synced_at`, invalid field values, or unknown JSON fields anywhere in the payload |
+| `VALIDATION_ERROR` (422) | Missing `last_synced_at`, invalid field values, blank deletion IDs, `upserts` exceeding 5000 items, or unknown JSON fields anywhere in the payload |
 | `UNAUTHORIZED` (401) | Missing or invalid JWT, or user not found |
 | `RATE_LIMITED` (429) | Too many requests |
 | `INTERNAL_ERROR` (500) | Transient server error |
