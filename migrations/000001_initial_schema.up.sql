@@ -262,6 +262,7 @@ CREATE TABLE restriction_lifecycle_events (
 );
 
 CREATE INDEX idx_lifecycle_events_session ON restriction_lifecycle_events (user_id, session_id);
+CREATE INDEX idx_lifecycle_events_server_created ON restriction_lifecycle_events (user_id, server_created_at);
 
 -- 16. nfc_linked_chips (FK -> users)
 CREATE TABLE nfc_linked_chips (
@@ -319,6 +320,15 @@ CREATE TABLE streak_daily_aggregates (
 );
 
 CREATE INDEX idx_streak_aggregates_qualified ON streak_daily_aggregates (user_id, qualified, local_day);
+
+CREATE INDEX idx_modes_server_updated ON modes (user_id, server_updated_at);
+CREATE INDEX idx_mode_blocked_apps_server_updated ON mode_blocked_apps (user_id, server_updated_at);
+CREATE INDEX idx_schedules_server_updated ON schedules (user_id, server_updated_at);
+CREATE INDEX idx_restriction_sessions_server_updated ON restriction_sessions (user_id, server_updated_at);
+CREATE INDEX idx_nfc_linked_chips_server_updated ON nfc_linked_chips (user_id, server_updated_at);
+CREATE INDEX idx_qr_linked_codes_server_updated ON qr_linked_codes (user_id, server_updated_at);
+CREATE INDEX idx_streak_rollups_server_updated ON streak_session_daily_rollups (user_id, server_updated_at);
+CREATE INDEX idx_streak_aggregates_server_updated ON streak_daily_aggregates (user_id, server_updated_at);
 
 -- 20. leaderboard_metrics (FK -> users)
 CREATE TABLE leaderboard_metrics (

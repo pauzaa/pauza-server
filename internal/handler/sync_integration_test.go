@@ -397,6 +397,12 @@ func TestIntegration_Sync_RestrictionLifecycleCursorUsesCreatedAt(t *testing.T) 
 	if err != nil {
 		t.Fatalf("insert event: %v", err)
 	}
+	_, err = pool.Exec(ctx,
+		`UPDATE restriction_lifecycle_events SET server_created_at = 1000 WHERE user_id = $1 AND id = 'ev1'`,
+		auth.User.ID)
+	if err != nil {
+		t.Fatalf("set server_created_at: %v", err)
+	}
 
 	p := syncPayload()
 	p.Tables.RestrictionLifecycleEvents = &syncTableFixture[syncRestrictionLifecycleEventFixture, string]{
