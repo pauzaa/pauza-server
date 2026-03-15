@@ -55,7 +55,7 @@ func mountRoutes(r chi.Router, cfg *config.Config, logger *slog.Logger, pool *pg
 		})
 
 		r.Group(func(r chi.Router) {
-			r.Use(authmw.JWTAuth(cfg.JWTSecret, logger))
+			r.Use(authmw.JWTAuth(cfg.JWTSecret, deps.sessionValidator, logger))
 
 			r.Group(func(r chi.Router) {
 				r.Use(authmw.RateLimit(limiters.general, cfg.GeneralAPIRateLimit, authmw.UserIDKey))

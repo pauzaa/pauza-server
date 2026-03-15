@@ -72,6 +72,11 @@ func (s *AuthService) VerifyOTP(ctx context.Context, in VerifyOTPInput) (AuthOut
 		return AuthOutput{}, ErrInternal
 	}
 
+	if err := s.sessions.RevokeAllUserSessions(ctx, tx, user.ID); err != nil {
+		s.logger.Error("revoking all user sessions on verify", "err", err)
+		return AuthOutput{}, ErrInternal
+	}
+
 	out, err := s.issueAuthOutput(ctx, tx, user, subscription)
 	if err != nil {
 		return AuthOutput{}, err

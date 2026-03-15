@@ -209,7 +209,15 @@ func (s *AuthService) insertUserWithRetries(ctx context.Context, tx repository.D
 }
 
 func (s *AuthService) issueAuthOutput(ctx context.Context, db repository.DBTX, user repository.UserRow, subscription *EntitlementInfo) (AuthOutput, error) {
-	accessToken, err := auth.IssueAccessToken(user.ID, user.Email, s.jwtSecret, s.jwtAccessTokenTTL)
+	refreshExpiresAt := time.Now().UTC().Add(s.jwtRefreshTokenTTL)
+
+	sessionID, err := s.sessions.InsertSession(ctx, db, user.ID, refreshExpiresAt)
+	if err != nil {
+		s.logger.Error("inserting session", "err", err)
+		return AuthOutput{}, ErrInternal
+	}
+
+	accessToken, err := auth.IssueAccessToken(user.ID, user.Email, sessionID, s.jwtSecret, s.jwtAccessTokenTTL)
 	if err != nil {
 		s.logger.Error("issuing access token", "err", err)
 		return AuthOutput{}, ErrInternal
@@ -221,8 +229,7 @@ func (s *AuthService) issueAuthOutput(ctx context.Context, db repository.DBTX, u
 		return AuthOutput{}, ErrInternal
 	}
 
-	refreshExpiresAt := time.Now().UTC().Add(s.jwtRefreshTokenTTL)
-	if err := s.refreshTokens.InsertRefreshToken(ctx, db, user.ID, hashRefresh, refreshExpiresAt); err != nil {
+	if err := s.refreshTokens.InsertRefreshToken(ctx, db, user.ID, sessionID, hashRefresh, refreshExpiresAt); err != nil {
 		s.logger.Error("inserting refresh token", "err", err)
 		return AuthOutput{}, ErrInternal
 	}

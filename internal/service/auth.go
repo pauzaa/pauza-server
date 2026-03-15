@@ -24,11 +24,16 @@ type authEntitlementRepository interface {
 	repository.EntitlementSnapshotRepository
 }
 
+type authSessionRepository interface {
+	repository.SessionRepository
+}
+
 type AuthService struct {
 	pool               repository.Pool
 	users              authUserRepository
 	otps               authOTPRepository
 	refreshTokens      authRefreshTokenRepository
+	sessions           authSessionRepository
 	entitlements       authEntitlementRepository
 	mailer             mail.Sender
 	jwtSecret          string
@@ -44,6 +49,7 @@ func NewAuthService(
 	users authUserRepository,
 	otps authOTPRepository,
 	refreshTokens authRefreshTokenRepository,
+	sessions authSessionRepository,
 	entitlements authEntitlementRepository,
 	mailer mail.Sender,
 	jwtSecret string,
@@ -56,6 +62,7 @@ func NewAuthService(
 		users:              users,
 		otps:               otps,
 		refreshTokens:      refreshTokens,
+		sessions:           sessions,
 		entitlements:       entitlements,
 		mailer:             mailer,
 		jwtSecret:          jwtSecret,

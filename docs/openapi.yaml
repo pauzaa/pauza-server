@@ -223,6 +223,33 @@ components:
         refresh_token:
           type: string
 
+    # -- Auth sessions -------------------------------------------------------
+    AuthSession:
+      type: object
+      required: [id, user_id, refresh_token_hash, expires_at, created_at]
+      description: Represents a single authenticated session (refresh-token family).
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        refresh_token_hash:
+          type: string
+          description: SHA-256 hash of the refresh token (never the raw token).
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp of the most recent token refresh for this session.
+
     # -- User profile -------------------------------------------------------
     UserResponse:
       type: object
@@ -586,14 +613,14 @@ components:
     # Generic sync-table input wrappers (OpenAPI 3.0 cannot use generics)
     SyncTableInput_Mode_string:
       type: object
-      required: [last_synced_at]
+      required: [cursor]
       additionalProperties: false
       properties:
-        last_synced_at:
+        cursor:
           type: integer
           format: int64
           minimum: 0
-          description: Required when the table object is present.
+          description: Opaque cursor returned by the previous sync response (`next_cursor`). Use 0 for the first sync.
         upserts:
           type: array
           maxItems: 5000
@@ -607,14 +634,14 @@ components:
 
     SyncTableInput_ModeBlockedApp_ModeBlockedAppDeletion:
       type: object
-      required: [last_synced_at]
+      required: [cursor]
       additionalProperties: false
       properties:
-        last_synced_at:
+        cursor:
           type: integer
           format: int64
           minimum: 0
-          description: Required when the table object is present.
+          description: Opaque cursor returned by the previous sync response (`next_cursor`). Use 0 for the first sync.
         upserts:
           type: array
           maxItems: 5000
@@ -627,14 +654,14 @@ components:
 
     SyncTableInput_Schedule_string:
       type: object
-      required: [last_synced_at]
+      required: [cursor]
       additionalProperties: false
       properties:
-        last_synced_at:
+        cursor:
           type: integer
           format: int64
           minimum: 0
-          description: Required when the table object is present.
+          description: Opaque cursor returned by the previous sync response (`next_cursor`). Use 0 for the first sync.
         upserts:
           type: array
           maxItems: 5000
@@ -648,14 +675,14 @@ components:
 
     SyncTableInput_RestrictionSession_string:
       type: object
-      required: [last_synced_at]
+      required: [cursor]
       additionalProperties: false
       properties:
-        last_synced_at:
+        cursor:
           type: integer
           format: int64
           minimum: 0
-          description: Required when the table object is present.
+          description: Opaque cursor returned by the previous sync response (`next_cursor`). Use 0 for the first sync.
         upserts:
           type: array
           maxItems: 5000
@@ -669,35 +696,31 @@ components:
 
     SyncTableInput_RestrictionLifecycleEvent_string:
       type: object
-      required: [last_synced_at]
+      required: [cursor]
       additionalProperties: false
+      description: Lifecycle events are append-only; deletions are not accepted.
       properties:
-        last_synced_at:
+        cursor:
           type: integer
           format: int64
           minimum: 0
-          description: Required when the table object is present.
+          description: Opaque cursor returned by the previous sync response (`next_cursor`). Use 0 for the first sync.
         upserts:
           type: array
           maxItems: 5000
           items:
             $ref: "#/components/schemas/RestrictionLifecycleEventInput"
-        deletions:
-          type: array
-          items:
-            type: string
-            minLength: 1
 
     SyncTableInput_NFCLinkedChip_string:
       type: object
-      required: [last_synced_at]
+      required: [cursor]
       additionalProperties: false
       properties:
-        last_synced_at:
+        cursor:
           type: integer
           format: int64
           minimum: 0
-          description: Required when the table object is present.
+          description: Opaque cursor returned by the previous sync response (`next_cursor`). Use 0 for the first sync.
         upserts:
           type: array
           maxItems: 5000
@@ -711,14 +734,14 @@ components:
 
     SyncTableInput_QRLinkedCode_string:
       type: object
-      required: [last_synced_at]
+      required: [cursor]
       additionalProperties: false
       properties:
-        last_synced_at:
+        cursor:
           type: integer
           format: int64
           minimum: 0
-          description: Required when the table object is present.
+          description: Opaque cursor returned by the previous sync response (`next_cursor`). Use 0 for the first sync.
         upserts:
           type: array
           maxItems: 5000
@@ -732,14 +755,14 @@ components:
 
     SyncTableInput_StreakSessionDailyRollup_StreakSessionDailyRollupDeletion:
       type: object
-      required: [last_synced_at]
+      required: [cursor]
       additionalProperties: false
       properties:
-        last_synced_at:
+        cursor:
           type: integer
           format: int64
           minimum: 0
-          description: Required when the table object is present.
+          description: Opaque cursor returned by the previous sync response (`next_cursor`). Use 0 for the first sync.
         upserts:
           type: array
           maxItems: 5000
@@ -752,24 +775,17 @@ components:
 
     SyncTableInput_StreakDailyAggregate_string:
       type: object
-      required: [last_synced_at]
+      required: [cursor]
       additionalProperties: false
+      description: >-
+        Server-computed table. Only the cursor is accepted; upserts and deletions
+        are not supported and will be rejected if provided.
       properties:
-        last_synced_at:
+        cursor:
           type: integer
           format: int64
           minimum: 0
-          description: Required when the table object is present.
-        upserts:
-          type: array
-          maxItems: 5000
-          items:
-            $ref: "#/components/schemas/StreakDailyAggregateInput"
-        deletions:
-          type: array
-          items:
-            type: string
-            pattern: '^\d{4}-\d{2}-\d{2}$'
+          description: Opaque cursor returned by the previous sync response (`next_cursor`). Use 0 for the first sync.
 
     # Sync upsert/row models (json tags from handler and syncmodel)
     ModeInput:
@@ -1059,12 +1075,8 @@ components:
     # Sync response models (json tags from syncmodel/types.go)
     SyncResponse:
       type: object
-      required: [server_time, tables]
+      required: [tables]
       properties:
-        server_time:
-          type: integer
-          format: int64
-          description: Server wall-clock in Unix milliseconds.
         tables:
           $ref: "#/components/schemas/SyncResponseTables"
 
@@ -1093,8 +1105,12 @@ components:
 
     SyncTableChanges_Mode_string:
       type: object
-      required: [upserts, deletions]
+      required: [next_cursor, upserts, deletions]
       properties:
+        next_cursor:
+          type: integer
+          format: int64
+          description: Cursor to pass in the next sync request for this table.
         upserts:
           type: array
           items:
@@ -1106,8 +1122,12 @@ components:
 
     SyncTableChanges_ModeBlockedApp_ModeBlockedAppKey:
       type: object
-      required: [upserts, deletions]
+      required: [next_cursor, upserts, deletions]
       properties:
+        next_cursor:
+          type: integer
+          format: int64
+          description: Cursor to pass in the next sync request for this table.
         upserts:
           type: array
           items:
@@ -1119,8 +1139,12 @@ components:
 
     SyncTableChanges_Schedule_string:
       type: object
-      required: [upserts, deletions]
+      required: [next_cursor, upserts, deletions]
       properties:
+        next_cursor:
+          type: integer
+          format: int64
+          description: Cursor to pass in the next sync request for this table.
         upserts:
           type: array
           items:
@@ -1132,8 +1156,12 @@ components:
 
     SyncTableChanges_RestrictionSession_string:
       type: object
-      required: [upserts, deletions]
+      required: [next_cursor, upserts, deletions]
       properties:
+        next_cursor:
+          type: integer
+          format: int64
+          description: Cursor to pass in the next sync request for this table.
         upserts:
           type: array
           items:
@@ -1145,21 +1173,26 @@ components:
 
     SyncTableChanges_RestrictionLifecycleEvent_string:
       type: object
-      required: [upserts, deletions]
+      required: [next_cursor, upserts]
+      description: Lifecycle events are append-only; no deletions are returned.
       properties:
+        next_cursor:
+          type: integer
+          format: int64
+          description: Cursor to pass in the next sync request for this table.
         upserts:
           type: array
           items:
             $ref: "#/components/schemas/SyncRestrictionLifecycleEvent"
-        deletions:
-          type: array
-          items:
-            type: string
 
     SyncTableChanges_NFCLinkedChip_string:
       type: object
-      required: [upserts, deletions]
+      required: [next_cursor, upserts, deletions]
       properties:
+        next_cursor:
+          type: integer
+          format: int64
+          description: Cursor to pass in the next sync request for this table.
         upserts:
           type: array
           items:
@@ -1171,8 +1204,12 @@ components:
 
     SyncTableChanges_QRLinkedCode_string:
       type: object
-      required: [upserts, deletions]
+      required: [next_cursor, upserts, deletions]
       properties:
+        next_cursor:
+          type: integer
+          format: int64
+          description: Cursor to pass in the next sync request for this table.
         upserts:
           type: array
           items:
@@ -1184,8 +1221,12 @@ components:
 
     SyncTableChanges_StreakSessionDailyRollup_StreakSessionDailyRollupKey:
       type: object
-      required: [upserts, deletions]
+      required: [next_cursor, upserts, deletions]
       properties:
+        next_cursor:
+          type: integer
+          format: int64
+          description: Cursor to pass in the next sync request for this table.
         upserts:
           type: array
           items:
@@ -1197,16 +1238,17 @@ components:
 
     SyncTableChanges_StreakDailyAggregate_string:
       type: object
-      required: [upserts, deletions]
+      required: [next_cursor, upserts]
+      description: Server-computed table; only upserts are returned (no deletions).
       properties:
+        next_cursor:
+          type: integer
+          format: int64
+          description: Cursor to pass in the next sync request for this table.
         upserts:
           type: array
           items:
             $ref: "#/components/schemas/SyncStreakDailyAggregate"
-        deletions:
-          type: array
-          items:
-            type: string
 
     # Sync response row models (json tags from syncmodel/types.go)
     SyncMode:

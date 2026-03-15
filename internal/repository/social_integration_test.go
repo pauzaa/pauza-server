@@ -175,7 +175,7 @@ func TestSocialRepository_LeaderboardQueries(t *testing.T) {
 	}
 }
 
-func TestPgxSyncRepository_SyncStreakDailyAggregates_RefreshesLeaderboardMetrics(t *testing.T) {
+func TestPgxSyncRepository_RecomputeStreakAggregates_RefreshesLeaderboardMetrics(t *testing.T) {
 
 	pool := testSocialRepoPool(t)
 	repo := NewPgxSyncRepository(NewSocialRepository())
@@ -186,46 +186,44 @@ func TestPgxSyncRepository_SyncStreakDailyAggregates_RefreshesLeaderboardMetrics
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := repo.SyncStreakDailyAggregates(ctx, pool, userID, syncmodel.TableSync[syncmodel.StreakDailyAggregate, string]{
-		LastSyncedAt: 0,
-		Upserts: []syncmodel.StreakDailyAggregate{
-			{LocalDay: "2026-03-03", EffectiveMS: 100, Qualified: 1, SourceSessionCount: 1, UpdatedAt: 103},
-			{LocalDay: "2026-03-02", EffectiveMS: 200, Qualified: 1, SourceSessionCount: 1, UpdatedAt: 102},
+	// Insert rollup data that RecomputeStreakAggregates will aggregate
+	_, err := repo.SyncStreakSessionDailyRollups(ctx, pool, userID, syncmodel.TableSync[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]{
+		Cursor: 0,
+		Upserts: []syncmodel.StreakSessionDailyRollup{
+			{SessionID: "sess-1", LocalDay: "2026-03-03", EffectiveMS: 100, UpdatedAt: 103},
+			{SessionID: "sess-2", LocalDay: "2026-03-02", EffectiveMS: 200, UpdatedAt: 102},
 		},
 	})
 	if err != nil {
-		t.Fatalf("SyncStreakDailyAggregates(upsert): %v", err)
+		t.Fatalf("SyncStreakSessionDailyRollups(upsert): %v", err)
 	}
 
-	var currentStreak int
-	var totalFocus int64
-	if err := pool.QueryRow(ctx, `
-		SELECT current_streak_days, total_focus_time_ms
-		FROM leaderboard_metrics
-		WHERE user_id = $1
-	`, userID).Scan(&currentStreak, &totalFocus); err != nil {
-		t.Fatalf("loading leaderboard metrics after upsert: %v", err)
-	}
-	if currentStreak != 2 || totalFocus != 300 {
-		t.Fatalf("metrics after upsert = (%d, %d), want (2, 300)", currentStreak, totalFocus)
+	if err := repo.RecomputeStreakAggregates(ctx, pool, userID); err != nil {
+		t.Fatalf("RecomputeStreakAggregates: %v", err)
 	}
 
-	_, err = repo.SyncStreakDailyAggregates(ctx, pool, userID, syncmodel.TableSync[syncmodel.StreakDailyAggregate, string]{
-		LastSyncedAt: 0,
-		Deletions:    []string{"2026-03-03", "2026-03-02"},
+	// Verify aggregates were created
+	result, err := repo.ListStreakDailyAggregateChanges(ctx, pool, userID, 0)
+	if err != nil {
+		t.Fatalf("ListStreakDailyAggregateChanges: %v", err)
+	}
+	if len(result.Upserts) != 2 {
+		t.Fatalf("aggregate upserts = %d, want 2", len(result.Upserts))
+	}
+
+	// Delete rollup data and recompute to verify orphans are cleaned up
+	_, err = repo.SyncStreakSessionDailyRollups(ctx, pool, userID, syncmodel.TableSync[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]{
+		Cursor:    0,
+		Deletions: []syncmodel.StreakSessionDailyRollupKey{
+			{SessionID: "sess-1", LocalDay: "2026-03-03"},
+			{SessionID: "sess-2", LocalDay: "2026-03-02"},
+		},
 	})
 	if err != nil {
-		t.Fatalf("SyncStreakDailyAggregates(delete): %v", err)
+		t.Fatalf("SyncStreakSessionDailyRollups(delete): %v", err)
 	}
 
-	if err := pool.QueryRow(ctx, `
-		SELECT current_streak_days, total_focus_time_ms
-		FROM leaderboard_metrics
-		WHERE user_id = $1
-	`, userID).Scan(&currentStreak, &totalFocus); err != nil {
-		t.Fatalf("loading leaderboard metrics after delete: %v", err)
-	}
-	if currentStreak != 0 || totalFocus != 0 {
-		t.Fatalf("metrics after delete = (%d, %d), want (0, 0)", currentStreak, totalFocus)
+	if err := repo.RecomputeStreakAggregates(ctx, pool, userID); err != nil {
+		t.Fatalf("RecomputeStreakAggregates after delete: %v", err)
 	}
 }

@@ -20,8 +20,9 @@ func TestUserFromContext_Empty(t *testing.T) {
 
 func TestWithUser_RoundTrip(t *testing.T) {
 	want := middleware.AuthUser{
-		UserID: "550e8400-e29b-41d4-a716-446655440000",
-		Email:  "alice@example.com",
+		UserID:    "550e8400-e29b-41d4-a716-446655440000",
+		Email:     "alice@example.com",
+		SessionID: "sess-001",
 	}
 
 	ctx := middleware.WithUser(context.Background(), want)

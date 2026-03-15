@@ -15,7 +15,7 @@
 | **Body limit** | Request bodies are capped at **1 MiB** globally. `POST /api/v1/me/photo` and all `/api/v1/ai/*` endpoints use a **5 MiB** limit. Exceeding the limit returns a `VALIDATION_ERROR`. |
 | **Timestamps** | All timestamps in JSON responses use **UTC RFC 3339** (e.g. `2025-01-15T08:30:00Z`). Sync-table timestamps are **Unix milliseconds** (`int64`). |
 | **Pagination** | Endpoints that paginate accept `?page=` (default `1`) and `?limit=` (default `20`, max `100`). Invalid or out-of-range values are silently clamped to defaults rather than rejected. |
-| **Authentication** | Protected endpoints require `Authorization: Bearer <access_token>`. Admin endpoints require an admin JWT. The webhook endpoint uses a separate Bearer secret. |
+| **Authentication** | Protected endpoints require `Authorization: Bearer <access_token>`. Access tokens include a `sid` (session ID) claim that ties the token to a specific login session. Admin endpoints require an admin JWT. The webhook endpoint uses a separate Bearer secret. |
 | **Unknown fields** | All JSON-body endpoints (except the webhook) use `DisallowUnknownFields()`, so unrecognised keys anywhere in the JSON payload are rejected with `VALIDATION_ERROR`. The webhook decoder does **not** enforce this (forward-compatible). |
 
 ### Rate-limit headers
@@ -279,7 +279,8 @@ Exchange a refresh token for new access and refresh tokens.
 
 ### `POST /api/v1/auth/logout`
 
-Revoke all refresh tokens for the authenticated user (logout everywhere).
+Revoke the current session's refresh token. The session is identified by the
+`sid` claim in the caller's access token.
 
 | Property | Value |
 |---|---|
@@ -1533,7 +1534,7 @@ Each table key is **optional**. When present, it must contain:
 
 | Field | Type | Required | Validation |
 |---|---|---|---|
-| `last_synced_at` | int64 | yes | Unix ms timestamp, ≥ 0 |
+| `cursor` | string | yes | Opaque sync cursor (empty string `""` for first sync) |
 | `upserts` | array | no | Records to create/update; max **5000** items per table per request |
 | `deletions` | array | no | Keys of records to delete; each key is validated (see per-table rules below) |
 
@@ -1624,7 +1625,7 @@ Each table key is **optional**. When present, it must contain:
 | `occurred_at` | int64 | yes | Unix ms |
 | `created_at` | int64 | yes | Unix ms |
 
-**Deletion key:** `string` (event ID) — non-empty, whitespace-only values are rejected.
+**Deletions:** Not supported for this table.
 
 #### Table: `nfc_linked_chips`
 
@@ -1669,17 +1670,8 @@ Each table key is **optional**. When present, it must contain:
 
 #### Table: `streak_daily_aggregates`
 
-**Upsert fields:**
-
-| Field | Type | Required | Validation |
-|---|---|---|---|
-| `local_day` | string | yes | `YYYY-MM-DD` |
-| `effective_ms` | int | yes | ≥ 0 |
-| `qualified` | int | yes | `0` or `1` |
-| `source_session_count` | int | yes | ≥ 0 |
-| `updated_at` | int64 | yes | Unix ms |
-
-**Deletion key:** `string` (local_day) — must be `YYYY-MM-DD` format.
+**Read-only table.** The client may only supply `cursor` to receive server-computed
+aggregates. Upserts and deletions are not accepted for this table.
 
 ---
 
@@ -1690,25 +1682,26 @@ each table the client included. Tables not requested are omitted.
 
 ```json
 {
-  "server_time": 1705312200000,
   "tables": {
     "modes": {
       "upserts": [ ... ],
-      "deletions": [ ... ]
+      "deletions": [ ... ],
+      "next_cursor": "opaque-cursor-string"
     }
   }
 }
 ```
 
 Each table entry in the response contains `upserts` (full records to apply
-locally) and `deletions` (keys to remove locally). The field schemas match the
-upsert/deletion types described above.
+locally), `deletions` (keys to remove locally), and `next_cursor` (the cursor
+the client should send in the next sync request for that table). The field
+schemas match the upsert/deletion types described above.
 
 **Errors**
 
 | Code | When |
 |---|---|
-| `VALIDATION_ERROR` (422) | Missing `last_synced_at`, invalid field values, blank deletion IDs, `upserts` exceeding 5000 items, or unknown JSON fields anywhere in the payload |
+| `VALIDATION_ERROR` (422) | Missing `cursor`, invalid field values, blank deletion IDs, `upserts` exceeding 5000 items, or unknown JSON fields anywhere in the payload |
 | `UNAUTHORIZED` (401) | Missing or invalid JWT, or user not found |
 | `RATE_LIMITED` (429) | Too many requests |
 | `INTERNAL_ERROR` (500) | Transient server error |

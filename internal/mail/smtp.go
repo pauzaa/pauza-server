@@ -76,14 +76,19 @@ func goMailTLSPolicy(policy string) gomail.TLSPolicy {
 // newClient builds a go-mail client with the sender's configured transport
 // settings.
 func (s *SMTPSender) newClient() (*gomail.Client, error) {
-	client, err := gomail.NewClient(s.host,
+	opts := []gomail.Option{
 		gomail.WithPort(s.port),
-		gomail.WithUsername(s.username),
-		gomail.WithPassword(s.password),
-		gomail.WithSMTPAuth(gomail.SMTPAuthPlain),
 		gomail.WithTimeout(s.timeout),
 		gomail.WithTLSPolicy(goMailTLSPolicy(s.tlsPolicy)),
-	)
+	}
+	if s.username != "" && s.password != "" {
+		opts = append(opts,
+			gomail.WithUsername(s.username),
+			gomail.WithPassword(s.password),
+			gomail.WithSMTPAuth(gomail.SMTPAuthPlain),
+		)
+	}
+	client, err := gomail.NewClient(s.host, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("%s", redact.SanitizeEmail(err.Error()))
 	}

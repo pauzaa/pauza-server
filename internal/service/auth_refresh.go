@@ -30,18 +30,32 @@ func (s *AuthService) Refresh(ctx context.Context, in RefreshInput) (RefreshOutp
 	}
 
 	if tok.Revoked {
-		if err := s.refreshTokens.RevokeAllRefreshTokens(ctx, tx, tok.UserID); err != nil {
-			s.logger.Error("revoking all refresh tokens after reuse", "err", err)
+		// Reuse detection: revoke the entire session
+		if err := s.sessions.RevokeSession(ctx, tx, tok.SessionID); err != nil {
+			s.logger.Error("revoking session after reuse", "err", err)
 			return RefreshOutput{}, ErrInternal
 		}
 		if err := tx.Commit(ctx); err != nil {
-			s.logger.Error("committing reuse-detection revoke-all", "err", err)
+			s.logger.Error("committing reuse-detection revoke", "err", err)
 			return RefreshOutput{}, ErrInternal
 		}
 		return RefreshOutput{}, UnauthorizedError("Invalid refresh token")
 	}
 
 	if time.Now().UTC().After(tok.ExpiresAt) {
+		return RefreshOutput{}, UnauthorizedError("Invalid refresh token")
+	}
+
+	// Validate the session is still active
+	sess, err := s.sessions.GetSessionByID(ctx, tx, tok.SessionID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return RefreshOutput{}, UnauthorizedError("Invalid refresh token")
+	}
+	if err != nil {
+		s.logger.Error("querying session for refresh", "err", err)
+		return RefreshOutput{}, ErrInternal
+	}
+	if sess.Revoked || time.Now().UTC().After(sess.ExpiresAt) {
 		return RefreshOutput{}, UnauthorizedError("Invalid refresh token")
 	}
 
@@ -56,7 +70,7 @@ func (s *AuthService) Refresh(ctx context.Context, in RefreshInput) (RefreshOutp
 		return RefreshOutput{}, ErrInternal
 	}
 
-	accessToken, err := auth.IssueAccessToken(tok.UserID, email, s.jwtSecret, s.jwtAccessTokenTTL)
+	accessToken, err := auth.IssueAccessToken(tok.UserID, email, tok.SessionID, s.jwtSecret, s.jwtAccessTokenTTL)
 	if err != nil {
 		s.logger.Error("issuing access token", "err", err)
 		return RefreshOutput{}, ErrInternal
@@ -69,7 +83,7 @@ func (s *AuthService) Refresh(ctx context.Context, in RefreshInput) (RefreshOutp
 	}
 
 	refreshExpiresAt := time.Now().UTC().Add(s.jwtRefreshTokenTTL)
-	if err := s.refreshTokens.InsertRefreshToken(ctx, tx, tok.UserID, hashRefresh, refreshExpiresAt); err != nil {
+	if err := s.refreshTokens.InsertRefreshToken(ctx, tx, tok.UserID, tok.SessionID, hashRefresh, refreshExpiresAt); err != nil {
 		s.logger.Error("inserting new refresh token", "err", err)
 		return RefreshOutput{}, ErrInternal
 	}

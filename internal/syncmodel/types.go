@@ -130,14 +130,15 @@ func (r *RestrictionLifecycleReason) UnmarshalJSON(data []byte) error {
 }
 
 type TableSync[T any, D any] struct {
-	LastSyncedAt int64 `json:"last_synced_at"`
-	Upserts      []T   `json:"upserts"`
-	Deletions    []D   `json:"deletions"`
+	Cursor    int64 `json:"cursor"`
+	Upserts   []T   `json:"upserts"`
+	Deletions []D   `json:"deletions"`
 }
 
-type TableChanges[T any, D any] struct {
-	Upserts   []T `json:"upserts"`
-	Deletions []D `json:"deletions"`
+type TableResult[T any, D any] struct {
+	NextCursor int64 `json:"next_cursor"`
+	Upserts    []T   `json:"upserts"`
+	Deletions  []D   `json:"deletions"`
 }
 
 type Mode struct {
@@ -253,19 +254,18 @@ type Tables struct {
 	StreakDailyAggregates      *TableSync[StreakDailyAggregate, string]                          `json:"streak_daily_aggregates,omitempty"`
 }
 
-type TableChangesByTable struct {
-	Modes                      *TableChanges[Mode, string]                                          `json:"modes,omitempty"`
-	ModeBlockedApps            *TableChanges[ModeBlockedApp, ModeBlockedAppKey]                     `json:"mode_blocked_apps,omitempty"`
-	Schedules                  *TableChanges[Schedule, string]                                      `json:"schedules,omitempty"`
-	RestrictionSessions        *TableChanges[RestrictionSession, string]                            `json:"restriction_sessions,omitempty"`
-	RestrictionLifecycleEvents *TableChanges[RestrictionLifecycleEvent, string]                     `json:"restriction_lifecycle_events,omitempty"`
-	NFCLinkedChips             *TableChanges[NFCLinkedChip, string]                                 `json:"nfc_linked_chips,omitempty"`
-	QRLinkedCodes              *TableChanges[QRLinkedCode, string]                                  `json:"qr_linked_codes,omitempty"`
-	StreakSessionDailyRollups  *TableChanges[StreakSessionDailyRollup, StreakSessionDailyRollupKey] `json:"streak_session_daily_rollups,omitempty"`
-	StreakDailyAggregates      *TableChanges[StreakDailyAggregate, string]                          `json:"streak_daily_aggregates,omitempty"`
+type TableResultByTable struct {
+	Modes                      *TableResult[Mode, string]                                          `json:"modes,omitempty"`
+	ModeBlockedApps            *TableResult[ModeBlockedApp, ModeBlockedAppKey]                     `json:"mode_blocked_apps,omitempty"`
+	Schedules                  *TableResult[Schedule, string]                                      `json:"schedules,omitempty"`
+	RestrictionSessions        *TableResult[RestrictionSession, string]                            `json:"restriction_sessions,omitempty"`
+	RestrictionLifecycleEvents *TableResult[RestrictionLifecycleEvent, string]                     `json:"restriction_lifecycle_events,omitempty"`
+	NFCLinkedChips             *TableResult[NFCLinkedChip, string]                                 `json:"nfc_linked_chips,omitempty"`
+	QRLinkedCodes              *TableResult[QRLinkedCode, string]                                  `json:"qr_linked_codes,omitempty"`
+	StreakSessionDailyRollups  *TableResult[StreakSessionDailyRollup, StreakSessionDailyRollupKey] `json:"streak_session_daily_rollups,omitempty"`
+	StreakDailyAggregates      *TableResult[StreakDailyAggregate, string]                          `json:"streak_daily_aggregates,omitempty"`
 }
 
 type Response struct {
-	ServerTime int64               `json:"server_time"`
-	Tables     TableChangesByTable `json:"tables"`
+	Tables TableResultByTable `json:"tables"`
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/IsorilovA/pauza-server/internal/apperror"
+	"github.com/IsorilovA/pauza-server/internal/middleware"
 	"github.com/IsorilovA/pauza-server/internal/photostore"
 	"github.com/IsorilovA/pauza-server/internal/service"
 	"github.com/IsorilovA/pauza-server/internal/validate"
@@ -286,12 +287,16 @@ func (h *AuthHandler) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 
 // Logout handles POST /api/v1/auth/logout.
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
-	userID, ok := requireUser(w, r)
-	if !ok {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok || user.UserID == "" {
+		apperror.Unauthorized(w, "Missing or invalid authentication")
 		return
 	}
 
-	if err := h.svc.Logout(r.Context(), service.LogoutInput{UserID: userID}); err != nil {
+	if err := h.svc.Logout(r.Context(), service.LogoutInput{
+		UserID:    user.UserID,
+		SessionID: user.SessionID,
+	}); err != nil {
 		writeServiceError(w, err)
 		return
 	}

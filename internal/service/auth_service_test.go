@@ -23,6 +23,7 @@ func newTestService(repo *fakeAuthRepo, sender *fakeSender) *AuthService {
 		repo,
 		repo,
 		repo,
+		repo, // sessions
 		repo,
 		sender,
 		"test-jwt-secret-abcdefghijklmnopqrstuvwxyz",
@@ -38,6 +39,7 @@ func newTestServiceWithPool(pool *fakePool, repo *fakeAuthRepo, sender *fakeSend
 		repo,
 		repo,
 		repo,
+		repo, // sessions
 		repo,
 		sender,
 		"test-jwt-secret-abcdefghijklmnopqrstuvwxyz",
@@ -180,7 +182,7 @@ func TestVerifyOTP_CreatesUserAndReturnsTokens(t *testing.T) {
 				CreatedAt:          time.Now().UTC(),
 			}, nil
 		},
-		insertRefreshTokenFn: func(context.Context, repository.DBTX, string, string, time.Time) error {
+		insertRefreshTokenFn: func(context.Context, repository.DBTX, string, string, string, time.Time) error {
 			return nil
 		},
 		getEntitlementSnapshotFn: func(context.Context, repository.DBTX, string) (repository.EntitlementRow, error) {
@@ -292,7 +294,7 @@ func TestVerifyOTP_RetriesUsernameCollision(t *testing.T) {
 		getUserByIDFn: func(context.Context, repository.DBTX, string) (repository.UserRow, error) {
 			return verifiedUser(), nil
 		},
-		insertRefreshTokenFn: func(context.Context, repository.DBTX, string, string, time.Time) error { return nil },
+		insertRefreshTokenFn: func(context.Context, repository.DBTX, string, string, string, time.Time) error { return nil },
 		getEntitlementSnapshotFn: func(context.Context, repository.DBTX, string) (repository.EntitlementRow, error) {
 			return repository.EntitlementRow{}, repository.ErrNotFound
 		},
@@ -320,6 +322,7 @@ func TestRefresh_Success_RotatesToken(t *testing.T) {
 			return repository.RefreshTokenRow{
 				ID:        "tok-1",
 				UserID:    "user-001",
+				SessionID: "sess-1",
 				ExpiresAt: time.Now().UTC().Add(time.Hour),
 			}, nil
 		},
@@ -330,7 +333,7 @@ func TestRefresh_Success_RotatesToken(t *testing.T) {
 		getUserEmailByIDFn: func(context.Context, repository.DBTX, string) (string, error) {
 			return "alice@example.com", nil
 		},
-		insertRefreshTokenFn: func(context.Context, repository.DBTX, string, string, time.Time) error { return nil },
+		insertRefreshTokenFn: func(context.Context, repository.DBTX, string, string, string, time.Time) error { return nil },
 	}
 	svc := newTestService(repo, &fakeSender{})
 
@@ -346,21 +349,22 @@ func TestRefresh_Success_RotatesToken(t *testing.T) {
 	}
 }
 
-func TestRefresh_RevokedToken_RevokesAll(t *testing.T) {
+func TestRefresh_RevokedToken_RevokesSession(t *testing.T) {
 	t.Parallel()
 
-	var revokeAllCalled atomic.Bool
+	var revokedSessionID string
 	repo := &fakeAuthRepo{
 		getRefreshTokenByHashForUpdateFn: func(context.Context, repository.DBTX, string) (repository.RefreshTokenRow, error) {
 			return repository.RefreshTokenRow{
 				ID:        "tok-1",
 				UserID:    "user-001",
+				SessionID: "sess-1",
 				Revoked:   true,
 				ExpiresAt: time.Now().UTC().Add(time.Hour),
 			}, nil
 		},
-		revokeAllRefreshTokensFn: func(context.Context, repository.DBTX, string) error {
-			revokeAllCalled.Store(true)
+		revokeSessionFn: func(_ context.Context, _ repository.DBTX, sessionID string) error {
+			revokedSessionID = sessionID
 			return nil
 		},
 	}
@@ -370,8 +374,8 @@ func TestRefresh_RevokedToken_RevokesAll(t *testing.T) {
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("Refresh() error = %v, want ErrUnauthorized", err)
 	}
-	if !revokeAllCalled.Load() {
-		t.Fatal("expected RevokeAllRefreshTokens to be called")
+	if revokedSessionID != "sess-1" {
+		t.Fatalf("revoked session id = %q, want sess-1", revokedSessionID)
 	}
 }
 

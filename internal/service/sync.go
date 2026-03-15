@@ -27,14 +27,14 @@ type SyncService struct {
 	logger       *slog.Logger
 }
 
-func normalizeTableChanges[T any, D any](changes syncmodel.TableChanges[T, D]) syncmodel.TableChanges[T, D] {
-	if changes.Upserts == nil {
-		changes.Upserts = make([]T, 0)
+func normalizeTableResult[T any, D any](result syncmodel.TableResult[T, D]) syncmodel.TableResult[T, D] {
+	if result.Upserts == nil {
+		result.Upserts = make([]T, 0)
 	}
-	if changes.Deletions == nil {
-		changes.Deletions = make([]D, 0)
+	if result.Deletions == nil {
+		result.Deletions = make([]D, 0)
 	}
-	return changes
+	return result
 }
 
 func NewSyncService(pool repository.Pool, repo repository.SyncRepository, userVerifier syncUserVerifier, logger *slog.Logger) *SyncService {
@@ -63,82 +63,98 @@ func (s *SyncService) Sync(ctx context.Context, in SyncInput) (SyncOutput, error
 	out := SyncOutput{}
 
 	if in.Tables.Modes != nil {
-		changes, syncErr := s.repo.SyncModes(ctx, tx, in.UserID, *in.Tables.Modes)
+		result, syncErr := s.repo.SyncModes(ctx, tx, in.UserID, *in.Tables.Modes)
 		if syncErr != nil {
 			return s.syncInternal("syncing modes", syncErr)
 		}
-		changes = normalizeTableChanges(changes)
-		out.Tables.Modes = &changes
+		result = normalizeTableResult(result)
+		out.Tables.Modes = &result
 	}
 	if in.Tables.ModeBlockedApps != nil {
-		changes, syncErr := s.repo.SyncModeBlockedApps(ctx, tx, in.UserID, *in.Tables.ModeBlockedApps)
+		result, syncErr := s.repo.SyncModeBlockedApps(ctx, tx, in.UserID, *in.Tables.ModeBlockedApps)
 		if syncErr != nil {
 			return s.syncInternal("syncing mode_blocked_apps", syncErr)
 		}
-		changes = normalizeTableChanges(changes)
-		out.Tables.ModeBlockedApps = &changes
+		result = normalizeTableResult(result)
+		out.Tables.ModeBlockedApps = &result
 	}
 	if in.Tables.Schedules != nil {
-		changes, syncErr := s.repo.SyncSchedules(ctx, tx, in.UserID, *in.Tables.Schedules)
+		result, syncErr := s.repo.SyncSchedules(ctx, tx, in.UserID, *in.Tables.Schedules)
 		if syncErr != nil {
 			return s.syncInternal("syncing schedules", syncErr)
 		}
-		changes = normalizeTableChanges(changes)
-		out.Tables.Schedules = &changes
+		result = normalizeTableResult(result)
+		out.Tables.Schedules = &result
 	}
 	if in.Tables.RestrictionSessions != nil {
-		changes, syncErr := s.repo.SyncRestrictionSessions(ctx, tx, in.UserID, *in.Tables.RestrictionSessions)
+		result, syncErr := s.repo.SyncRestrictionSessions(ctx, tx, in.UserID, *in.Tables.RestrictionSessions)
 		if syncErr != nil {
 			return s.syncInternal("syncing restriction_sessions", syncErr)
 		}
-		changes = normalizeTableChanges(changes)
-		out.Tables.RestrictionSessions = &changes
+		result = normalizeTableResult(result)
+		out.Tables.RestrictionSessions = &result
 	}
 	if in.Tables.RestrictionLifecycleEvents != nil {
-		changes, syncErr := s.repo.SyncRestrictionLifecycleEvents(ctx, tx, in.UserID, *in.Tables.RestrictionLifecycleEvents)
+		result, syncErr := s.repo.SyncRestrictionLifecycleEvents(ctx, tx, in.UserID, *in.Tables.RestrictionLifecycleEvents)
 		if syncErr != nil {
 			return s.syncInternal("syncing restriction_lifecycle_events", syncErr)
 		}
-		changes = normalizeTableChanges(changes)
-		out.Tables.RestrictionLifecycleEvents = &changes
+		result = normalizeTableResult(result)
+		out.Tables.RestrictionLifecycleEvents = &result
 	}
 	if in.Tables.NFCLinkedChips != nil {
-		changes, syncErr := s.repo.SyncNFCLinkedChips(ctx, tx, in.UserID, *in.Tables.NFCLinkedChips)
+		result, syncErr := s.repo.SyncNFCLinkedChips(ctx, tx, in.UserID, *in.Tables.NFCLinkedChips)
 		if syncErr != nil {
 			return s.syncInternal("syncing nfc_linked_chips", syncErr)
 		}
-		changes = normalizeTableChanges(changes)
-		out.Tables.NFCLinkedChips = &changes
+		result = normalizeTableResult(result)
+		out.Tables.NFCLinkedChips = &result
 	}
 	if in.Tables.QRLinkedCodes != nil {
-		changes, syncErr := s.repo.SyncQRLinkedCodes(ctx, tx, in.UserID, *in.Tables.QRLinkedCodes)
+		result, syncErr := s.repo.SyncQRLinkedCodes(ctx, tx, in.UserID, *in.Tables.QRLinkedCodes)
 		if syncErr != nil {
 			return s.syncInternal("syncing qr_linked_codes", syncErr)
 		}
-		changes = normalizeTableChanges(changes)
-		out.Tables.QRLinkedCodes = &changes
+		result = normalizeTableResult(result)
+		out.Tables.QRLinkedCodes = &result
 	}
+
+	// Process streak rollups first (may trigger recomputation)
+	var hadStreakWrites bool
 	if in.Tables.StreakSessionDailyRollups != nil {
-		changes, syncErr := s.repo.SyncStreakSessionDailyRollups(ctx, tx, in.UserID, *in.Tables.StreakSessionDailyRollups)
+		result, syncErr := s.repo.SyncStreakSessionDailyRollups(ctx, tx, in.UserID, *in.Tables.StreakSessionDailyRollups)
 		if syncErr != nil {
 			return s.syncInternal("syncing streak_session_daily_rollups", syncErr)
 		}
-		changes = normalizeTableChanges(changes)
-		out.Tables.StreakSessionDailyRollups = &changes
-	}
-	if in.Tables.StreakDailyAggregates != nil {
-		changes, syncErr := s.repo.SyncStreakDailyAggregates(ctx, tx, in.UserID, *in.Tables.StreakDailyAggregates)
-		if syncErr != nil {
-			return s.syncInternal("syncing streak_daily_aggregates", syncErr)
+		result = normalizeTableResult(result)
+		out.Tables.StreakSessionDailyRollups = &result
+		if len(in.Tables.StreakSessionDailyRollups.Upserts) > 0 || len(in.Tables.StreakSessionDailyRollups.Deletions) > 0 {
+			hadStreakWrites = true
 		}
-		changes = normalizeTableChanges(changes)
-		out.Tables.StreakDailyAggregates = &changes
 	}
 
-	serverTime, err := s.repo.ServerCursor(ctx, tx)
-	if err != nil {
-		s.logger.Error("loading sync server cursor", "err", err)
-		return SyncOutput{}, ErrInternal
+	// Also check restriction_sessions for writes that may affect streaks
+	if in.Tables.RestrictionSessions != nil {
+		if len(in.Tables.RestrictionSessions.Upserts) > 0 || len(in.Tables.RestrictionSessions.Deletions) > 0 {
+			hadStreakWrites = true
+		}
+	}
+
+	// Recompute streaks if needed
+	if hadStreakWrites {
+		if err := s.repo.RecomputeStreakAggregates(ctx, tx, in.UserID); err != nil {
+			return s.syncInternal("recomputing streak aggregates", err)
+		}
+	}
+
+	// Streak daily aggregates - read-only pull
+	if in.Tables.StreakDailyAggregates != nil {
+		result, syncErr := s.repo.ListStreakDailyAggregateChanges(ctx, tx, in.UserID, in.Tables.StreakDailyAggregates.Cursor)
+		if syncErr != nil {
+			return s.syncInternal("listing streak_daily_aggregates", syncErr)
+		}
+		result = normalizeTableResult(result)
+		out.Tables.StreakDailyAggregates = &result
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -146,7 +162,6 @@ func (s *SyncService) Sync(ctx context.Context, in SyncInput) (SyncOutput, error
 		return SyncOutput{}, ErrInternal
 	}
 
-	out.ServerTime = serverTime
 	return out, nil
 }
 

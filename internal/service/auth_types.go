@@ -144,7 +144,8 @@ type RefreshOutput struct {
 }
 
 type LogoutInput struct {
-	UserID string
+	UserID    string
+	SessionID string
 }
 
 type MessageOutput struct {

@@ -49,6 +49,15 @@ type OTPRow struct {
 type RefreshTokenRow struct {
 	ID        string
 	UserID    string
+	SessionID string
+	Revoked   bool
+	ExpiresAt time.Time
+}
+
+// SessionRow holds the columns returned by session lookups.
+type SessionRow struct {
+	ID        string
+	UserID    string
 	Revoked   bool
 	ExpiresAt time.Time
 }
@@ -90,11 +99,19 @@ type OTPRepository interface {
 
 // RefreshTokenRepository defines refresh-token persistence operations.
 type RefreshTokenRepository interface {
-	InsertRefreshToken(ctx context.Context, db DBTX, userID, tokenHash string, expiresAt time.Time) error
+	InsertRefreshToken(ctx context.Context, db DBTX, userID, sessionID, tokenHash string, expiresAt time.Time) error
 	GetRefreshTokenByHashForUpdate(ctx context.Context, db DBTX, tokenHash string) (RefreshTokenRow, error)
 	RevokeRefreshToken(ctx context.Context, db DBTX, tokenID string) error
 	RevokeAllRefreshTokens(ctx context.Context, db DBTX, userID string) error
 	GetUserEmailByID(ctx context.Context, db DBTX, userID string) (string, error)
+}
+
+// SessionRepository defines session persistence operations.
+type SessionRepository interface {
+	InsertSession(ctx context.Context, db DBTX, userID string, expiresAt time.Time) (string, error)
+	GetSessionByID(ctx context.Context, db DBTX, sessionID string) (SessionRow, error)
+	RevokeSession(ctx context.Context, db DBTX, sessionID string) error
+	RevokeAllUserSessions(ctx context.Context, db DBTX, userID string) error
 }
 
 // EntitlementSnapshotRepository defines entitlement snapshot lookups.
@@ -108,6 +125,7 @@ var ErrNotFound = errors.New("not found")
 var _ UserRepository = (*PgxAuthRepository)(nil)
 var _ OTPRepository = (*PgxAuthRepository)(nil)
 var _ RefreshTokenRepository = (*PgxAuthRepository)(nil)
+var _ SessionRepository = (*PgxAuthRepository)(nil)
 var _ EntitlementSnapshotRepository = (*PgxAuthRepository)(nil)
 
 // PgxAuthRepository implements the auth-related repository interfaces using pgx queries.
@@ -427,11 +445,11 @@ func (r *PgxAuthRepository) DeleteOTPByID(ctx context.Context, db DBTX, otpID st
 	return nil
 }
 
-func (r *PgxAuthRepository) InsertRefreshToken(ctx context.Context, db DBTX, userID, tokenHash string, expiresAt time.Time) error {
+func (r *PgxAuthRepository) InsertRefreshToken(ctx context.Context, db DBTX, userID, sessionID, tokenHash string, expiresAt time.Time) error {
 	_, err := db.Exec(ctx,
-		`INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
-		 VALUES ($1, $2, $3)`,
-		userID, tokenHash, expiresAt,
+		`INSERT INTO refresh_tokens (user_id, session_id, token_hash, expires_at)
+		 VALUES ($1, $2, $3, $4)`,
+		userID, sessionID, tokenHash, expiresAt,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting refresh token: %w", err)
@@ -442,12 +460,12 @@ func (r *PgxAuthRepository) InsertRefreshToken(ctx context.Context, db DBTX, use
 func (r *PgxAuthRepository) GetRefreshTokenByHashForUpdate(ctx context.Context, db DBTX, tokenHash string) (RefreshTokenRow, error) {
 	var t RefreshTokenRow
 	err := db.QueryRow(ctx,
-		`SELECT id, user_id, revoked, expires_at
+		`SELECT id, user_id, session_id, revoked, expires_at
 		 FROM refresh_tokens
 		 WHERE token_hash = $1
 		 FOR UPDATE`,
 		tokenHash,
-	).Scan(&t.ID, &t.UserID, &t.Revoked, &t.ExpiresAt)
+	).Scan(&t.ID, &t.UserID, &t.SessionID, &t.Revoked, &t.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RefreshTokenRow{}, ErrNotFound
 	}
@@ -498,6 +516,65 @@ func (r *PgxAuthRepository) GetUserEmailByID(ctx context.Context, db DBTX, userI
 		return "", fmt.Errorf("getting user email by id: %w", err)
 	}
 	return email, nil
+}
+
+func (r *PgxAuthRepository) InsertSession(ctx context.Context, db DBTX, userID string, expiresAt time.Time) (string, error) {
+	var id string
+	err := db.QueryRow(ctx,
+		`INSERT INTO auth_sessions (user_id, expires_at)
+		 VALUES ($1, $2)
+		 RETURNING id`,
+		userID, expiresAt,
+	).Scan(&id)
+	if err != nil {
+		return "", fmt.Errorf("inserting session: %w", err)
+	}
+	return id, nil
+}
+
+func (r *PgxAuthRepository) GetSessionByID(ctx context.Context, db DBTX, sessionID string) (SessionRow, error) {
+	var s SessionRow
+	err := db.QueryRow(ctx,
+		`SELECT id, user_id, revoked, expires_at
+		 FROM auth_sessions
+		 WHERE id = $1`,
+		sessionID,
+	).Scan(&s.ID, &s.UserID, &s.Revoked, &s.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SessionRow{}, ErrNotFound
+	}
+	if err != nil {
+		return SessionRow{}, fmt.Errorf("getting session by id: %w", err)
+	}
+	return s, nil
+}
+
+func (r *PgxAuthRepository) RevokeSession(ctx context.Context, db DBTX, sessionID string) error {
+	_, err := db.Exec(ctx,
+		`UPDATE auth_sessions
+		 SET revoked = true,
+		     revoked_at = COALESCE(revoked_at, now())
+		 WHERE id = $1`,
+		sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("revoking session: %w", err)
+	}
+	return nil
+}
+
+func (r *PgxAuthRepository) RevokeAllUserSessions(ctx context.Context, db DBTX, userID string) error {
+	_, err := db.Exec(ctx,
+		`UPDATE auth_sessions
+		 SET revoked = true,
+		     revoked_at = COALESCE(revoked_at, now())
+		 WHERE user_id = $1 AND revoked = false`,
+		userID,
+	)
+	if err != nil {
+		return fmt.Errorf("revoking all user sessions: %w", err)
+	}
+	return nil
 }
 
 func (r *PgxAuthRepository) GetEntitlementSnapshot(ctx context.Context, db DBTX, userID string) (EntitlementRow, error) {

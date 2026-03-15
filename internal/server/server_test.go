@@ -448,12 +448,12 @@ func TestNew_SyncRouteWithValidJWTPassesAuth(t *testing.T) {
 	srv, cleanup := testNew(t, cfg, testLogger())
 	defer cleanup()
 
-	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
+	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", "test-session-id", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
 	if err != nil {
 		t.Fatalf("issuing test JWT: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(`{"tables":{"modes":{"last_synced_at":0,"upserts":[],"deletions":[]},"mode_blocked_apps":{"last_synced_at":0,"upserts":[],"deletions":[]},"schedules":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_sessions":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"last_synced_at":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"last_synced_at":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"last_synced_at":0,"upserts":[],"deletions":[]}}}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(`{"tables":{"modes":{"cursor":0,"upserts":[],"deletions":[]},"mode_blocked_apps":{"cursor":0,"upserts":[],"deletions":[]},"schedules":{"cursor":0,"upserts":[],"deletions":[]},"restriction_sessions":{"cursor":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"cursor":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"cursor":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"cursor":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"cursor":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"cursor":0,"upserts":[],"deletions":[]}}}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
@@ -473,15 +473,15 @@ func TestNew_SyncRateLimitPerUser(t *testing.T) {
 	srv, cleanup := testNew(t, cfg, testLogger())
 	defer cleanup()
 
-	token1, err := auth.IssueAccessToken("user-a", "a@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
+	token1, err := auth.IssueAccessToken("user-a", "a@example.com", "test-session-a", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
 	if err != nil {
 		t.Fatalf("issuing token1: %v", err)
 	}
-	token2, err := auth.IssueAccessToken("user-b", "b@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
+	token2, err := auth.IssueAccessToken("user-b", "b@example.com", "test-session-b", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
 	if err != nil {
 		t.Fatalf("issuing token2: %v", err)
 	}
-	body := `{"tables":{"modes":{"last_synced_at":0,"upserts":[],"deletions":[]},"mode_blocked_apps":{"last_synced_at":0,"upserts":[],"deletions":[]},"schedules":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_sessions":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"last_synced_at":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"last_synced_at":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"last_synced_at":0,"upserts":[],"deletions":[]}}}`
+	body := `{"tables":{"modes":{"cursor":0,"upserts":[],"deletions":[]},"mode_blocked_apps":{"cursor":0,"upserts":[],"deletions":[]},"schedules":{"cursor":0,"upserts":[],"deletions":[]},"restriction_sessions":{"cursor":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"cursor":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"cursor":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"cursor":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"cursor":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"cursor":0,"upserts":[],"deletions":[]}}}`
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -520,7 +520,7 @@ func TestNew_SyncAndGeneralAPILimitsAreIndependent(t *testing.T) {
 	srv, cleanup := testNew(t, cfg, testLogger())
 	defer cleanup()
 
-	token, err := auth.IssueAccessToken("user-a", "a@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
+	token, err := auth.IssueAccessToken("user-a", "a@example.com", "test-session-a", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
 	if err != nil {
 		t.Fatalf("issuing token: %v", err)
 	}
@@ -541,7 +541,7 @@ func TestNew_SyncAndGeneralAPILimitsAreIndependent(t *testing.T) {
 		t.Fatalf("second GET /me: expected 429 after general API budget exhausted, got %d", meRec2.Code)
 	}
 
-	body := `{"tables":{"modes":{"last_synced_at":0,"upserts":[],"deletions":[]},"mode_blocked_apps":{"last_synced_at":0,"upserts":[],"deletions":[]},"schedules":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_sessions":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"last_synced_at":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"last_synced_at":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"last_synced_at":0,"upserts":[],"deletions":[]}}}`
+	body := `{"tables":{"modes":{"cursor":0,"upserts":[],"deletions":[]},"mode_blocked_apps":{"cursor":0,"upserts":[],"deletions":[]},"schedules":{"cursor":0,"upserts":[],"deletions":[]},"restriction_sessions":{"cursor":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"cursor":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"cursor":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"cursor":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"cursor":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"cursor":0,"upserts":[],"deletions":[]}}}`
 	syncReq := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(body))
 	syncReq.Header.Set("Content-Type", "application/json")
 	syncReq.Header.Set("Authorization", "Bearer "+token)
@@ -595,7 +595,7 @@ func TestNew_MeRouteWithValidJWT(t *testing.T) {
 	srv, cleanup := testNew(t, cfg, testLogger())
 	defer cleanup()
 
-	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
+	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", "test-session-id", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
 	if err != nil {
 		t.Fatalf("issuing test JWT: %v", err)
 	}
@@ -641,7 +641,7 @@ func TestNew_RecovererLogsJSONOnPanic(t *testing.T) {
 	srv, cleanup := testNew(t, cfg, logger)
 	defer cleanup()
 
-	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
+	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", "test-session-id", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
 	if err != nil {
 		t.Fatalf("issuing test JWT: %v", err)
 	}
@@ -736,7 +736,7 @@ func TestNew_MiddlewareOrdering_RequestLoggerSees500(t *testing.T) {
 	srv, cleanup := testNew(t, cfg, logger)
 	defer cleanup()
 
-	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
+	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", "test-session-id", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
 	if err != nil {
 		t.Fatalf("issuing test JWT: %v", err)
 	}
@@ -821,7 +821,7 @@ func TestNew_MiddlewareOrdering_RequestIDInResponse(t *testing.T) {
 	srv, cleanup := testNew(t, cfg, testLogger())
 	defer cleanup()
 
-	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
+	token, err := auth.IssueAccessToken("test-user-id", "test@example.com", "test-session-id", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
 	if err != nil {
 		t.Fatalf("issuing test JWT: %v", err)
 	}
@@ -1159,7 +1159,7 @@ func TestNew_AdminProtectedRoutesRejectUserJWT(t *testing.T) {
 	defer cleanup()
 
 	// Issue a regular user JWT — no admin role.
-	userToken, err := auth.IssueAccessToken("test-user-id", "user@example.com", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
+	userToken, err := auth.IssueAccessToken("test-user-id", "user@example.com", "test-session-id", cfg.JWTSecret, cfg.JWTAccessTokenTTL)
 	if err != nil {
 		t.Fatalf("IssueAccessToken: %v", err)
 	}

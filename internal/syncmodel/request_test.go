@@ -13,7 +13,7 @@ func TestRequestValidateAndConvert_MinimalModes(t *testing.T) {
 	body := []byte(`{
 		"tables": {
 			"modes": {
-				"last_synced_at": 0,
+				"cursor": 0,
 				"upserts": [{
 					"id": "mode-1",
 					"title": "Focus",
@@ -60,8 +60,8 @@ func TestRequestValidateAndConvert_MissingCursor(t *testing.T) {
 	}
 
 	_, fields := req.ValidateAndConvert()
-	if got := fields["tables.modes.last_synced_at"]; got != "last_synced_at is required" {
-		t.Fatalf("tables.modes.last_synced_at = %q", got)
+	if got := fields["tables.modes.cursor"]; got != "cursor is required" {
+		t.Fatalf("tables.modes.cursor = %q", got)
 	}
 }
 
@@ -71,7 +71,7 @@ func TestRequestRejectsInvalidEnumJSON(t *testing.T) {
 	body := []byte(`{
 		"tables": {
 			"mode_blocked_apps": {
-				"last_synced_at": 0,
+				"cursor": 0,
 				"upserts": [{
 					"mode_id": "mode-1",
 					"platform": "desktop",

@@ -4,8 +4,9 @@ import "context"
 
 // AuthUser holds the authenticated user information extracted from a JWT.
 type AuthUser struct {
-	UserID string
-	Email  string
+	UserID    string
+	Email     string
+	SessionID string
 }
 
 // contextKey is an unexported type used for context keys in this package,

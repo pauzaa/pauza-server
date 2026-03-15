@@ -13,23 +13,24 @@ const tokenIssuer = "pauza"
 // Claims holds the custom JWT claims for access tokens.
 // The user ID is stored in the standard RegisteredClaims.Subject field.
 type Claims struct {
-	Email string `json:"email"`
-	Role  string `json:"role,omitempty"`
+	Email     string `json:"email"`
+	Role      string `json:"role,omitempty"`
+	SessionID string `json:"sid,omitempty"`
 	jwt.RegisteredClaims
 }
 
 // IssueAccessToken creates an HS256-signed JWT with the given user ID, email,
 // secret, and time-to-live. The user ID is stored in the standard Subject
 // claim and can be read back via Claims.Subject after validation.
-func IssueAccessToken(userID, email, secret string, ttl time.Duration) (string, error) {
-	return issueToken(userID, email, "", secret, ttl)
+func IssueAccessToken(userID, email, sessionID, secret string, ttl time.Duration) (string, error) {
+	return issueToken(userID, email, "", sessionID, secret, ttl)
 }
 
 func IssueAdminToken(adminID, secret string, ttl time.Duration) (string, error) {
-	return issueToken(adminID, "", "admin", secret, ttl)
+	return issueToken(adminID, "", "admin", "", secret, ttl)
 }
 
-func issueToken(subject, email, role, secret string, ttl time.Duration) (string, error) {
+func issueToken(subject, email, role, sessionID, secret string, ttl time.Duration) (string, error) {
 	if subject == "" {
 		return "", fmt.Errorf("issuing access token: userID must not be empty")
 	}
@@ -39,8 +40,9 @@ func issueToken(subject, email, role, secret string, ttl time.Duration) (string,
 
 	now := time.Now().UTC()
 	claims := Claims{
-		Email: email,
-		Role:  role,
+		Email:     email,
+		Role:      role,
+		SessionID: sessionID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    tokenIssuer,
 			Subject:   subject,

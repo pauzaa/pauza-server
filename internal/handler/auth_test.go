@@ -28,7 +28,7 @@ func (m *mockEmailSender) SendOTP(_ context.Context, _, _ string, _ mail.Purpose
 }
 
 func newTestAuthHandler() *AuthHandler {
-	svc := service.NewAuthService(nil, nil, nil, nil, nil, &mockEmailSender{}, "test-secret-abcdefghijklmnopqrstuvwxyz", time.Minute, time.Hour, noopLogger())
+	svc := service.NewAuthService(nil, nil, nil, nil, nil, nil, &mockEmailSender{}, "test-secret-abcdefghijklmnopqrstuvwxyz", time.Minute, time.Hour, noopLogger())
 	return NewAuthHandler(svc, nil, noopLogger())
 }
 

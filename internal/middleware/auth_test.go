@@ -2,7 +2,9 @@ package middleware_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +18,19 @@ import (
 	"github.com/IsorilovA/pauza-server/internal/auth"
 	"github.com/IsorilovA/pauza-server/internal/middleware"
 )
+
+// noopSessionValidator always returns nil (session valid).
+type noopSessionValidator struct{}
+
+func (noopSessionValidator) ValidateSession(context.Context, string) error { return nil }
+
+type failingSessionValidator struct {
+	err error
+}
+
+func (f failingSessionValidator) ValidateSession(context.Context, string) error {
+	return f.err
+}
 
 const testSecret = "test-secret-key-at-least-32-bytes!"
 
@@ -60,7 +75,7 @@ func assertUnauthorized(t *testing.T, rec *httptest.ResponseRecorder) {
 
 func TestJWTAuth_MissingHeader(t *testing.T) {
 	spy := &handlerSpy{}
-	handler := middleware.JWTAuth(testSecret, discardLogger())(spy)
+	handler := middleware.JWTAuth(testSecret, noopSessionValidator{}, discardLogger())(spy)
 
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	rec := httptest.NewRecorder()
@@ -87,7 +102,7 @@ func TestJWTAuth_MalformedHeader(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			spy := &handlerSpy{}
-			handler := middleware.JWTAuth(testSecret, discardLogger())(spy)
+			handler := middleware.JWTAuth(testSecret, noopSessionValidator{}, discardLogger())(spy)
 
 			req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 			req.Header.Set("Authorization", tc.header)
@@ -107,7 +122,7 @@ func TestJWTAuth_BearerCaseInsensitive(t *testing.T) {
 	userID := "550e8400-e29b-41d4-a716-446655440000"
 	email := "test@example.com"
 
-	tokenStr, err := auth.IssueAccessToken(userID, email, testSecret, 15*time.Minute)
+	tokenStr, err := auth.IssueAccessToken(userID, email, "test-session-id", testSecret, 15*time.Minute)
 	if err != nil {
 		t.Fatalf("IssueAccessToken() error = %v", err)
 	}
@@ -133,7 +148,7 @@ func TestJWTAuth_BearerCaseInsensitive(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			})
 
-			handler := middleware.JWTAuth(testSecret, discardLogger())(inner)
+			handler := middleware.JWTAuth(testSecret, noopSessionValidator{}, discardLogger())(inner)
 
 			req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 			req.Header.Set("Authorization", tc.prefix+" "+tokenStr)
@@ -164,6 +179,7 @@ func TestJWTAuth_ExpiredToken(t *testing.T) {
 	tokenStr, err := auth.IssueAccessToken(
 		"550e8400-e29b-41d4-a716-446655440000",
 		"test@example.com",
+		"test-session-id",
 		testSecret,
 		-1*time.Second,
 	)
@@ -172,7 +188,7 @@ func TestJWTAuth_ExpiredToken(t *testing.T) {
 	}
 
 	spy := &handlerSpy{}
-	handler := middleware.JWTAuth(testSecret, discardLogger())(spy)
+	handler := middleware.JWTAuth(testSecret, noopSessionValidator{}, discardLogger())(spy)
 
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	req.Header.Set("Authorization", "Bearer "+tokenStr)
@@ -192,6 +208,7 @@ func TestJWTAuth_WrongSecret(t *testing.T) {
 	tokenStr, err := auth.IssueAccessToken(
 		"550e8400-e29b-41d4-a716-446655440000",
 		"test@example.com",
+		"test-session-id",
 		testSecret,
 		15*time.Minute,
 	)
@@ -200,7 +217,7 @@ func TestJWTAuth_WrongSecret(t *testing.T) {
 	}
 
 	spy := &handlerSpy{}
-	handler := middleware.JWTAuth(wrongSecret, discardLogger())(spy)
+	handler := middleware.JWTAuth(wrongSecret, noopSessionValidator{}, discardLogger())(spy)
 
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	req.Header.Set("Authorization", "Bearer "+tokenStr)
@@ -218,7 +235,7 @@ func TestJWTAuth_ValidToken(t *testing.T) {
 	userID := "550e8400-e29b-41d4-a716-446655440000"
 	email := "test@example.com"
 
-	tokenStr, err := auth.IssueAccessToken(userID, email, testSecret, 15*time.Minute)
+	tokenStr, err := auth.IssueAccessToken(userID, email, "test-session-id", testSecret, 15*time.Minute)
 	if err != nil {
 		t.Fatalf("IssueAccessToken() error = %v", err)
 	}
@@ -233,7 +250,7 @@ func TestJWTAuth_ValidToken(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := middleware.JWTAuth(testSecret, discardLogger())(inner)
+	handler := middleware.JWTAuth(testSecret, noopSessionValidator{}, discardLogger())(inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	req.Header.Set("Authorization", "Bearer "+tokenStr)
@@ -306,6 +323,7 @@ func TestAdminJWTAuth_RejectsUserToken(t *testing.T) {
 	tokenStr, err := auth.IssueAccessToken(
 		"550e8400-e29b-41d4-a716-446655440000",
 		"user@example.com",
+		"test-session-id",
 		testSecret,
 		15*time.Minute,
 	)
@@ -400,7 +418,7 @@ func TestJWTAuth_MalformedInput_LogsWarning(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
 	spy := &handlerSpy{}
-	handler := middleware.JWTAuth(testSecret, logger)(spy)
+	handler := middleware.JWTAuth(testSecret, noopSessionValidator{}, logger)(spy)
 
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	req.Header.Set("Authorization", "Token abc123")
@@ -426,5 +444,91 @@ func TestJWTAuth_MalformedInput_LogsWarning(t *testing.T) {
 	// Ensure the raw Authorization header value is NOT logged (no secret leak).
 	if strings.Contains(logged, "abc123") {
 		t.Errorf("log output must not contain the raw token value, got: %s", logged)
+	}
+}
+
+func TestJWTAuth_MissingSessionID(t *testing.T) {
+	// Token with empty session ID should be rejected for user routes
+	tokenStr, err := auth.IssueAccessToken("user-1", "a@b.com", "", testSecret, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("IssueAccessToken() error = %v", err)
+	}
+
+	spy := &handlerSpy{}
+	handler := middleware.JWTAuth(testSecret, noopSessionValidator{}, discardLogger())(spy)
+
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenStr)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	assertUnauthorized(t, rec)
+	if spy.called.Load() {
+		t.Error("next handler should not have been called")
+	}
+}
+
+func TestJWTAuth_RevokedSession(t *testing.T) {
+	tokenStr, err := auth.IssueAccessToken("user-1", "a@b.com", "revoked-session", testSecret, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("IssueAccessToken() error = %v", err)
+	}
+
+	failValidator := failingSessionValidator{err: errors.New("session revoked")}
+	spy := &handlerSpy{}
+	handler := middleware.JWTAuth(testSecret, failValidator, discardLogger())(spy)
+
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenStr)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	assertUnauthorized(t, rec)
+	if spy.called.Load() {
+		t.Error("next handler should not have been called")
+	}
+}
+
+func TestJWTAuth_ValidToken_WithSession(t *testing.T) {
+	userID := "550e8400-e29b-41d4-a716-446655440000"
+	email := "test@example.com"
+	sessionID := "test-session-id"
+
+	tokenStr, err := auth.IssueAccessToken(userID, email, sessionID, testSecret, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("IssueAccessToken() error = %v", err)
+	}
+
+	var gotUser middleware.AuthUser
+	var gotOK bool
+	called := false
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		gotUser, gotOK = middleware.UserFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := middleware.JWTAuth(testSecret, noopSessionValidator{}, discardLogger())(inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenStr)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !called {
+		t.Fatal("next handler should have been called")
+	}
+	if !gotOK {
+		t.Fatal("UserFromContext returned ok = false")
+	}
+	if gotUser.SessionID != sessionID {
+		t.Errorf("SessionID = %q, want %q", gotUser.SessionID, sessionID)
 	}
 }

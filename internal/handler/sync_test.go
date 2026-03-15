@@ -64,11 +64,11 @@ func (w *failingSyncResponseWriter) Write(p []byte) (int, error) {
 }
 
 func validSyncPayload() string {
-	return `{"tables":{"modes":{"last_synced_at":0,"upserts":[],"deletions":[]},"mode_blocked_apps":{"last_synced_at":0,"upserts":[],"deletions":[]},"schedules":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_sessions":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"last_synced_at":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"last_synced_at":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"last_synced_at":0,"upserts":[],"deletions":[]}}}`
+	return `{"tables":{"modes":{"cursor":0,"upserts":[],"deletions":[]},"mode_blocked_apps":{"cursor":0,"upserts":[],"deletions":[]},"schedules":{"cursor":0,"upserts":[],"deletions":[]},"restriction_sessions":{"cursor":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"cursor":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"cursor":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"cursor":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"cursor":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"cursor":0,"upserts":[],"deletions":[]}}}`
 }
 
 func minimalSyncPayload() string {
-	return `{"tables":{"modes":{"last_synced_at":0,"upserts":[],"deletions":[]}}}`
+	return `{"tables":{"modes":{"cursor":0,"upserts":[],"deletions":[]}}}`
 }
 
 func TestSync_MissingAuthContext(t *testing.T) {
@@ -100,7 +100,7 @@ func TestSync_InvalidJSON(t *testing.T) {
 
 func TestSync_UnknownFieldRejected(t *testing.T) {
 	h := NewSyncHandler(&mockSyncService{}, nil)
-	body := `{"tables":{"modes":{"last_synced_at":0,"upserts":[],"deletions":[],"x":1},"mode_blocked_apps":{"last_synced_at":0,"upserts":[],"deletions":[]},"schedules":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_sessions":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"last_synced_at":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"last_synced_at":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"last_synced_at":0,"upserts":[],"deletions":[]}}}`
+	body := `{"tables":{"modes":{"cursor":0,"upserts":[],"deletions":[],"x":1},"mode_blocked_apps":{"cursor":0,"upserts":[],"deletions":[]},"schedules":{"cursor":0,"upserts":[],"deletions":[]},"restriction_sessions":{"cursor":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"cursor":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"cursor":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"cursor":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"cursor":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"cursor":0,"upserts":[],"deletions":[]}}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-1"}))
@@ -113,9 +113,9 @@ func TestSync_UnknownFieldRejected(t *testing.T) {
 	}
 }
 
-func TestSync_MissingLastSyncedAt(t *testing.T) {
+func TestSync_MissingCursor(t *testing.T) {
 	h := NewSyncHandler(&mockSyncService{}, nil)
-	body := `{"tables":{"modes":{"upserts":[],"deletions":[]},"mode_blocked_apps":{"last_synced_at":0,"upserts":[],"deletions":[]},"schedules":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_sessions":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"last_synced_at":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"last_synced_at":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"last_synced_at":0,"upserts":[],"deletions":[]}}}`
+	body := `{"tables":{"modes":{"upserts":[],"deletions":[]},"mode_blocked_apps":{"cursor":0,"upserts":[],"deletions":[]},"schedules":{"cursor":0,"upserts":[],"deletions":[]},"restriction_sessions":{"cursor":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"cursor":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"cursor":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"cursor":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"cursor":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"cursor":0,"upserts":[],"deletions":[]}}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-1"}))
@@ -137,7 +137,7 @@ func TestSync_MissingLastSyncedAt(t *testing.T) {
 
 func TestSync_InvalidCompositeDeletion(t *testing.T) {
 	h := NewSyncHandler(&mockSyncService{}, nil)
-	body := `{"tables":{"modes":{"last_synced_at":0,"upserts":[],"deletions":[]},"mode_blocked_apps":{"last_synced_at":0,"upserts":[],"deletions":[{"mode_id":"","platform":"android","app_identifier":"app"}]},"schedules":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_sessions":{"last_synced_at":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"last_synced_at":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"last_synced_at":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"last_synced_at":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"last_synced_at":0,"upserts":[],"deletions":[]}}}`
+	body := `{"tables":{"modes":{"cursor":0,"upserts":[],"deletions":[]},"mode_blocked_apps":{"cursor":0,"upserts":[],"deletions":[{"mode_id":"","platform":"android","app_identifier":"app"}]},"schedules":{"cursor":0,"upserts":[],"deletions":[]},"restriction_sessions":{"cursor":0,"upserts":[],"deletions":[]},"restriction_lifecycle_events":{"cursor":0,"upserts":[],"deletions":[]},"nfc_linked_chips":{"cursor":0,"upserts":[],"deletions":[]},"qr_linked_codes":{"cursor":0,"upserts":[],"deletions":[]},"streak_session_daily_rollups":{"cursor":0,"upserts":[],"deletions":[]},"streak_daily_aggregates":{"cursor":0,"upserts":[],"deletions":[]}}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(middleware.WithUser(req.Context(), middleware.AuthUser{UserID: "user-1"}))
@@ -171,7 +171,7 @@ func TestSync_Success(t *testing.T) {
 		if in.UserID != "user-1" {
 			t.Fatalf("user id = %q", in.UserID)
 		}
-		return syncmodel.Response{ServerTime: 1000, Tables: syncmodel.TableChangesByTable{}}, nil
+		return syncmodel.Response{Tables: syncmodel.TableResultByTable{}}, nil
 	}}, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(validSyncPayload()))
 	req.Header.Set("Content-Type", "application/json")
@@ -186,9 +186,6 @@ func TestSync_Success(t *testing.T) {
 	var resp syncmodel.Response
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
-	}
-	if resp.ServerTime != 1000 {
-		t.Errorf("server_time = %d, want 1000", resp.ServerTime)
 	}
 }
 
@@ -216,7 +213,7 @@ func TestSync_SubsetOfTablesAllowed(t *testing.T) {
 
 func TestSync_EncodeFailureDoesNotWriteSecondResponse(t *testing.T) {
 	h := NewSyncHandler(&mockSyncService{syncFn: func(_ context.Context, in service.SyncInput) (service.SyncOutput, error) {
-		return syncmodel.Response{ServerTime: 1000, Tables: syncmodel.TableChangesByTable{}}, nil
+		return syncmodel.Response{Tables: syncmodel.TableResultByTable{}}, nil
 	}}, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(validSyncPayload()))
 	req.Header.Set("Content-Type", "application/json")
@@ -251,7 +248,7 @@ func TestSync_EncodeFailureLogsWithInjectedLogger(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
 	h := NewSyncHandler(&mockSyncService{syncFn: func(_ context.Context, in service.SyncInput) (service.SyncOutput, error) {
-		return syncmodel.Response{ServerTime: 1000, Tables: syncmodel.TableChangesByTable{}}, nil
+		return syncmodel.Response{Tables: syncmodel.TableResultByTable{}}, nil
 	}}, logger)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync", strings.NewReader(validSyncPayload()))
 	req.Header.Set("Content-Type", "application/json")

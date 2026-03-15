@@ -50,10 +50,24 @@ CREATE TABLE otp_failed_attempts (
 CREATE INDEX idx_otp_failed_attempts_email_purpose_attempted_at
   ON otp_failed_attempts (lower(email), purpose, attempted_at);
 
--- 4. refresh_tokens (FK -> users)
+-- 4a. auth_sessions (FK -> users)
+CREATE TABLE auth_sessions (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  revoked    BOOLEAN NOT NULL DEFAULT FALSE,
+  revoked_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_auth_sessions_user ON auth_sessions (user_id, revoked);
+CREATE INDEX idx_auth_sessions_expires_at ON auth_sessions (expires_at);
+CREATE INDEX idx_auth_sessions_revoked_at ON auth_sessions (revoked_at) WHERE revoked = true;
+
+-- 4b. refresh_tokens (FK -> users, auth_sessions)
 CREATE TABLE refresh_tokens (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  session_id UUID NOT NULL REFERENCES auth_sessions(id) ON DELETE CASCADE,
   token_hash TEXT NOT NULL UNIQUE,
   expires_at TIMESTAMPTZ NOT NULL,
   revoked    BOOLEAN NOT NULL DEFAULT FALSE,
@@ -65,6 +79,7 @@ CREATE INDEX idx_refresh_tokens_user       ON refresh_tokens (user_id, revoked);
 CREATE INDEX idx_refresh_tokens_expires_at ON refresh_tokens (expires_at);
 CREATE INDEX idx_refresh_tokens_revoked_at
     ON refresh_tokens (revoked_at) WHERE revoked = true;
+CREATE INDEX idx_refresh_tokens_session ON refresh_tokens (session_id);
 
 -- 5. admin_credentials (no FK deps)
 CREATE TABLE admin_credentials (
@@ -142,6 +157,8 @@ CREATE TABLE device_tokens (
 
 CREATE INDEX idx_device_tokens_user ON device_tokens (user_id);
 
+CREATE SEQUENCE sync_version_seq;
+
 -- 10. sync_tombstones (FK -> users)
 CREATE TABLE sync_tombstones (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -149,12 +166,12 @@ CREATE TABLE sync_tombstones (
   table_name        TEXT NOT NULL,
   record_id         TEXT NOT NULL,
   deleted_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-  server_deleted_at BIGINT NOT NULL DEFAULT 0,
+  sync_version      BIGINT NOT NULL DEFAULT nextval('sync_version_seq'),
   UNIQUE (user_id, table_name, record_id)
 );
 
 CREATE INDEX idx_sync_tombstones_user_time ON sync_tombstones (user_id, deleted_at);
-CREATE INDEX idx_sync_tombstones_user_cursor ON sync_tombstones (user_id, table_name, server_deleted_at);
+CREATE INDEX idx_sync_tombstones_user_cursor ON sync_tombstones (user_id, table_name, sync_version);
 
 -- =============================================================================
 -- Synced Tables (§3.2)
@@ -176,7 +193,7 @@ CREATE TABLE modes (
   icon_token             TEXT NOT NULL DEFAULT 'ms:v1:tune' CHECK (length(trim(icon_token)) > 0),
   created_at             BIGINT NOT NULL,
   updated_at             BIGINT NOT NULL,
-  server_updated_at      BIGINT NOT NULL DEFAULT 0,
+  sync_version           BIGINT NOT NULL DEFAULT nextval('sync_version_seq'),
 
   PRIMARY KEY (user_id, id)
 );
@@ -189,7 +206,7 @@ CREATE TABLE mode_blocked_apps (
   app_identifier TEXT NOT NULL,
   created_at     BIGINT NOT NULL,
   updated_at     BIGINT NOT NULL,
-  server_updated_at BIGINT NOT NULL DEFAULT 0,
+  sync_version      BIGINT NOT NULL DEFAULT nextval('sync_version_seq'),
 
   PRIMARY KEY (user_id, mode_id, platform, app_identifier),
   CONSTRAINT fk_mode_blocked_apps_mode
@@ -207,7 +224,7 @@ CREATE TABLE schedules (
   enabled      INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
   created_at   BIGINT NOT NULL,
   updated_at   BIGINT NOT NULL,
-  server_updated_at BIGINT NOT NULL DEFAULT 0,
+  sync_version      BIGINT NOT NULL DEFAULT nextval('sync_version_seq'),
 
   PRIMARY KEY (user_id, id),
   UNIQUE (user_id, mode_id),
@@ -223,17 +240,18 @@ CREATE TABLE restriction_sessions (
   source               TEXT NOT NULL CHECK (source IN ('manual', 'schedule')),
   started_at           BIGINT NOT NULL,
   ended_at             BIGINT,
-  pause_count          INTEGER NOT NULL DEFAULT 0,
-  total_paused_ms      INTEGER NOT NULL DEFAULT 0,
+  pause_count          INTEGER NOT NULL DEFAULT 0 CHECK (pause_count >= 0),
+  total_paused_ms      INTEGER NOT NULL DEFAULT 0 CHECK (total_paused_ms >= 0),
   last_paused_at       BIGINT,
   integrity_status     TEXT NOT NULL DEFAULT 'ok' CHECK (integrity_status IN ('ok', 'anomaly')),
   last_anomaly_reason  TEXT,
   last_event_id        TEXT NOT NULL,
   created_at           BIGINT NOT NULL,
   updated_at           BIGINT NOT NULL,
-  server_updated_at    BIGINT NOT NULL DEFAULT 0,
+  sync_version         BIGINT NOT NULL DEFAULT nextval('sync_version_seq'),
 
   PRIMARY KEY (user_id, session_id),
+  CHECK (ended_at IS NULL OR ended_at >= started_at),
   CONSTRAINT fk_restriction_sessions_mode
     FOREIGN KEY (user_id, mode_id) REFERENCES modes (user_id, id) ON DELETE CASCADE
 );
@@ -253,7 +271,7 @@ CREATE TABLE restriction_lifecycle_events (
   reason      TEXT NOT NULL,
   occurred_at BIGINT NOT NULL,
   created_at  BIGINT NOT NULL,
-  server_created_at BIGINT NOT NULL DEFAULT 0,
+  sync_version      BIGINT NOT NULL DEFAULT nextval('sync_version_seq'),
 
   PRIMARY KEY (user_id, id),
   CONSTRAINT fk_lifecycle_events_mode
@@ -263,7 +281,7 @@ CREATE TABLE restriction_lifecycle_events (
 );
 
 CREATE INDEX idx_lifecycle_events_session ON restriction_lifecycle_events (user_id, session_id);
-CREATE INDEX idx_lifecycle_events_server_created ON restriction_lifecycle_events (user_id, server_created_at);
+CREATE INDEX idx_lifecycle_events_sync_version ON restriction_lifecycle_events (user_id, sync_version);
 
 -- 16. nfc_linked_chips (FK -> users)
 CREATE TABLE nfc_linked_chips (
@@ -273,7 +291,7 @@ CREATE TABLE nfc_linked_chips (
   name            TEXT NOT NULL,
   created_at      BIGINT NOT NULL,
   updated_at      BIGINT NOT NULL,
-  server_updated_at BIGINT NOT NULL DEFAULT 0,
+  sync_version      BIGINT NOT NULL DEFAULT nextval('sync_version_seq'),
 
   PRIMARY KEY (user_id, id),
   UNIQUE (user_id, chip_identifier)
@@ -287,7 +305,7 @@ CREATE TABLE qr_linked_codes (
   name       TEXT NOT NULL,
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
-  server_updated_at BIGINT NOT NULL DEFAULT 0,
+  sync_version      BIGINT NOT NULL DEFAULT nextval('sync_version_seq'),
 
   PRIMARY KEY (user_id, id),
   UNIQUE (user_id, scan_value)
@@ -300,7 +318,7 @@ CREATE TABLE streak_session_daily_rollups (
   local_day    TEXT NOT NULL CHECK (length(local_day) = 10),
   effective_ms INTEGER NOT NULL DEFAULT 0 CHECK (effective_ms >= 0),
   updated_at   BIGINT NOT NULL,
-  server_updated_at BIGINT NOT NULL DEFAULT 0,
+  sync_version      BIGINT NOT NULL DEFAULT nextval('sync_version_seq'),
 
   PRIMARY KEY (user_id, session_id, local_day),
   CONSTRAINT fk_streak_rollups_session
@@ -315,21 +333,21 @@ CREATE TABLE streak_daily_aggregates (
   qualified            INTEGER NOT NULL CHECK (qualified IN (0, 1)),
   source_session_count INTEGER NOT NULL DEFAULT 0 CHECK (source_session_count >= 0),
   updated_at           BIGINT NOT NULL,
-  server_updated_at    BIGINT NOT NULL DEFAULT 0,
+  sync_version         BIGINT NOT NULL DEFAULT nextval('sync_version_seq'),
 
   PRIMARY KEY (user_id, local_day)
 );
 
 CREATE INDEX idx_streak_aggregates_qualified ON streak_daily_aggregates (user_id, qualified, local_day);
 
-CREATE INDEX idx_modes_server_updated ON modes (user_id, server_updated_at);
-CREATE INDEX idx_mode_blocked_apps_server_updated ON mode_blocked_apps (user_id, server_updated_at);
-CREATE INDEX idx_schedules_server_updated ON schedules (user_id, server_updated_at);
-CREATE INDEX idx_restriction_sessions_server_updated ON restriction_sessions (user_id, server_updated_at);
-CREATE INDEX idx_nfc_linked_chips_server_updated ON nfc_linked_chips (user_id, server_updated_at);
-CREATE INDEX idx_qr_linked_codes_server_updated ON qr_linked_codes (user_id, server_updated_at);
-CREATE INDEX idx_streak_rollups_server_updated ON streak_session_daily_rollups (user_id, server_updated_at);
-CREATE INDEX idx_streak_aggregates_server_updated ON streak_daily_aggregates (user_id, server_updated_at);
+CREATE INDEX idx_modes_sync_version ON modes (user_id, sync_version);
+CREATE INDEX idx_mode_blocked_apps_sync_version ON mode_blocked_apps (user_id, sync_version);
+CREATE INDEX idx_schedules_sync_version ON schedules (user_id, sync_version);
+CREATE INDEX idx_restriction_sessions_sync_version ON restriction_sessions (user_id, sync_version);
+CREATE INDEX idx_nfc_linked_chips_sync_version ON nfc_linked_chips (user_id, sync_version);
+CREATE INDEX idx_qr_linked_codes_sync_version ON qr_linked_codes (user_id, sync_version);
+CREATE INDEX idx_streak_rollups_sync_version ON streak_session_daily_rollups (user_id, sync_version);
+CREATE INDEX idx_streak_aggregates_sync_version ON streak_daily_aggregates (user_id, sync_version);
 
 -- 20. leaderboard_metrics (FK -> users)
 CREATE TABLE leaderboard_metrics (
@@ -340,57 +358,41 @@ CREATE TABLE leaderboard_metrics (
 );
 
 -- Server-managed replication cursors.
-CREATE OR REPLACE FUNCTION set_server_updated_at_bigint()
+CREATE OR REPLACE FUNCTION set_sync_version()
 RETURNS trigger AS $$
 BEGIN
-  NEW.server_updated_at := FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint;
+  NEW.sync_version := nextval('sync_version_seq');
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION set_server_created_at_bigint()
-RETURNS trigger AS $$
-BEGIN
-  NEW.server_created_at := FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE OR REPLACE FUNCTION set_server_deleted_at_bigint()
-RETURNS trigger AS $$
-BEGIN
-  NEW.server_deleted_at := FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_modes_server_updated_at
+CREATE TRIGGER trg_modes_sync_version
   BEFORE INSERT OR UPDATE ON modes
-  FOR EACH ROW EXECUTE FUNCTION set_server_updated_at_bigint();
-CREATE TRIGGER trg_mode_blocked_apps_server_updated_at
+  FOR EACH ROW EXECUTE FUNCTION set_sync_version();
+CREATE TRIGGER trg_mode_blocked_apps_sync_version
   BEFORE INSERT OR UPDATE ON mode_blocked_apps
-  FOR EACH ROW EXECUTE FUNCTION set_server_updated_at_bigint();
-CREATE TRIGGER trg_schedules_server_updated_at
+  FOR EACH ROW EXECUTE FUNCTION set_sync_version();
+CREATE TRIGGER trg_schedules_sync_version
   BEFORE INSERT OR UPDATE ON schedules
-  FOR EACH ROW EXECUTE FUNCTION set_server_updated_at_bigint();
-CREATE TRIGGER trg_restriction_sessions_server_updated_at
+  FOR EACH ROW EXECUTE FUNCTION set_sync_version();
+CREATE TRIGGER trg_restriction_sessions_sync_version
   BEFORE INSERT OR UPDATE ON restriction_sessions
-  FOR EACH ROW EXECUTE FUNCTION set_server_updated_at_bigint();
-CREATE TRIGGER trg_restriction_lifecycle_events_server_created_at
+  FOR EACH ROW EXECUTE FUNCTION set_sync_version();
+CREATE TRIGGER trg_restriction_lifecycle_events_sync_version
   BEFORE INSERT ON restriction_lifecycle_events
-  FOR EACH ROW EXECUTE FUNCTION set_server_created_at_bigint();
-CREATE TRIGGER trg_nfc_linked_chips_server_updated_at
+  FOR EACH ROW EXECUTE FUNCTION set_sync_version();
+CREATE TRIGGER trg_nfc_linked_chips_sync_version
   BEFORE INSERT OR UPDATE ON nfc_linked_chips
-  FOR EACH ROW EXECUTE FUNCTION set_server_updated_at_bigint();
-CREATE TRIGGER trg_qr_linked_codes_server_updated_at
+  FOR EACH ROW EXECUTE FUNCTION set_sync_version();
+CREATE TRIGGER trg_qr_linked_codes_sync_version
   BEFORE INSERT OR UPDATE ON qr_linked_codes
-  FOR EACH ROW EXECUTE FUNCTION set_server_updated_at_bigint();
-CREATE TRIGGER trg_streak_session_daily_rollups_server_updated_at
+  FOR EACH ROW EXECUTE FUNCTION set_sync_version();
+CREATE TRIGGER trg_streak_session_daily_rollups_sync_version
   BEFORE INSERT OR UPDATE ON streak_session_daily_rollups
-  FOR EACH ROW EXECUTE FUNCTION set_server_updated_at_bigint();
-CREATE TRIGGER trg_streak_daily_aggregates_server_updated_at
+  FOR EACH ROW EXECUTE FUNCTION set_sync_version();
+CREATE TRIGGER trg_streak_daily_aggregates_sync_version
   BEFORE INSERT OR UPDATE ON streak_daily_aggregates
-  FOR EACH ROW EXECUTE FUNCTION set_server_updated_at_bigint();
-CREATE TRIGGER trg_sync_tombstones_server_deleted_at
+  FOR EACH ROW EXECUTE FUNCTION set_sync_version();
+CREATE TRIGGER trg_sync_tombstones_sync_version
   BEFORE INSERT ON sync_tombstones
-  FOR EACH ROW EXECUTE FUNCTION set_server_deleted_at_bigint();
+  FOR EACH ROW EXECUTE FUNCTION set_sync_version();

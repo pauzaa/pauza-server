@@ -51,8 +51,9 @@ contract.
 ### 1.3 Architecture Principles
 
 - **Offline-first**: The mobile client's local SQLite database is the source of truth during normal operation. The backend stores a replica for restore/bootstrap and server-side features.
-- **Incremental replication**: The client replicates per-table changes with `last_synced_at` cursors. `last_synced_at = 0` requests a restore/bootstrap snapshot for that table.
-- **Timestamp-based record versioning**: Replicated records carry client timestamps so the backend can deterministically apply newer client state and return newer server-side changes.
+- **Incremental replication**: The client replicates per-table changes using server-assigned `sync_version` cursors. A cursor of `0` requests a restore/bootstrap snapshot for that table.
+- **Sequence-based record versioning**: Each replicated table and the tombstone table carry a `sync_version` column populated by a shared PostgreSQL sequence (`sync_version_seq`) via `BEFORE INSERT OR UPDATE` triggers. This gives every write a monotonically increasing, gap-tolerant version that is independent of wall-clock time. Clients use these sequence values as opaque cursors.
+- **Session-based authentication**: Each login creates an `auth_sessions` row. Refresh tokens are scoped to a session. Revoking a session invalidates all its refresh tokens, enabling single-active-login semantics without waiting for JWT expiry.
 - **Single-device model**: One account is expected to be active on one device at a time. Concurrent active use across devices is unsupported and may result in stale restores or overwritten backup state.
 - **Subscription enforcement on both client and server**: The client hides premium UI features, and the server rejects requests to premium-only endpoints for non-subscribers.
 
@@ -101,12 +102,15 @@ Client                          Server
 - A new `users` row is created only after successful OTP verification.
 - Re-verifying the same email signs the user in rather than creating a second account.
 
-### 2.3 Token Strategy
+### 2.3 Session & Token Strategy
 
-| Token | Lifetime | Storage |
+Each successful login (OTP verification) creates an **`auth_sessions`** row that groups the resulting access and refresh tokens into a single revocable session.
+
+| Concept | Lifetime | Storage |
 |---|---|---|
+| Auth session | Same as refresh token (30 days) | Server-side in `auth_sessions` table |
 | Access token (JWT) | 15 minutes | Client memory / secure storage |
-| Refresh token (opaque) | 30 days | Server-side in `refresh_tokens` table |
+| Refresh token (opaque) | 30 days | Server-side in `refresh_tokens` table, FK to `auth_sessions` |
 
 **Access token JWT claims:**
 
@@ -114,10 +118,13 @@ Client                          Server
 {
   "sub": "<user_id>",
   "email": "<email>",
+  "sid": "<session_id>",
   "iat": 1700000000,
   "exp": 1700000900
 }
 ```
+
+The `sid` claim carries the `auth_sessions.id` so that the backend can validate the session is still active on protected endpoints that require session verification (e.g., token refresh).
 
 **Refresh token flow:**
 
@@ -128,17 +135,21 @@ Client                          Server
   |  { refresh_token }            |
   |------------------------------>|
   |                               |  Validate token exists, not revoked,
-  |                               |  not expired. Rotate: revoke old token,
-  |                               |  issue new access + refresh tokens.
+  |                               |  not expired. Validate the parent
+  |                               |  auth_session is still active.
+  |                               |  Rotate: revoke old token,
+  |                               |  issue new access + refresh tokens
+  |                               |  within the same session.
   |  200 { access_token,          |
   |        refresh_token }        |
   |<------------------------------|
 ```
 
 - Refresh tokens are stored as **hashed values** (SHA-256) in the database.
+- Each refresh token references an `auth_sessions` row via `session_id`.
 - On each refresh, the old token is revoked and a new pair is issued (token rotation).
-- If a revoked refresh token is reused, **all refresh tokens for that user are revoked** (indicates token theft).
-- Refresh-token rows will grow over time; cleanup is a later operational concern. A periodic cleanup job should eventually delete expired rows and revoked rows based on revocation time.
+- If a revoked refresh token is reused, **the entire session is revoked** (indicates token theft), which invalidates all refresh tokens in that session.
+- Refresh-token and session rows will grow over time; cleanup is a later operational concern. A periodic cleanup job should eventually delete expired rows and revoked rows based on revocation time.
 
 **Logout flow:**
 
@@ -148,13 +159,15 @@ Client                          Server
   |  POST /auth/logout            |
   |  Authorization: Bearer <JWT>  |
   |------------------------------>|
-  |                               |  Revoke all refresh tokens for
-  |                               |  the authenticated user.
+  |                               |  Revoke the auth_session identified
+  |                               |  by the JWT's "sid" claim, which
+  |                               |  cascades to all refresh tokens
+  |                               |  in that session.
   |  204 No Content               |
   |<------------------------------|
 ```
 
-- Logout revokes **all** refresh tokens for the user (logout-everywhere semantic).
+- Logout revokes the current session and its refresh tokens.
 - Access tokens remain valid until their TTL expires (stateless JWT design).
 
 ### 2.4 Recovery Model
@@ -248,12 +261,33 @@ CREATE INDEX idx_otp_failed_attempts_email_purpose_attempted_at
   ON otp_failed_attempts (lower(email), purpose, attempted_at);
 ```
 
+#### `auth_sessions`
+
+Each login creates one session row. Refresh tokens reference it via `session_id`. Revoking a session invalidates all its tokens.
+
+```sql
+CREATE TABLE auth_sessions (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  revoked    BOOLEAN NOT NULL DEFAULT FALSE,
+  revoked_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_auth_sessions_user ON auth_sessions (user_id, revoked);
+CREATE INDEX idx_auth_sessions_expires_at ON auth_sessions (expires_at);
+CREATE INDEX idx_auth_sessions_revoked_at
+    ON auth_sessions (revoked_at) WHERE revoked = true;
+```
+
 #### `refresh_tokens`
 
 ```sql
 CREATE TABLE refresh_tokens (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  session_id UUID NOT NULL REFERENCES auth_sessions(id) ON DELETE CASCADE,
   token_hash TEXT NOT NULL UNIQUE,
   expires_at TIMESTAMPTZ NOT NULL,
   revoked    BOOLEAN NOT NULL DEFAULT FALSE,
@@ -342,11 +376,13 @@ CREATE INDEX idx_device_tokens_user ON device_tokens (user_id);
 
 ### 3.2 Replicated Tables
 
-These tables mirror the client's local SQLite schema. Each table gains a `user_id` column as a foreign key to `users`. Column types are adapted from SQLite to PostgreSQL:
+These tables mirror the client's local SQLite schema. Each table gains a `user_id` column as a foreign key to `users` and a server-managed `sync_version` column. Column types are adapted from SQLite to PostgreSQL:
 
 - `INTEGER` timestamps (milliseconds since epoch in SQLite) become `BIGINT` in PostgreSQL (preserving the client's format for replication compatibility).
 - `TEXT` remains `TEXT`.
 - `INTEGER` flags (0/1) remain `INTEGER` (not `BOOLEAN`) to match client format.
+
+**`sync_version` column**: Every replicated table (and the `sync_tombstones` table) carries a `sync_version BIGINT NOT NULL DEFAULT nextval('sync_version_seq')` column. A shared PostgreSQL sequence `sync_version_seq` and a `BEFORE INSERT OR UPDATE` trigger (`set_sync_version()`) ensure that each write receives a monotonically increasing version number, independent of wall-clock time. Clients use these values as opaque replication cursors.
 
 #### `modes`
 
@@ -363,6 +399,7 @@ CREATE TABLE modes (
   icon_token             TEXT NOT NULL DEFAULT 'ms:v1:tune' CHECK (length(trim(icon_token)) > 0),
   created_at             BIGINT NOT NULL,
   updated_at             BIGINT NOT NULL,
+  sync_version           BIGINT NOT NULL DEFAULT nextval('sync_version_seq'),
 
   PRIMARY KEY (user_id, id)
 );
@@ -378,6 +415,7 @@ CREATE TABLE mode_blocked_apps (
   app_identifier TEXT NOT NULL,
   created_at     BIGINT NOT NULL,
   updated_at     BIGINT NOT NULL,
+  sync_version   BIGINT NOT NULL DEFAULT nextval('sync_version_seq'),
 
   PRIMARY KEY (user_id, mode_id, platform, app_identifier)
 );
@@ -396,6 +434,7 @@ CREATE TABLE schedules (
   enabled      INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
   created_at   BIGINT NOT NULL,
   updated_at   BIGINT NOT NULL,
+  sync_version BIGINT NOT NULL DEFAULT nextval('sync_version_seq'),
 
   PRIMARY KEY (user_id, id),
   UNIQUE (user_id, mode_id)
@@ -420,8 +459,10 @@ CREATE TABLE restriction_sessions (
   last_event_id        TEXT NOT NULL,
   created_at           BIGINT NOT NULL,
   updated_at           BIGINT NOT NULL,
+  sync_version         BIGINT NOT NULL DEFAULT nextval('sync_version_seq'),
 
-  PRIMARY KEY (user_id, session_id)
+  PRIMARY KEY (user_id, session_id),
+  CHECK (ended_at IS NULL OR ended_at >= started_at)
 );
 
 CREATE INDEX idx_restriction_sessions_mode ON restriction_sessions (user_id, mode_id);
@@ -441,12 +482,15 @@ CREATE TABLE restriction_lifecycle_events (
   reason      TEXT NOT NULL,
   occurred_at BIGINT NOT NULL,
   created_at  BIGINT NOT NULL,
+  sync_version BIGINT NOT NULL DEFAULT nextval('sync_version_seq'),
 
   PRIMARY KEY (user_id, id)
 );
 
 CREATE INDEX idx_lifecycle_events_session ON restriction_lifecycle_events (user_id, session_id);
 ```
+
+Lifecycle events are **append-only**: the `set_sync_version()` trigger fires on `BEFORE INSERT` only (not `UPDATE`). Clients must not delete lifecycle events; the server rejects deletions for this table. This preserves an immutable audit trail of session state transitions.
 
 #### `nfc_linked_chips`
 
@@ -458,6 +502,7 @@ CREATE TABLE nfc_linked_chips (
   name            TEXT NOT NULL,
   created_at      BIGINT NOT NULL,
   updated_at      BIGINT NOT NULL,
+  sync_version    BIGINT NOT NULL DEFAULT nextval('sync_version_seq'),
 
   PRIMARY KEY (user_id, id),
   UNIQUE (user_id, chip_identifier)
@@ -474,6 +519,7 @@ CREATE TABLE qr_linked_codes (
   name       TEXT NOT NULL,
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
+  sync_version BIGINT NOT NULL DEFAULT nextval('sync_version_seq'),
 
   PRIMARY KEY (user_id, id),
   UNIQUE (user_id, scan_value)
@@ -489,6 +535,7 @@ CREATE TABLE streak_session_daily_rollups (
   local_day    TEXT NOT NULL CHECK (length(local_day) = 10),
   effective_ms INTEGER NOT NULL DEFAULT 0 CHECK (effective_ms >= 0),
   updated_at   BIGINT NOT NULL,
+  sync_version BIGINT NOT NULL DEFAULT nextval('sync_version_seq'),
 
   PRIMARY KEY (user_id, session_id, local_day)
 );
@@ -504,12 +551,15 @@ CREATE TABLE streak_daily_aggregates (
   qualified            INTEGER NOT NULL CHECK (qualified IN (0, 1)),
   source_session_count INTEGER NOT NULL DEFAULT 0 CHECK (source_session_count >= 0),
   updated_at           BIGINT NOT NULL,
+  sync_version         BIGINT NOT NULL DEFAULT nextval('sync_version_seq'),
 
   PRIMARY KEY (user_id, local_day)
 );
 
 CREATE INDEX idx_streak_aggregates_qualified ON streak_daily_aggregates (user_id, qualified, local_day);
 ```
+
+`streak_daily_aggregates` is **server-derived**: the server recomputes it from `streak_session_daily_rollups` after each sync cycle. Clients receive aggregates in the sync response but must not write to this table. Client-submitted upserts and deletions for `streak_daily_aggregates` are ignored; only server-side changes are returned.
 
 ### 3.3 Tables NOT Replicated
 
@@ -528,18 +578,17 @@ replication between the active client and the backend replica.
 
 For each replicated table, the client sends:
 
-- `last_synced_at`: the last server cursor the client has fully applied for that table
+- `cursor`: the last `sync_version` value the client has fully applied for that table (an opaque integer from the server's monotonic sequence)
 - `upserts`: records created or updated locally since that cursor
 - `deletions`: primary keys deleted locally since that cursor
 
 The server applies the client changes transactionally, then returns server
-changes newer than `last_synced_at` for the same table. `last_synced_at = 0`
-requests a restore/bootstrap snapshot for that table.
+changes whose `sync_version` is greater than `cursor` for the same table.
+`cursor = 0` requests a restore/bootstrap snapshot for that table.
 
-This is not a general-purpose multi-master sync engine. The product model is
-still single-device, but the wire protocol is incremental in both directions so
-the backend can serve restore/bootstrap and server-side features from the same
-replicated state.
+This is not a general-purpose merge engine. The product model is single-device;
+the wire protocol is incremental in both directions so the backend can serve
+restore/bootstrap and server-side features from the same replicated state.
 
 ### 4.2 Replication Request
 
@@ -549,7 +598,7 @@ The client sends:
 {
   "tables": {
     "modes": {
-      "last_synced_at": 1700000000000,
+      "cursor": 42,
       "upserts": [
         {
           "id": "uuid-1",
@@ -567,7 +616,7 @@ The client sends:
       "deletions": ["uuid-3", "uuid-7"]
     },
     "mode_blocked_apps": {
-      "last_synced_at": 1700000000000,
+      "cursor": 42,
       "upserts": [ ... ],
       "deletions": [
         { "mode_id": "uuid-1", "platform": "android", "app_identifier": "com.example.app" }
@@ -581,14 +630,14 @@ The client sends:
 
 | Field | Description |
 |---|---|
-| `last_synced_at` | Milliseconds-since-epoch server cursor for that table. `0` requests restore/bootstrap for the table. The client advances this value only after a successful response has been fully applied locally. |
+| `cursor` | The last `sync_version` value the client has fully applied for that table. `0` requests restore/bootstrap for the table. The client advances this value only after a successful response has been fully applied locally. |
 | `upserts` | Array of records created or updated locally since the client's current cursor for that table. |
 | `deletions` | Array of primary key values for records deleted locally since the client's current cursor for that table. For single-column PKs this is an array of strings. For composite PKs this is an array of objects with all PK fields. |
 
 If a request fails or the client does not receive the response, the client may
-retry with the same `last_synced_at`, `upserts`, and `deletions`. Duplicate
-upserts are safe because records are keyed by primary key and compared by record
-version (`updated_at`, or `created_at` where no `updated_at` exists). Duplicate
+retry with the same `cursor`, `upserts`, and `deletions`. Duplicate upserts are
+safe because records are keyed by primary key and compared by record version
+(`updated_at`, or `created_at` where no `updated_at` exists). Duplicate
 deletions are safe because deleting a missing row is a no-op.
 
 ### 4.3 Replication Response
@@ -597,9 +646,9 @@ The server responds with:
 
 ```json
 {
-  "server_time": 1700001000000,
   "tables": {
     "modes": {
+      "cursor": 57,
       "upserts": [
         {
           "id": "uuid-2",
@@ -610,6 +659,7 @@ The server responds with:
       "deletions": []
     },
     "mode_blocked_apps": {
+      "cursor": 57,
       "upserts": [ ... ],
       "deletions": []
     }
@@ -621,9 +671,9 @@ The server responds with:
 
 | Field | Description |
 |---|---|
-| `server_time` | The server's current time in milliseconds-since-epoch. The client stores this as the next cursor after it has successfully applied the full response. |
-| `upserts` | Server records for that table whose server-side change time is newer than `last_synced_at`. When `last_synced_at = 0`, this is the full server snapshot for the table. |
-| `deletions` | Server tombstones for that table whose deletion time is newer than `last_synced_at`. These are part of normal replication responses, including after bootstrap if the retention window includes matching tombstones. |
+| `cursor` | The next `sync_version` cursor for that table. The client stores this as its cursor after it has successfully applied the full response. Computed as the maximum `sync_version` seen across upserts and tombstones for that table (or the previous cursor if nothing changed). |
+| `upserts` | Server records for that table whose `sync_version` is greater than the request cursor. When `cursor = 0`, this is the full server snapshot for the table. |
+| `deletions` | Server tombstones for that table whose `sync_version` is greater than the request cursor. These are part of normal replication responses, including after bootstrap if the retention window includes matching tombstones. |
 
 ### 4.4 Replication Processing (Server-Side)
 
@@ -635,21 +685,26 @@ a single database transaction**:
    - If no server record exists: insert the client record.
    - If a server record exists and the client's `updated_at` > server's `updated_at`: update with client data.
    - If a server record exists and the client's `updated_at` <= server's `updated_at`: keep the server copy unchanged.
+   - **Tombstone clearing**: When a record is successfully written (inserted or updated), any existing tombstone for that primary key is deleted from `sync_tombstones`. This ensures that a previously deleted record can be "resurrected" by the client without the stale tombstone overriding the new data on subsequent sync cycles.
 
 2. **Process client deletions**: For each primary key in the client's
    `deletions` array:
    - Delete the corresponding server record if it exists.
-   - Record a tombstone so later clients or restore/bootstrap flows can observe
+   - Record a tombstone in `sync_tombstones` so later sync cycles can observe
      that deletion until tombstone retention expires.
 
-3. **Gather server data for response**:
-   - If `last_synced_at = 0` for a table, return the full current server
-     snapshot for that table.
-   - Also return all tombstones for that table newer than `last_synced_at`.
-   - Otherwise, return all server upserts and tombstones newer than
-     `last_synced_at`.
+3. **Recompute server-derived tables**: After processing client changes, the
+   server recomputes `streak_daily_aggregates` from `streak_session_daily_rollups`
+   for the affected user.
 
-4. **Return the response**.
+4. **Gather server data for response**:
+   - If `cursor = 0` for a table, return the full current server
+     snapshot for that table.
+   - Also return all tombstones for that table with `sync_version` > `cursor`.
+   - Otherwise, return all server upserts and tombstones with
+     `sync_version` > `cursor`.
+
+5. **Return the response**.
 
 The server response is the authoritative result of that replication cycle. The
 client should update its local cursor for a table only after applying both
@@ -663,37 +718,38 @@ client should update its local cursor for a table only after applying both
 | `mode_blocked_apps` | `(mode_id, platform, app_identifier)` | Composite PK |
 | `schedules` | `id` | Delete payload is the record ID string |
 | `restriction_sessions` | `session_id` | Delete payload is the session ID string |
-| `restriction_lifecycle_events` | `id` | No `updated_at` column; use `created_at` as the record version when comparing uploads |
+| `restriction_lifecycle_events` | `id` | **Append-only**: no `updated_at` column; uses `created_at` as the record version. Deletions are not allowed; the server ignores client-submitted deletions for this table. |
 | `nfc_linked_chips` | `id` | Delete payload is the record ID string |
 | `qr_linked_codes` | `id` | Delete payload is the record ID string |
 | `streak_session_daily_rollups` | `(session_id, local_day)` | Composite PK |
-| `streak_daily_aggregates` | `local_day` | Delete payload is the local day string |
+| `streak_daily_aggregates` | `local_day` | **Server-derived**: the server recomputes this table from `streak_session_daily_rollups`. Client upserts and deletions are ignored; clients only receive server-computed changes. |
 
 ### 4.6 Restore Semantics
 
-When `last_synced_at = 0` for a table:
+When `cursor = 0` for a table:
 
 - The client requests the server's stored snapshot for that table.
 - The client may still include local `upserts` and `deletions`; the server
   applies them before building the response.
 - The server returns all records it currently stores for that user and table,
-  plus tombstones newer than the retained deletion horizon.
+  plus tombstones within the retained deletion horizon.
 
 This enables restoring data on a new device: the client sends
-`last_synced_at = 0` with empty `upserts` and empty `deletions`, then rebuilds
+`cursor = 0` with empty `upserts` and empty `deletions`, then rebuilds
 its local SQLite tables from the returned snapshot.
 
 ### 4.7 Ongoing Replication Semantics
 
 After bootstrap, the client continues to use the same replication shape:
 
-- the client sends `last_synced_at`, `upserts`, and `deletions`,
-- the backend applies the client changes and returns any newer server upserts
-  and tombstones,
-- the client applies the response and then advances its cursor to `server_time`.
+- the client sends `cursor`, `upserts`, and `deletions`,
+- the backend applies the client changes and returns any server upserts and
+  tombstones with `sync_version` greater than the request cursor,
+- the client applies the response and then advances its local cursor to the
+  returned `cursor` value.
 
 If there are no newer server changes for a table, the response arrays for that
-table may be empty.
+table may be empty and the returned cursor equals the request cursor.
 
 ### 4.8 Failure Mode
 
@@ -701,6 +757,30 @@ If a client change is applied locally but never successfully replicated, the
 backend replica will lag behind the device. A later restore/bootstrap on another
 device may therefore reconstruct older state. The client should retry failed
 replication requests with the same cursor and payload until one succeeds.
+
+### 4.9 Sync Payload Validation
+
+The server performs the following validation checks on the sync request payload
+before processing. Violations are returned as `422 VALIDATION_ERROR` with
+per-field error details.
+
+- **Duplicate key detection**: Within a single table's `upserts` array, no two
+  records may share the same primary key. This applies to both single-column
+  PKs (e.g., `modes.id`) and composite PKs (e.g., `mode_blocked_apps`
+  `(mode_id, platform, app_identifier)`).
+- **Upsert + deletion overlap**: The same primary key must not appear in both
+  the `upserts` and `deletions` arrays for a given table. The client must
+  resolve the intent before submitting.
+- **Schedule `days` validation**: The `days` field in `schedules` upserts must
+  be a non-empty comma-separated string of values from `{mon, tue, wed, thu,
+  fri, sat, sun}`.
+- **Restriction session field constraints**: `restriction_sessions` upserts
+  require `started_at`, `pause_count` (>= 0), `total_paused_ms` (>= 0),
+  `integrity_status` (one of `ok`, `anomaly`), `last_event_id`, `created_at`,
+  and `updated_at`. If both `started_at` and `ended_at` are present,
+  `ended_at` must be >= `started_at`.
+- **Lifecycle event immutability**: `restriction_lifecycle_events` does not
+  accept deletions. If deletions are submitted, they are ignored.
 
 ---
 

@@ -81,17 +81,22 @@ type fakeAuthRepo struct {
 	markOTPUsedFn                             func(ctx context.Context, db repository.DBTX, otpID string) error
 	deleteOTPsByEmailAndPurposeFn             func(ctx context.Context, db repository.DBTX, email string, purpose mail.Purpose) error
 	deleteOTPByIDFn                           func(ctx context.Context, db repository.DBTX, otpID string) error
-	insertRefreshTokenFn                      func(ctx context.Context, db repository.DBTX, userID, tokenHash string, expiresAt time.Time) error
+	insertRefreshTokenFn                      func(ctx context.Context, db repository.DBTX, userID, sessionID, tokenHash string, expiresAt time.Time) error
 	getRefreshTokenByHashForUpdateFn          func(ctx context.Context, db repository.DBTX, tokenHash string) (repository.RefreshTokenRow, error)
 	revokeRefreshTokenFn                      func(ctx context.Context, db repository.DBTX, tokenID string) error
 	revokeAllRefreshTokensFn                  func(ctx context.Context, db repository.DBTX, userID string) error
 	getUserEmailByIDFn                        func(ctx context.Context, db repository.DBTX, userID string) (string, error)
 	getEntitlementSnapshotFn                  func(ctx context.Context, db repository.DBTX, userID string) (repository.EntitlementRow, error)
+	insertSessionFn                           func(ctx context.Context, db repository.DBTX, userID string, expiresAt time.Time) (string, error)
+	getSessionByIDFn                          func(ctx context.Context, db repository.DBTX, sessionID string) (repository.SessionRow, error)
+	revokeSessionFn                           func(ctx context.Context, db repository.DBTX, sessionID string) error
+	revokeAllUserSessionsFn                   func(ctx context.Context, db repository.DBTX, userID string) error
 }
 
 var _ authUserRepository = (*fakeAuthRepo)(nil)
 var _ authOTPRepository = (*fakeAuthRepo)(nil)
 var _ authRefreshTokenRepository = (*fakeAuthRepo)(nil)
+var _ authSessionRepository = (*fakeAuthRepo)(nil)
 var _ authEntitlementRepository = (*fakeAuthRepo)(nil)
 
 func (f *fakeAuthRepo) GetUserByEmail(ctx context.Context, db repository.DBTX, email string) (repository.UserRow, error) {
@@ -148,8 +153,8 @@ func (f *fakeAuthRepo) DeleteOTPsByEmailAndPurpose(ctx context.Context, db repos
 func (f *fakeAuthRepo) DeleteOTPByID(ctx context.Context, db repository.DBTX, otpID string) error {
 	return f.deleteOTPByIDFn(ctx, db, otpID)
 }
-func (f *fakeAuthRepo) InsertRefreshToken(ctx context.Context, db repository.DBTX, userID, tokenHash string, expiresAt time.Time) error {
-	return f.insertRefreshTokenFn(ctx, db, userID, tokenHash, expiresAt)
+func (f *fakeAuthRepo) InsertRefreshToken(ctx context.Context, db repository.DBTX, userID, sessionID, tokenHash string, expiresAt time.Time) error {
+	return f.insertRefreshTokenFn(ctx, db, userID, sessionID, tokenHash, expiresAt)
 }
 func (f *fakeAuthRepo) GetRefreshTokenByHashForUpdate(ctx context.Context, db repository.DBTX, tokenHash string) (repository.RefreshTokenRow, error) {
 	return f.getRefreshTokenByHashForUpdateFn(ctx, db, tokenHash)
@@ -168,6 +173,30 @@ func (f *fakeAuthRepo) GetEntitlementSnapshot(ctx context.Context, db repository
 		return repository.EntitlementRow{}, repository.ErrNotFound
 	}
 	return f.getEntitlementSnapshotFn(ctx, db, userID)
+}
+func (f *fakeAuthRepo) InsertSession(ctx context.Context, db repository.DBTX, userID string, expiresAt time.Time) (string, error) {
+	if f.insertSessionFn != nil {
+		return f.insertSessionFn(ctx, db, userID, expiresAt)
+	}
+	return "fake-session-id", nil
+}
+func (f *fakeAuthRepo) GetSessionByID(ctx context.Context, db repository.DBTX, sessionID string) (repository.SessionRow, error) {
+	if f.getSessionByIDFn != nil {
+		return f.getSessionByIDFn(ctx, db, sessionID)
+	}
+	return repository.SessionRow{ID: sessionID, UserID: "user-001", ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+func (f *fakeAuthRepo) RevokeSession(ctx context.Context, db repository.DBTX, sessionID string) error {
+	if f.revokeSessionFn != nil {
+		return f.revokeSessionFn(ctx, db, sessionID)
+	}
+	return nil
+}
+func (f *fakeAuthRepo) RevokeAllUserSessions(ctx context.Context, db repository.DBTX, userID string) error {
+	if f.revokeAllUserSessionsFn != nil {
+		return f.revokeAllUserSessionsFn(ctx, db, userID)
+	}
+	return nil
 }
 
 type fakeSendOTPCall struct {

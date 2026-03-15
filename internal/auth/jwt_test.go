@@ -16,7 +16,7 @@ func TestIssueAccessToken_RoundTrip(t *testing.T) {
 	secret := "test-secret-key-at-least-32-bytes!"
 	ttl := 15 * time.Minute
 
-	tokenStr, err := auth.IssueAccessToken(userID, email, secret, ttl)
+	tokenStr, err := auth.IssueAccessToken(userID, email, "", secret, ttl)
 	if err != nil {
 		t.Fatalf("IssueAccessToken() error = %v", err)
 	}
@@ -45,7 +45,7 @@ func TestValidateAccessToken_Expired(t *testing.T) {
 	secret := "test-secret-key-at-least-32-bytes!"
 	ttl := -1 * time.Second // already expired
 
-	tokenStr, err := auth.IssueAccessToken(userID, email, secret, ttl)
+	tokenStr, err := auth.IssueAccessToken(userID, email, "", secret, ttl)
 	if err != nil {
 		t.Fatalf("IssueAccessToken() error = %v", err)
 	}
@@ -64,7 +64,7 @@ func TestValidateAccessToken_WrongSecret(t *testing.T) {
 	email := "test@example.com"
 	ttl := 15 * time.Minute
 
-	tokenStr, err := auth.IssueAccessToken(userID, email, "correct-secret-that-is-at-least-32-bytes!", ttl)
+	tokenStr, err := auth.IssueAccessToken(userID, email, "", "correct-secret-that-is-at-least-32-bytes!", ttl)
 	if err != nil {
 		t.Fatalf("IssueAccessToken() error = %v", err)
 	}
@@ -128,7 +128,7 @@ func TestValidateAccessToken_Malformed(t *testing.T) {
 }
 
 func TestIssueAccessToken_EmptySecret(t *testing.T) {
-	_, err := auth.IssueAccessToken("user-id", "a@b.com", "", 15*time.Minute)
+	_, err := auth.IssueAccessToken("user-id", "a@b.com", "", "", 15*time.Minute)
 	if err == nil {
 		t.Fatal("IssueAccessToken() with empty secret returned nil error, want error")
 	}
@@ -138,7 +138,7 @@ func TestIssueAccessToken_EmptySecret(t *testing.T) {
 }
 
 func TestIssueAccessToken_EmptyUserID(t *testing.T) {
-	_, err := auth.IssueAccessToken("", "a@b.com", "some-secret", 15*time.Minute)
+	_, err := auth.IssueAccessToken("", "a@b.com", "", "some-secret", 15*time.Minute)
 	if err == nil {
 		t.Fatal("IssueAccessToken() with empty userID returned nil error, want error")
 	}
@@ -149,7 +149,7 @@ func TestIssueAccessToken_EmptyUserID(t *testing.T) {
 
 func TestValidateAccessToken_EmptySecret(t *testing.T) {
 	// First issue a valid token with a real secret.
-	tokenStr, err := auth.IssueAccessToken("user-id", "a@b.com", "test-secret-key-at-least-32-bytes!", 15*time.Minute)
+	tokenStr, err := auth.IssueAccessToken("user-id", "a@b.com", "", "test-secret-key-at-least-32-bytes!", 15*time.Minute)
 	if err != nil {
 		t.Fatalf("IssueAccessToken() error = %v", err)
 	}
@@ -167,7 +167,7 @@ func TestIssueAccessToken_ZeroTTL(t *testing.T) {
 	secret := "test-secret-key-at-least-32-bytes!"
 
 	// Zero TTL means the token expires immediately (ExpiresAt == IssuedAt).
-	tokenStr, err := auth.IssueAccessToken("user-id", "a@b.com", secret, 0)
+	tokenStr, err := auth.IssueAccessToken("user-id", "a@b.com", "", secret, 0)
 	if err != nil {
 		t.Fatalf("IssueAccessToken() with zero TTL error = %v", err)
 	}
@@ -220,5 +220,20 @@ func TestValidateAccessToken_EmptySubject(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "empty subject") {
 		t.Errorf("error = %q, want mention of empty subject", err.Error())
+	}
+}
+
+func TestIssueAccessToken_SessionID_RoundTrip(t *testing.T) {
+	secret := "test-secret-key-at-least-32-bytes!"
+	tokenStr, err := auth.IssueAccessToken("user-1", "a@b.com", "sess-123", secret, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("IssueAccessToken() error = %v", err)
+	}
+	claims, err := auth.ValidateAccessToken(tokenStr, secret)
+	if err != nil {
+		t.Fatalf("ValidateAccessToken() error = %v", err)
+	}
+	if claims.SessionID != "sess-123" {
+		t.Errorf("claims.SessionID = %q, want %q", claims.SessionID, "sess-123")
 	}
 }

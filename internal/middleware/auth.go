@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -9,20 +10,25 @@ import (
 	"github.com/IsorilovA/pauza-server/internal/auth"
 )
 
+// SessionValidator validates that a session is still active.
+type SessionValidator interface {
+	ValidateSession(ctx context.Context, sessionID string) error
+}
+
 // JWTAuth returns a chi-compatible middleware that validates JWT access tokens.
 // It extracts the token from the Authorization header (Bearer scheme), validates
 // it using the provided secret, and stores the authenticated user in the request
 // context. Requests without a valid token receive a 401 UNAUTHORIZED response.
 // The provided logger is used for structured warning output on auth failures.
-func JWTAuth(secret string, logger *slog.Logger) func(http.Handler) http.Handler {
-	return jwtAuth(secret, logger, "")
+func JWTAuth(secret string, sessions SessionValidator, logger *slog.Logger) func(http.Handler) http.Handler {
+	return jwtAuth(secret, sessions, logger, "")
 }
 
 func AdminJWTAuth(secret string, logger *slog.Logger) func(http.Handler) http.Handler {
-	return jwtAuth(secret, logger, "admin")
+	return jwtAuth(secret, nil, logger, "admin")
 }
 
-func jwtAuth(secret string, logger *slog.Logger, requiredRole string) func(http.Handler) http.Handler {
+func jwtAuth(secret string, sessions SessionValidator, logger *slog.Logger, requiredRole string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			header := r.Header.Get("Authorization")
@@ -63,9 +69,28 @@ func jwtAuth(secret string, logger *slog.Logger, requiredRole string) func(http.
 				return
 			}
 
+			// Session validation for user tokens (non-admin)
+			if requiredRole == "" {
+				if claims.SessionID == "" {
+					logger.WarnContext(r.Context(), "jwt auth: missing session id",
+						"path", r.URL.Path)
+					apperror.Unauthorized(w, "missing or invalid authentication")
+					return
+				}
+				if sessions != nil {
+					if err := sessions.ValidateSession(r.Context(), claims.SessionID); err != nil {
+						logger.WarnContext(r.Context(), "jwt auth: session validation failed",
+							"path", r.URL.Path, "err", err)
+						apperror.Unauthorized(w, "missing or invalid authentication")
+						return
+					}
+				}
+			}
+
 			user := AuthUser{
-				UserID: claims.Subject,
-				Email:  claims.Email,
+				UserID:    claims.Subject,
+				Email:     claims.Email,
+				SessionID: claims.SessionID,
 			}
 
 			ctx := WithUser(r.Context(), user)

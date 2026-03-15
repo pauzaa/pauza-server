@@ -16,9 +16,9 @@ import (
 )
 
 type syncTableFixture[T any, D any] struct {
-	LastSyncedAt *int64 `json:"last_synced_at,omitempty"`
-	Upserts      []T    `json:"upserts"`
-	Deletions    []D    `json:"deletions"`
+	Cursor    *int64 `json:"cursor,omitempty"`
+	Upserts   []T    `json:"upserts"`
+	Deletions []D    `json:"deletions"`
 }
 
 type syncRequestFixture struct {
@@ -156,7 +156,7 @@ func syncPayload() syncRequestFixture {
 
 func syncEmptyTable[T any, D any]() *syncTableFixture[T, D] {
 	return &syncTableFixture[T, D]{
-		LastSyncedAt: int64Ptr(0),
+		Cursor: int64Ptr(0),
 		Upserts:      []T{},
 		Deletions:    []D{},
 	}
@@ -312,7 +312,7 @@ func TestIntegration_Sync_EmptyRequestedTableSerializesArrays(t *testing.T) {
 	}
 	raw := string(readBody(t, resp))
 
-	if !strings.Contains(raw, `"modes":{"upserts":[],"deletions":[]}`) {
+	if !strings.Contains(raw, `"upserts":[],"deletions":[]`) {
 		t.Fatalf("expected empty arrays in raw response, got %s", raw)
 	}
 	if strings.Contains(raw, `"upserts":null`) || strings.Contains(raw, `"deletions":null`) {
@@ -334,7 +334,7 @@ func TestIntegration_Sync_LastWriteWinsAndEchoSuppression(t *testing.T) {
 
 	oldPayload := syncPayload()
 	oldPayload.Tables.Modes = &syncTableFixture[syncModeFixture, string]{
-		LastSyncedAt: int64Ptr(150),
+		Cursor: int64Ptr(150),
 		Upserts:      []syncModeFixture{syncModeUpsert("OldClient", 100)},
 		Deletions:    []string{},
 	}
@@ -351,7 +351,7 @@ func TestIntegration_Sync_LastWriteWinsAndEchoSuppression(t *testing.T) {
 
 	newPayload := syncPayload()
 	newPayload.Tables.Modes = &syncTableFixture[syncModeFixture, string]{
-		LastSyncedAt: int64Ptr(150),
+		Cursor: int64Ptr(150),
 		Upserts:      []syncModeFixture{syncModeUpsert("ClientNew", 300)},
 		Deletions:    []string{},
 	}
@@ -398,15 +398,15 @@ func TestIntegration_Sync_RestrictionLifecycleCursorUsesCreatedAt(t *testing.T) 
 		t.Fatalf("insert event: %v", err)
 	}
 	_, err = pool.Exec(ctx,
-		`UPDATE restriction_lifecycle_events SET server_created_at = 1000 WHERE user_id = $1 AND id = 'ev1'`,
+		`UPDATE restriction_lifecycle_events SET sync_version = 1000 WHERE user_id = $1 AND id = 'ev1'`,
 		auth.User.ID)
 	if err != nil {
-		t.Fatalf("set server_created_at: %v", err)
+		t.Fatalf("set sync_version: %v", err)
 	}
 
 	p := syncPayload()
 	p.Tables.RestrictionLifecycleEvents = &syncTableFixture[syncRestrictionLifecycleEventFixture, string]{
-		LastSyncedAt: int64Ptr(900),
+		Cursor: int64Ptr(900),
 		Upserts:      []syncRestrictionLifecycleEventFixture{},
 		Deletions:    []string{},
 	}
@@ -423,7 +423,7 @@ func TestIntegration_Sync_RestrictionLifecycleCursorUsesCreatedAt(t *testing.T) 
 
 	p2 := syncPayload()
 	p2.Tables.RestrictionLifecycleEvents = &syncTableFixture[syncRestrictionLifecycleEventFixture, string]{
-		LastSyncedAt: int64Ptr(1000),
+		Cursor: int64Ptr(1000),
 		Upserts:      []syncRestrictionLifecycleEventFixture{},
 		Deletions:    []string{},
 	}
@@ -478,7 +478,7 @@ func TestIntegration_Sync_CascadeTombstonesReturnedOnFullRestore(t *testing.T) {
 
 	deletePayload := syncPayload()
 	deletePayload.Tables.Modes = &syncTableFixture[syncModeFixture, string]{
-		LastSyncedAt: int64Ptr(0),
+		Cursor: int64Ptr(0),
 		Upserts:      []syncModeFixture{},
 		Deletions:    []string{"mode1"},
 	}

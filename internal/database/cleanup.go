@@ -28,6 +28,12 @@ type CleanupConfig struct {
 	// when revoked_at < now() - RefreshTokenMaxAge. A single duration
 	// keeps both predicates aligned with the same cleanup indexes.
 	RefreshTokenMaxAge time.Duration
+
+	// SessionMaxAge is the retention window applied to both expired
+	// and revoked auth sessions. Expired sessions are deleted when
+	// expires_at < now() - SessionMaxAge; revoked sessions are deleted
+	// when revoked_at < now() - SessionMaxAge.
+	SessionMaxAge time.Duration
 }
 
 // StartCleanup launches a background goroutine that periodically removes
@@ -113,6 +119,20 @@ func runCleanup(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, cf
 		logger.InfoContext(ctx, "auth cleanup: deleted revoked refresh tokens", "count", rtRevoked)
 	}
 
+	sessExpired, err := cleanupExpiredSessions(ctx, pool, cfg.SessionMaxAge)
+	if err != nil {
+		logger.ErrorContext(ctx, "auth cleanup: failed to delete expired sessions", "err", err)
+	} else if sessExpired > 0 {
+		logger.InfoContext(ctx, "auth cleanup: deleted expired sessions", "count", sessExpired)
+	}
+
+	sessRevoked, err := cleanupRevokedSessions(ctx, pool, cfg.SessionMaxAge)
+	if err != nil {
+		logger.ErrorContext(ctx, "auth cleanup: failed to delete revoked sessions", "err", err)
+	} else if sessRevoked > 0 {
+		logger.InfoContext(ctx, "auth cleanup: deleted revoked sessions", "count", sessRevoked)
+	}
+
 	syncTombstonesDeleted, err := cleanupSyncTombstones(ctx, pool, syncTombstoneRetention)
 	if err != nil {
 		logger.ErrorContext(ctx, "auth cleanup: failed to delete old sync tombstones", "err", err)
@@ -170,6 +190,32 @@ func cleanupExpiredRefreshTokens(ctx context.Context, pool *pgxpool.Pool, maxAge
 func cleanupRevokedRefreshTokens(ctx context.Context, pool *pgxpool.Pool, maxAge time.Duration) (int64, error) {
 	tag, err := pool.Exec(ctx,
 		`DELETE FROM refresh_tokens
+		 WHERE revoked = true AND revoked_at < now() - $1::interval`,
+		maxAge)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// cleanupExpiredSessions deletes non-revoked auth sessions whose
+// expires_at is older than the retention window.
+func cleanupExpiredSessions(ctx context.Context, pool *pgxpool.Pool, maxAge time.Duration) (int64, error) {
+	tag, err := pool.Exec(ctx,
+		`DELETE FROM auth_sessions
+		 WHERE revoked = false AND expires_at < now() - $1::interval`,
+		maxAge)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// cleanupRevokedSessions deletes revoked auth sessions whose
+// revoked_at is older than the retention window.
+func cleanupRevokedSessions(ctx context.Context, pool *pgxpool.Pool, maxAge time.Duration) (int64, error) {
+	tag, err := pool.Exec(ctx,
+		`DELETE FROM auth_sessions
 		 WHERE revoked = true AND revoked_at < now() - $1::interval`,
 		maxAge)
 	if err != nil {
