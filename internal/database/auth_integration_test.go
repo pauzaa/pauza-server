@@ -134,10 +134,20 @@ func TestRefreshTokens_RetainRotationShape(t *testing.T) {
 	defer cancel()
 
 	userID := insertTestUser(t, ctx, pool, "refresh@example.com", "user_refresh1")
-	_, err := pool.Exec(ctx,
-		`INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
-		 VALUES ($1, $2, $3)`,
-		userID, "hash-1", time.Now().UTC().Add(24*time.Hour),
+
+	var sessionID string
+	err := pool.QueryRow(ctx,
+		`INSERT INTO auth_sessions (user_id, expires_at) VALUES ($1, $2) RETURNING id`,
+		userID, time.Now().UTC().Add(24*time.Hour),
+	).Scan(&sessionID)
+	if err != nil {
+		t.Fatalf("inserting auth session: %v", err)
+	}
+
+	_, err = pool.Exec(ctx,
+		`INSERT INTO refresh_tokens (user_id, session_id, token_hash, expires_at)
+		 VALUES ($1, $2, $3, $4)`,
+		userID, sessionID, "hash-1", time.Now().UTC().Add(24*time.Hour),
 	)
 	if err != nil {
 		t.Fatalf("inserting refresh token: %v", err)

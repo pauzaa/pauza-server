@@ -186,6 +186,17 @@ func TestPgxSyncRepository_RecomputeStreakAggregates_RefreshesLeaderboardMetrics
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// Insert prerequisite mode and restriction sessions (FK targets for rollups)
+	if _, err := pool.Exec(ctx, `INSERT INTO modes (user_id, id, title, text_on_screen, allowed_pauses_count, ending_pausing_scenario, icon_token, created_at, updated_at) VALUES ($1, 'mode1', 'M', 'T', 0, 'manual', 'icon', 1000, 1000)`, userID); err != nil {
+		t.Fatalf("inserting mode: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO restriction_sessions (user_id, session_id, mode_id, source, started_at, pause_count, total_paused_ms, integrity_status, last_event_id, created_at, updated_at) VALUES ($1, 'sess-1', 'mode1', 'manual', 1000, 0, 0, 'ok', 'ev1', 1000, 1000)`, userID); err != nil {
+		t.Fatalf("inserting restriction session 1: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO restriction_sessions (user_id, session_id, mode_id, source, started_at, pause_count, total_paused_ms, integrity_status, last_event_id, created_at, updated_at) VALUES ($1, 'sess-2', 'mode1', 'manual', 2000, 0, 0, 'ok', 'ev2', 2000, 2000)`, userID); err != nil {
+		t.Fatalf("inserting restriction session 2: %v", err)
+	}
+
 	// Insert rollup data that RecomputeStreakAggregates will aggregate
 	_, err := repo.SyncStreakSessionDailyRollups(ctx, pool, userID, syncmodel.TableSync[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]{
 		Cursor: 0,

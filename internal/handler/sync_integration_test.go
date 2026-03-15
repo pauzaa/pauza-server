@@ -332,11 +332,13 @@ func TestIntegration_Sync_LastWriteWinsAndEchoSuppression(t *testing.T) {
 		t.Fatalf("insert mode: %v", err)
 	}
 
+	// Send an older client write (updated_at=100) — LWW rejects it (server has 200).
+	// Use cursor=0 so the server record (with a low sync_version) is returned.
 	oldPayload := syncPayload()
 	oldPayload.Tables.Modes = &syncTableFixture[syncModeFixture, string]{
-		Cursor: int64Ptr(150),
-		Upserts:      []syncModeFixture{syncModeUpsert("OldClient", 100)},
-		Deletions:    []string{},
+		Cursor:    int64Ptr(0),
+		Upserts:   []syncModeFixture{syncModeUpsert("OldClient", 100)},
+		Deletions: []string{},
 	}
 	resp := postSync(t, ts.URL, auth.AccessToken, oldPayload)
 	if resp.StatusCode != http.StatusOK {
@@ -349,11 +351,13 @@ func TestIntegration_Sync_LastWriteWinsAndEchoSuppression(t *testing.T) {
 		t.Fatalf("expected server record returned on older client write")
 	}
 
+	// Now send a newer write (updated_at=300) — LWW accepts it.
+	// Use the cursor from the previous sync so the written record is echo-suppressed.
 	newPayload := syncPayload()
 	newPayload.Tables.Modes = &syncTableFixture[syncModeFixture, string]{
-		Cursor: int64Ptr(150),
-		Upserts:      []syncModeFixture{syncModeUpsert("ClientNew", 300)},
-		Deletions:    []string{},
+		Cursor:    &out1.Tables.Modes.NextCursor,
+		Upserts:   []syncModeFixture{syncModeUpsert("ClientNew", 300)},
+		Deletions: []string{},
 	}
 	resp = postSync(t, ts.URL, auth.AccessToken, newPayload)
 	if resp.StatusCode != http.StatusOK {
