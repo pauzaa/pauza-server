@@ -271,7 +271,7 @@ Exchange a refresh token for new access and refresh tokens.
 | Code | When |
 |---|---|
 | `VALIDATION_ERROR` (422) | Missing refresh_token |
-| `UNAUTHORIZED` (401) | Invalid, expired, or reused token (reuse triggers revocation of all user tokens) |
+| `UNAUTHORIZED` (401) | Invalid, expired, or reused token (reuse triggers revocation of the associated session) |
 | `RATE_LIMITED` (429) | Too many requests |
 | `INTERNAL_ERROR` (500) | Transient server error |
 
@@ -279,8 +279,9 @@ Exchange a refresh token for new access and refresh tokens.
 
 ### `POST /api/v1/auth/logout`
 
-Revoke the current session's refresh token. The session is identified by the
-`sid` claim in the caller's access token.
+Revoke the current login session. The session is identified by the
+`sid` claim in the caller's access token. Only the current session is revoked;
+other sessions (if any) remain active.
 
 | Property | Value |
 |---|---|
@@ -1534,7 +1535,7 @@ Each table key is **optional**. When present, it must contain:
 
 | Field | Type | Required | Validation |
 |---|---|---|---|
-| `cursor` | string | yes | Opaque sync cursor (empty string `""` for first sync) |
+| `cursor` | int64 | yes | Monotonic sync cursor (`0` for first sync); use `next_cursor` from the previous response |
 | `upserts` | array | no | Records to create/update; max **5000** items per table per request |
 | `deletions` | array | no | Keys of records to delete; each key is validated (see per-table rules below) |
 
@@ -1579,7 +1580,7 @@ Each table key is **optional**. When present, it must contain:
 |---|---|---|---|
 | `id` | string | yes | Non-empty |
 | `mode_id` | string | yes | Non-empty |
-| `days` | string | yes | Non-empty |
+| `days` | string | yes | Comma-separated values from `{mon,tue,wed,thu,fri,sat,sun}` |
 | `start_minute` | int | yes | 0–1439 |
 | `end_minute` | int | yes | 0–1439 |
 | `enabled` | int | yes | `0` or `1` |
@@ -1598,9 +1599,9 @@ Each table key is **optional**. When present, it must contain:
 | `mode_id` | string | yes | Non-empty |
 | `source` | string | yes | `"manual"` or `"schedule"` |
 | `started_at` | int64 | yes | Unix ms |
-| `ended_at` | int64 \| null | no | Unix ms |
-| `pause_count` | int | yes | — |
-| `total_paused_ms` | int | yes | — |
+| `ended_at` | int64 \| null | no | Unix ms; must be ≥ `started_at` when present |
+| `pause_count` | int | yes | ≥ 0 |
+| `total_paused_ms` | int | yes | ≥ 0 |
 | `last_paused_at` | int64 \| null | no | Unix ms |
 | `integrity_status` | string | yes | `"ok"` or `"anomaly"` |
 | `last_anomaly_reason` | string \| null | no | — |
@@ -1686,7 +1687,7 @@ each table the client included. Tables not requested are omitted.
     "modes": {
       "upserts": [ ... ],
       "deletions": [ ... ],
-      "next_cursor": "opaque-cursor-string"
+      "next_cursor": 42
     }
   }
 }
@@ -1701,7 +1702,7 @@ schemas match the upsert/deletion types described above.
 
 | Code | When |
 |---|---|
-| `VALIDATION_ERROR` (422) | Missing `cursor`, invalid field values, blank deletion IDs, `upserts` exceeding 5000 items, or unknown JSON fields anywhere in the payload |
+| `VALIDATION_ERROR` (422) | Missing `cursor`, invalid field values, blank deletion IDs, `upserts` exceeding 5000 items, duplicate keys within a batch, same key in both upserts and deletions, or unknown JSON fields anywhere in the payload |
 | `UNAUTHORIZED` (401) | Missing or invalid JWT, or user not found |
 | `RATE_LIMITED` (429) | Too many requests |
 | `INTERNAL_ERROR` (500) | Transient server error |

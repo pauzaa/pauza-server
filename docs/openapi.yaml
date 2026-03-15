@@ -226,8 +226,11 @@ components:
     # -- Auth sessions -------------------------------------------------------
     AuthSession:
       type: object
-      required: [id, user_id, refresh_token_hash, expires_at, created_at]
-      description: Represents a single authenticated session (refresh-token family).
+      required: [id, user_id, revoked, expires_at, created_at]
+      description: >-
+        Represents a single authenticated login session. Each successful login
+        creates a new session; refresh tokens are bound to it. Revoking a session
+        invalidates all its refresh tokens and blocks middleware access-token checks.
       properties:
         id:
           type: string
@@ -235,20 +238,20 @@ components:
         user_id:
           type: string
           format: uuid
-        refresh_token_hash:
+        revoked:
+          type: boolean
+          description: Whether this session has been revoked (logout or reuse detection).
+        revoked_at:
           type: string
-          description: SHA-256 hash of the refresh token (never the raw token).
+          format: date-time
+          nullable: true
+          description: When the session was revoked, if applicable.
         expires_at:
           type: string
           format: date-time
         created_at:
           type: string
           format: date-time
-        last_used_at:
-          type: string
-          format: date-time
-          nullable: true
-          description: Timestamp of the most recent token refresh for this session.
 
     # -- User profile -------------------------------------------------------
     UserResponse:
@@ -879,6 +882,7 @@ components:
         days:
           type: string
           minLength: 1
+          description: Comma-separated values from {mon,tue,wed,thu,fri,sat,sun}.
         start_minute:
           type: integer
           minimum: 0
@@ -919,10 +923,13 @@ components:
           type: integer
           format: int64
           nullable: true
+          description: Must be ≥ started_at when present.
         pause_count:
           type: integer
+          minimum: 0
         total_paused_ms:
           type: integer
+          minimum: 0
         last_paused_at:
           type: integer
           format: int64
@@ -2105,7 +2112,7 @@ paths:
       operationId: authRefresh
       tags: [Auth]
       summary: Refresh access token
-      description: Rotates the refresh token and issues a new access token pair. Reuse of a revoked refresh token triggers revocation of all tokens for that user. Unknown JSON fields are rejected. Rate limited by IP using the `auth` tier.
+      description: Rotates the refresh token and issues a new access token pair. Reuse of a revoked refresh token triggers revocation of the associated session. Unknown JSON fields are rejected. Rate limited by IP using the `auth` tier.
       requestBody:
         required: true
         content:
@@ -2141,17 +2148,18 @@ paths:
     post:
       operationId: authLogout
       tags: [Auth]
-      summary: Logout (revoke all sessions)
+      summary: Logout (revoke current session)
       description: >-
-        Revokes all refresh tokens for the authenticated user, ending every active
-        session. Requires a user JWT. The access token itself remains valid until its
-        TTL expires (stateless JWT design). Returns 204 even if the user has no active
-        refresh tokens (idempotent). Rate limited by user ID using the `general-api` tier.
+        Revokes the current login session identified by the `sid` claim in the
+        caller's access token. Only the current session is revoked; other sessions
+        remain active. The access token itself remains valid until its TTL expires
+        (stateless JWT design). Returns 204 even if the session was already revoked
+        (idempotent). Rate limited by user ID using the `general-api` tier.
       security:
         - UserJWT: []
       responses:
         "204":
-          description: All refresh tokens revoked (or none existed).
+          description: Current session revoked (or already revoked).
           headers:
             X-Request-Id:
               $ref: "#/components/headers/XRequestId"
