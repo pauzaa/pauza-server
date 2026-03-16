@@ -497,7 +497,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/BasicUser"
-          nullable: true
 
     # -- Friend stats -------------------------------------------------------
     DailyTrend:
@@ -1627,8 +1626,6 @@ components:
         active_users_30d:
           type: integer
         users_with_premium_entitlement:
-          type: integer
-        active_premium_entitlements:
           type: integer
         total_friendships:
           type: integer

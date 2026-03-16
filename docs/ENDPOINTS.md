@@ -501,7 +501,6 @@ Get platform-wide aggregate statistics.
   "total_users": 1500,
   "active_users_30d": 800,
   "users_with_premium_entitlement": 200,
-  "active_premium_entitlements": 180,
   "total_friendships": 3000,
   "avg_streak_days": 12.5,
   "avg_daily_focus_time_ms": 3600000.0
@@ -1381,19 +1380,14 @@ Search for users by username prefix.
 
 **Success — 200 OK**
 
-> **Note:** Each user object in the array is a `BasicUserRow` (PascalCase, no
-> JSON tags). The `users` array may be `null` (not `[]`) when empty
-> (Go nil slice serialisation).
-
 ```json
 {
   "users": [
     {
-      "ID": "uuid",
-      "Name": "Jane",
-      "Username": "jane42",
-      "ProfilePictureURL": null,
-      "LeaderboardVisible": true
+      "id": "uuid",
+      "name": "Jane",
+      "username": "jane42",
+      "profile_picture_url": null
     }
   ]
 }
@@ -1435,12 +1429,7 @@ they have opted out of visibility).
 
 **Success — 200 OK**
 
-> **Note:** The `user` field inside each entry is a `BasicUserRow` (PascalCase,
-> no JSON tags). The wrapping `LeaderboardEntry`, `LeaderboardRank`,
-> `LeaderboardOutput`, and `PaginationResult` types use a mix: `LeaderboardEntry`,
-> `LeaderboardRank`, and `LeaderboardOutput` have JSON tags (lowercase);
-> `PaginationResult` does not (PascalCase). `entries` may be `null` (not `[]`)
-> when empty (Go nil slice serialisation).
+`entries` may be `null` (not `[]`) when empty (Go nil slice serialisation).
 
 ```json
 {
@@ -1448,11 +1437,10 @@ they have opted out of visibility).
     {
       "rank": 1,
       "user": {
-        "ID": "uuid",
-        "Name": "Jane",
-        "Username": "jane42",
-        "ProfilePictureURL": null,
-        "LeaderboardVisible": true
+        "id": "uuid",
+        "name": "Jane",
+        "username": "jane42",
+        "profile_picture_url": null
       },
       "current_streak_days": 14,
       "total_focus_time_ms": 0
@@ -1464,9 +1452,9 @@ they have opted out of visibility).
     "total_focus_time_ms": 0
   },
   "pagination": {
-    "Page": 1,
-    "Limit": 20,
-    "Total": 10
+    "page": 1,
+    "limit": 20,
+    "total": 10
   }
 }
 ```

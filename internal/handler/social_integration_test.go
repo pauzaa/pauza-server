@@ -128,8 +128,8 @@ func TestLeaderboardEndpoints_UsePersistedMetricsAndPreserveVisibilityRules(t *t
 		Entries []struct {
 			Rank int `json:"rank"`
 			User struct {
-				ID       string `json:"ID"`
-				Username string `json:"Username"`
+				ID       string `json:"id"`
+				Username string `json:"username"`
 			} `json:"user"`
 			CurrentStreakDays int   `json:"current_streak_days"`
 			TotalFocusTimeMS  int64 `json:"total_focus_time_ms"`
