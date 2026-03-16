@@ -1092,7 +1092,7 @@ and refresh tokens become invalid as a consequence of account deletion.
 
 ### 5.4 Friendships
 
-All friendship endpoints require an active premium subscription. Returns `403` with error code `SUBSCRIPTION_REQUIRED` if the user is on the free tier.
+Most friendship endpoints require an active premium subscription. Returns `403` with error code `SUBSCRIPTION_REQUIRED` if the user is on the free tier. Exceptions: declining, cancelling, and removing do not require premium so users can always clean up their friend list.
 
 #### `GET /api/v1/friends`
 
@@ -1223,7 +1223,7 @@ Triggers a push notification to the requester (see [Section 9](#9-push-notificat
 
 Decline a pending friendship request. The friendship record is **hard-deleted**.
 
-**Auth:** Required (JWT). **Subscription:** Premium.
+**Auth:** Required (JWT).
 
 **Responses:**
 
@@ -1249,7 +1249,7 @@ Cancel an outgoing pending friendship request. The friendship record is **hard-d
 
 Remove an accepted friend. The friendship record is **hard-deleted**.
 
-**Auth:** Required (JWT). **Subscription:** Premium.
+**Auth:** Required (JWT).
 
 **Responses:**
 
@@ -1868,8 +1868,8 @@ who initiated the request.
 
 ### 7.4 Subscription Dependency
 
-- All friendship endpoints require an active premium subscription.
-- If a user's subscription expires, they cannot access friendship features, but their existing friendship records are **preserved** (not deleted). If they re-subscribe, their friends are restored.
+- Most friendship endpoints require an active premium subscription. Declining, cancelling, and removing do not require premium so users can always manage their friend list regardless of subscription status.
+- If a user's subscription expires, they cannot access most friendship features (listing, requesting, accepting, searching, viewing stats), but their existing friendship records are **preserved** (not deleted). If they re-subscribe, their friends are restored.
 - If both users have expired subscriptions, neither can view the other's stats, but the friendship record remains.
 - Declining a pending request deletes the pending row instead of transitioning it to a separate `declined` state.
 

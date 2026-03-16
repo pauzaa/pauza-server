@@ -1,0 +1,16 @@
+services:
+  api:
+    networks:
+      - default
+      - public
+    labels:
+      - "traefik.docker.network=public"
+      - "traefik.http.routers.api.rule=Host(`${PUBLIC_DOMAIN}`)"
+
+  traefik:
+    profiles:
+      - bundled-traefik
+
+networks:
+  public:
+    external: true

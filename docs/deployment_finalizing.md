@@ -7,6 +7,11 @@ Complete instructions for deploying the Pauza API server on a fresh Ubuntu VPS.
 **CI/CD:** GitHub Actions → GHCR → SSH deploy
 **Registry:** `ghcr.io/pauzaa/pauza-server`
 
+This repository supports two production topologies:
+
+- **Bundled Traefik**: Pauza runs its own `traefik` container on ports `80` and `443`.
+- **Shared Traefik**: Pauza joins an existing external Docker network with a pre-existing Traefik instance already bound to `80` and `443`.
+
 ---
 
 ## Table of Contents
@@ -223,6 +228,19 @@ cd /opt/pauza-server
 git clone https://github.com/pauzaa/pauza-server.git .
 ```
 
+### 5.1 Choose your deployment topology
+
+Use one of these approaches:
+
+- **Bundled Traefik**: Use `docker-compose.prod.yml` exactly as-is. This is the default path in the rest of the guide.
+- **Shared Traefik**: Add `docker-compose.prod.shared-traefik.yml` to every production Compose command. This keeps Pauza's `traefik` service disabled and connects the API to your existing external `public` network.
+
+The shared Traefik mode expects:
+
+- An existing external Docker network named `public`
+- An existing Traefik instance watching that network
+- `PUBLIC_DOMAIN` DNS already pointed at the server
+
 ---
 
 ## 6. Configure Environment Variables
@@ -245,6 +263,10 @@ Here is a reference for every variable — replace all `replace_me*` values:
 PORT=8080
 LOG_LEVEL=info
 TRUSTED_PROXIES=172.30.0.0/24
+
+# If deploying behind an existing shared Traefik instance, replace the value
+# above with the shared proxy network subnet instead, for example:
+# TRUSTED_PROXIES=172.18.0.0/16
 
 # Your actual domain (must match DNS) — used by Traefik for routing and ACME
 PUBLIC_DOMAIN=api.pauza.dev
@@ -346,6 +368,12 @@ If the image has not been pushed yet (first-time setup), this will fail — that
 The first deployment must be done manually because:
 - The database needs to be initialized
 - You need to verify everything works before enabling CI/CD
+
+If you are using an existing host-level Traefik instance on an external `public`
+network, append `-f docker-compose.prod.shared-traefik.yml` to every
+`docker compose` command in sections 8.1 and 8.2 below. In that mode, Pauza's
+own `traefik` service is disabled, so `docker compose up -d` starts only `api`,
+`db`, and `redis`.
 
 ### 8.1 If CI has already pushed an image
 

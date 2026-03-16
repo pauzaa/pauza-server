@@ -201,7 +201,7 @@ func (h *SocialHandler) ListFriends(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
-	resp := friendListResponse{Pagination: out.Pagination}
+	resp := friendListResponse{Friends: []friendResponse{}, Pagination: out.Pagination}
 	for _, f := range out.Friends {
 		resp.Friends = append(resp.Friends, friendResponse{
 			FriendshipID: f.FriendshipID,
@@ -253,7 +253,7 @@ func (h *SocialHandler) listRequests(w http.ResponseWriter, r *http.Request, dir
 		writeServiceError(w, err)
 		return
 	}
-	resp := friendRequestsListResponse{}
+	resp := friendRequestsListResponse{Requests: []friendRequestItemResponse{}}
 	for _, req := range out.Requests {
 		resp.Requests = append(resp.Requests, friendRequestItemResponse{
 			FriendshipID: req.FriendshipID,

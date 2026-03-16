@@ -1010,9 +1010,9 @@ Unregister a device from push notifications.
 
 ## Friends (`/api/v1/friends`)
 
-Social features. All endpoints require a user JWT **and** an active premium
-subscription (except where noted otherwise — but currently all friend endpoints
-check for premium).
+Social features. All endpoints require a user JWT. Most also require an active
+premium subscription, except decline, cancel, and remove which allow users to
+manage their friend list without premium.
 
 ### `GET /api/v1/friends`
 
