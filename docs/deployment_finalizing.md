@@ -268,6 +268,10 @@ TRUSTED_PROXIES=172.30.0.0/24
 # above with the shared proxy network subnet instead, for example:
 # TRUSTED_PROXIES=172.18.0.0/16
 
+# Docker image tag to deploy. CI publishes both `latest` and `sha-<commit>`
+# tags. Prefer `sha-<commit>` in production for deterministic deploys.
+IMAGE_TAG=latest
+
 # Your actual domain (must match DNS) — used by Traefik for routing and ACME
 PUBLIC_DOMAIN=api.pauza.dev
 LETSENCRYPT_EMAIL=admin@pauza.dev
@@ -339,6 +343,8 @@ chmod 600 .env.prod
 
 The production compose file pulls the API image from `ghcr.io/pauzaa/pauza-server`. You need to authenticate Docker with GitHub Container Registry on the server.
 
+If the package is public, anonymous pulls work and this step can be skipped.
+
 ### 7.1 Create a GitHub Personal Access Token (PAT)
 
 1. Go to **GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)**
@@ -356,7 +362,7 @@ echo "<YOUR_GITHUB_PAT>" | docker login ghcr.io -u <YOUR_GITHUB_USERNAME> --pass
 Verify:
 
 ```bash
-docker pull ghcr.io/pauzaa/pauza-server:latest
+docker pull ghcr.io/pauzaa/pauza-server:${IMAGE_TAG:-latest}
 ```
 
 If the image has not been pushed yet (first-time setup), this will fail — that is expected. The image will be available after the first CI run on `main`.
@@ -383,19 +389,19 @@ If the CI pipeline has already run and pushed an image to GHCR:
 cd /opt/pauza-server
 
 # Pull all images
-docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
+docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml pull
 
 # Start database and Redis first
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d db redis
+docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d db redis
 
 # Wait for them to become healthy (~15 seconds)
-docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
+docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml ps
 
 # Run database migrations
-docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api ./pauza-migrate
+docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml run --rm api ./pauza-migrate
 
 # Start all services
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 
 ### 8.2 If no image exists yet (build locally on server)
@@ -406,19 +412,19 @@ If you need to deploy before CI pushes an image:
 cd /opt/pauza-server
 
 # Build the image locally
-docker build -t ghcr.io/pauzaa/pauza-server:latest .
+docker build -t ghcr.io/pauzaa/pauza-server:${IMAGE_TAG:-latest} .
 
 # Start database and Redis first
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d db redis
+docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d db redis
 
 # Wait for healthy status
-docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
+docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml ps
 
 # Run migrations
-docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api ./pauza-migrate
+docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml run --rm api ./pauza-migrate
 
 # Start all services
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 
 ### 8.3 Seed the admin account
