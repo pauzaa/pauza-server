@@ -567,7 +567,7 @@ chmod 600 ~/.ssh/authorized_keys
 
 Go to your repository: **Settings → Secrets and variables → Actions → New repository secret**
 
-Add the following four secrets:
+Add the following five secrets:
 
 | Secret Name | Value | How to Get It |
 |-------------|-------|---------------|
@@ -575,6 +575,7 @@ Add the following four secrets:
 | `DEPLOY_USER` | `deploy` | The SSH username created in step 2.2 |
 | `DEPLOY_SSH_KEY` | Contents of `github_deploy_key` | `cat github_deploy_key` — copy the **entire** private key including `-----BEGIN/END-----` lines |
 | `DEPLOY_PATH` | `/opt/pauza-server` | Absolute path to the project directory on the server |
+| `DEPLOY_MODE` | `bundled` or `shared-traefik` | Use `shared-traefik` when the host already has its own Traefik on the external `public` network |
 
 To add each secret:
 
@@ -591,10 +592,11 @@ rm github_deploy_key github_deploy_key.pub
 
 ### 10.5 Verify secrets are set
 
-Go to **Settings → Secrets and variables → Actions**. You should see all four secrets listed (values are hidden):
+Go to **Settings → Secrets and variables → Actions**. You should see all five secrets listed (values are hidden):
 
 ```
 DEPLOY_HOST     Updated just now
+DEPLOY_MODE     Updated just now
 DEPLOY_PATH     Updated just now
 DEPLOY_SSH_KEY  Updated just now
 DEPLOY_USER     Updated just now
@@ -626,9 +628,11 @@ push to main
               ▼
           deploy
           - SSHes into production server
+          - Sets IMAGE_TAG=sha-<commit>
           - Pulls the new image
+          - Starts db + redis
           - Runs database migrations
-          - Restarts api + traefik
+          - Restarts api (+ traefik only in bundled mode)
 ```
 
 On **pull requests**, only the unit and integration test jobs run (no build/push/deploy).
@@ -723,10 +727,14 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api ./p
 
 ```bash
 cd /opt/pauza-server
-docker compose -f docker-compose.yml -f docker-compose.prod.yml pull api
-docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api ./pauza-migrate
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d api traefik
+docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml pull api
+docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d db redis
+docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml run --rm api ./pauza-migrate
+docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d api traefik
 ```
+
+If you are using the shared Traefik topology, append `-f docker-compose.prod.shared-traefik.yml`
+to each command above and start only `api` in the final step.
 
 ### Update the repo on the server (for compose/config changes)
 
