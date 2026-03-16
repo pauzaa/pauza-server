@@ -1,6 +1,6 @@
 services:
   api:
-    image: ghcr.io/pauzaa/pauza-server:latest
+    image: ghcr.io/pauzaa/pauza-server:${IMAGE_TAG:?IMAGE_TAG must be set}
     pull_policy: always
     env_file:
       - ./.env.prod

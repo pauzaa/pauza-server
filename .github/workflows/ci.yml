@@ -113,6 +113,7 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
             cd ${{ secrets.DEPLOY_PATH }}
+            export IMAGE_TAG=sha-${{ github.sha }}
             docker compose -f docker-compose.yml -f docker-compose.prod.yml pull api
             docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api ./pauza-migrate
             docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d api traefik
