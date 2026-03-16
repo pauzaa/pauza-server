@@ -21,8 +21,9 @@ type fakeSocialRepo struct {
 	listFriendsFn               func(ctx context.Context, db repository.DBTX, userID string, page, limit int) ([]repository.FriendRow, repository.PaginationResult, error)
 	listFriendRequestsFn        func(ctx context.Context, db repository.DBTX, userID string, direction repository.FriendRequestDirection) ([]repository.FriendRequestRow, error)
 	getFriendshipFn             func(ctx context.Context, db repository.DBTX, friendshipID string) (string, string, repository.FriendshipStatus, error)
-	acceptFriendRequestFn       func(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
+	acceptFriendRequestFn       func(ctx context.Context, db repository.DBTX, friendshipID, userID string) (string, error)
 	deletePendingRequestFn      func(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
+	cancelFriendRequestFn       func(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
 	removeFriendFn              func(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
 	searchUsersFn               func(ctx context.Context, db repository.DBTX, prefix, excludeUserID string, limit int) ([]repository.BasicUserRow, error)
 	loadRecentDailyAggregatesFn func(ctx context.Context, db repository.DBTX, userID string, days int) ([]struct {
@@ -68,11 +69,14 @@ func (f *fakeSocialRepo) ListFriendRequests(ctx context.Context, db repository.D
 func (f *fakeSocialRepo) GetFriendship(ctx context.Context, db repository.DBTX, friendshipID string) (string, string, repository.FriendshipStatus, error) {
 	return f.getFriendshipFn(ctx, db, friendshipID)
 }
-func (f *fakeSocialRepo) AcceptFriendRequest(ctx context.Context, db repository.DBTX, friendshipID, userID string) error {
+func (f *fakeSocialRepo) AcceptFriendRequest(ctx context.Context, db repository.DBTX, friendshipID, userID string) (string, error) {
 	return f.acceptFriendRequestFn(ctx, db, friendshipID, userID)
 }
 func (f *fakeSocialRepo) DeletePendingRequest(ctx context.Context, db repository.DBTX, friendshipID, userID string) error {
 	return f.deletePendingRequestFn(ctx, db, friendshipID, userID)
+}
+func (f *fakeSocialRepo) CancelFriendRequest(ctx context.Context, db repository.DBTX, friendshipID, userID string) error {
+	return f.cancelFriendRequestFn(ctx, db, friendshipID, userID)
 }
 func (f *fakeSocialRepo) RemoveFriend(ctx context.Context, db repository.DBTX, friendshipID, userID string) error {
 	return f.removeFriendFn(ctx, db, friendshipID, userID)
@@ -146,10 +150,11 @@ func newFakeSocialRepo() *fakeSocialRepo {
 		getFriendshipFn: func(context.Context, repository.DBTX, string) (string, string, repository.FriendshipStatus, error) {
 			return "", "", repository.FriendshipStatusUnknown, nil
 		},
-		acceptFriendRequestFn: func(context.Context, repository.DBTX, string, string) error { return nil },
+		acceptFriendRequestFn: func(context.Context, repository.DBTX, string, string) (string, error) { return "", nil },
 		deletePendingRequestFn: func(context.Context, repository.DBTX, string, string) error {
 			return nil
 		},
+		cancelFriendRequestFn: func(context.Context, repository.DBTX, string, string) error { return nil },
 		removeFriendFn: func(context.Context, repository.DBTX, string, string) error { return nil },
 		searchUsersFn: func(context.Context, repository.DBTX, string, string, int) ([]repository.BasicUserRow, error) {
 			return nil, nil
@@ -240,17 +245,11 @@ func TestSocialService_RequestFriendSendsNotificationMetadata(t *testing.T) {
 
 func TestSocialService_AcceptFriendSendsNotificationMetadata(t *testing.T) {
 	repo := newFakeSocialRepo()
-	repo.getFriendshipFn = func(_ context.Context, _ repository.DBTX, friendshipID string) (string, string, repository.FriendshipStatus, error) {
-		if friendshipID != "friendship-1" {
-			t.Fatalf("friendshipID = %q, want friendship-1", friendshipID)
-		}
-		return "requester-1", "actor-1", repository.FriendshipStatusPending, nil
-	}
-	repo.acceptFriendRequestFn = func(_ context.Context, _ repository.DBTX, friendshipID, userID string) error {
+	repo.acceptFriendRequestFn = func(_ context.Context, _ repository.DBTX, friendshipID, userID string) (string, error) {
 		if friendshipID != "friendship-1" || userID != "actor-1" {
 			t.Fatalf("unexpected accept args: friendshipID=%q userID=%q", friendshipID, userID)
 		}
-		return nil
+		return "requester-1", nil
 	}
 	repo.getBasicUserByIDFn = func(_ context.Context, _ repository.DBTX, userID string) (repository.BasicUserRow, error) {
 		if userID != "actor-1" {

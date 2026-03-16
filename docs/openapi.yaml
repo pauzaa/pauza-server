@@ -407,91 +407,88 @@ components:
           pattern: '^[A-Za-z0-9_]{3,30}$'
           description: 3-30 characters; letters, digits, and underscores only.
 
-    # BasicUserRow has no json tags; Go encoding/json uses PascalCase field names.
-    BasicUserRow:
+    BasicUser:
       type: object
+      required: [id, name, username, profile_picture_url]
       properties:
-        ID:
+        id:
           type: string
           format: uuid
-        Name:
+        name:
           type: string
-        Username:
+        username:
           type: string
-        ProfilePictureURL:
+        profile_picture_url:
           type: string
           nullable: true
-        LeaderboardVisible:
-          type: boolean
 
-    # FriendRow has no json tags.
-    FriendRow:
+    FriendResponse:
       type: object
+      required: [friendship_id, user, since]
       properties:
-        FriendshipID:
+        friendship_id:
           type: string
           format: uuid
-        User:
-          $ref: "#/components/schemas/BasicUserRow"
-        Since:
+        user:
+          $ref: "#/components/schemas/BasicUser"
+        since:
           type: string
           format: date-time
 
-    # FriendRequestRow has no json tags.
-    FriendRequestRow:
+    FriendRequestItemResponse:
       type: object
+      required: [friendship_id, user, created_at]
       properties:
-        FriendshipID:
+        friendship_id:
           type: string
           format: uuid
-        User:
-          $ref: "#/components/schemas/BasicUserRow"
-        CreatedAt:
+        user:
+          $ref: "#/components/schemas/BasicUser"
+        created_at:
           type: string
           format: date-time
 
-    # PaginationResult has no json tags.
     PaginationResult:
       type: object
+      required: [page, limit, total]
       properties:
-        Page:
+        page:
           type: integer
-        Limit:
+        limit:
           type: integer
-        Total:
+        total:
           type: integer
 
-    # FriendMutationOutput has no json tags.
-    FriendMutationOutput:
+    FriendMutationResponse:
       type: object
+      required: [friendship_id, status]
       properties:
-        FriendshipID:
+        friendship_id:
           type: string
           format: uuid
-        Status:
+        status:
           type: string
           enum: [pending, accepted]
 
-    # FriendListOutput has no json tags; serialised directly via writeJSON.
-    FriendListOutput:
+    FriendListResponse:
       type: object
+      required: [friends, pagination]
       properties:
-        Friends:
+        friends:
           type: array
           items:
-            $ref: "#/components/schemas/FriendRow"
-          nullable: true
-        Pagination:
+            $ref: "#/components/schemas/FriendResponse"
+        pagination:
           $ref: "#/components/schemas/PaginationResult"
 
-    FriendRequestsOutput:
+    FriendRequestsListResponse:
       type: object
+      required: [requests]
       properties:
-        Requests:
+        requests:
           type: array
           items:
-            $ref: "#/components/schemas/FriendRequestRow"
-          nullable: true
+            $ref: "#/components/schemas/FriendRequestItemResponse"
 
     SearchUsersResponse:
       type: object
@@ -499,7 +496,7 @@ components:
         users:
           type: array
           items:
-            $ref: "#/components/schemas/BasicUserRow"
+            $ref: "#/components/schemas/BasicUser"
           nullable: true
 
     # -- Friend stats -------------------------------------------------------
@@ -519,18 +516,22 @@ components:
 
     FriendStatsResponse:
       type: object
+      required: [user, stats]
       properties:
-        User:
-          $ref: "#/components/schemas/BasicUserRow"
-        Stats:
+        user:
+          $ref: "#/components/schemas/BasicUser"
+        stats:
           type: object
-          required: [current_streak_days, longest_streak_days, total_focus_time_ms, daily_trends]
+          required: [current_streak_days, longest_streak_days, total_focus_time_ms, focus_time_today_ms, daily_trends]
           properties:
             current_streak_days:
               type: integer
             longest_streak_days:
               type: integer
             total_focus_time_ms:
+              type: integer
+              format: int64
+            focus_time_today_ms:
               type: integer
               format: int64
             daily_trends:
@@ -547,7 +548,7 @@ components:
         rank:
           type: integer
         user:
-          $ref: "#/components/schemas/BasicUserRow"
+          $ref: "#/components/schemas/BasicUser"
         current_streak_days:
           type: integer
         total_focus_time_ms:
@@ -2663,7 +2664,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/FriendListOutput"
+                $ref: "#/components/schemas/FriendListResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -2702,7 +2703,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/FriendMutationOutput"
+                $ref: "#/components/schemas/FriendMutationResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -2739,7 +2740,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/FriendRequestsOutput"
+                $ref: "#/components/schemas/FriendRequestsListResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -2772,7 +2773,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/FriendRequestsOutput"
+                $ref: "#/components/schemas/FriendRequestsListResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -2812,11 +2813,11 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/FriendMutationOutput"
+                $ref: "#/components/schemas/FriendMutationResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/SubscriptionRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2827,7 +2828,7 @@ paths:
       operationId: declineFriend
       tags: [Social]
       summary: Decline a friend request
-      description: Requires a user JWT and the `premium` entitlement. Rate limited by user ID using the `general-api` tier.
+      description: Requires a user JWT. Rate limited by user ID using the `general-api` tier.
       security:
         - UserJWT: []
       parameters:
@@ -2855,8 +2856,48 @@ paths:
                 $ref: "#/components/schemas/MessageResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/SubscriptionRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/friends/requests/{id}/cancel:
+    post:
+      operationId: cancelFriendRequest
+      tags: [Social]
+      summary: Cancel an outgoing friend request
+      description: Requires a user JWT. Rate limited by user ID using the `general-api` tier.
+      security:
+        - UserJWT: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Friendship identifier. The handler only checks that the path segment is non-empty.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Request cancelled.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2867,7 +2908,7 @@ paths:
       operationId: removeFriend
       tags: [Social]
       summary: Remove an accepted friend
-      description: Requires a user JWT and the `premium` entitlement. Rate limited by user ID using the `general-api` tier.
+      description: Requires a user JWT. Rate limited by user ID using the `general-api` tier.
       security:
         - UserJWT: []
       parameters:
@@ -2895,8 +2936,8 @@ paths:
                 $ref: "#/components/schemas/MessageResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/SubscriptionRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2907,7 +2948,7 @@ paths:
       operationId: friendStats
       tags: [Social]
       summary: Get a friend's focus statistics
-      description: Requires a user JWT and the `premium` entitlement. Rate limited by user ID using the `general-api` tier. Invalid `days` values fall back to 30 instead of returning 422.
+      description: Requires a user JWT and the `premium` entitlement. Rate limited by user ID using the `general-api` tier. Invalid `days` values fall back to 7 instead of returning 422.
       security:
         - UserJWT: []
       parameters:
@@ -2919,10 +2960,10 @@ paths:
             type: string
         - name: days
           in: query
-          description: Rolling window in days. Values outside 1..90 or non-integers fall back to 30.
+          description: Rolling window in days. Values outside 1..90 or non-integers fall back to 7.
           schema:
             type: integer
-            default: 30
+            default: 7
       responses:
         "200":
           description: Friend statistics returned.
@@ -2999,7 +3040,7 @@ paths:
       operationId: leaderboardStreaks
       tags: [Social]
       summary: Leaderboard ranked by current streak
-      description: Ranks all users by current streak, computes `my_rank` against the full user set, and only includes users with `leaderboard_visible=true` in `entries`. Requires a user JWT and is rate limited by user ID using the `general-api` tier. Invalid `page` and `limit` values silently fall back to defaults.
+      description: Ranks users by current streak. Only users with `leaderboard_visible=true` appear in `entries` with contiguous ranks. `my_rank` is computed among visible users plus the caller (so hidden users can see their own position). Requires a user JWT and is rate limited by user ID using the `general-api` tier. Invalid `page` and `limit` values silently fall back to defaults.
       security:
         - UserJWT: []
       parameters:
@@ -3043,7 +3084,7 @@ paths:
       operationId: leaderboardFocusTime
       tags: [Social]
       summary: Leaderboard ranked by total focus time
-      description: Ranks all users by total focus time, computes `my_rank` against the full user set, and only includes users with `leaderboard_visible=true` in `entries`. Requires a user JWT and is rate limited by user ID using the `general-api` tier. Invalid `page` and `limit` values silently fall back to defaults.
+      description: Ranks users by total focus time. Only users with `leaderboard_visible=true` appear in `entries` with contiguous ranks. `my_rank` is computed among visible users plus the caller (so hidden users can see their own position). Requires a user JWT and is rate limited by user ID using the `general-api` tier. Invalid `page` and `limit` values silently fall back to defaults.
       security:
         - UserJWT: []
       parameters:

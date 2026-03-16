@@ -174,16 +174,16 @@ func TestLeaderboardEndpoints_UsePersistedMetricsAndPreserveVisibilityRules(t *t
 	if streakOut.Pagination.Total != 2 {
 		t.Fatalf("streak total = %d, want 2", streakOut.Pagination.Total)
 	}
-	if streakOut.MyRank.Rank != 3 || streakOut.MyRank.CurrentStreakDays != 2 {
+	if streakOut.MyRank.Rank != 2 || streakOut.MyRank.CurrentStreakDays != 2 {
 		t.Fatalf("unexpected streak my_rank: %#v", streakOut.MyRank)
 	}
 	if len(streakOut.Entries) != 2 {
 		t.Fatalf("streak entries len = %d, want 2", len(streakOut.Entries))
 	}
-	if streakOut.Entries[0].User.Username != "bravo" || streakOut.Entries[0].Rank != 2 || streakOut.Entries[0].CurrentStreakDays != 3 {
+	if streakOut.Entries[0].User.Username != "bravo" || streakOut.Entries[0].Rank != 1 || streakOut.Entries[0].CurrentStreakDays != 3 {
 		t.Fatalf("unexpected first streak entry: %#v", streakOut.Entries[0])
 	}
-	if streakOut.Entries[1].User.Username != "charlie" || streakOut.Entries[1].Rank != 4 || streakOut.Entries[1].CurrentStreakDays != 1 {
+	if streakOut.Entries[1].User.Username != "charlie" || streakOut.Entries[1].Rank != 2 || streakOut.Entries[1].CurrentStreakDays != 1 {
 		t.Fatalf("unexpected second streak entry: %#v", streakOut.Entries[1])
 	}
 
@@ -191,7 +191,7 @@ func TestLeaderboardEndpoints_UsePersistedMetricsAndPreserveVisibilityRules(t *t
 	if focusOut.Pagination.Total != 2 {
 		t.Fatalf("focus total = %d, want 2", focusOut.Pagination.Total)
 	}
-	if focusOut.MyRank.Rank != 4 || focusOut.MyRank.TotalFocusTimeMS != 250 {
+	if focusOut.MyRank.Rank != 3 || focusOut.MyRank.TotalFocusTimeMS != 250 {
 		t.Fatalf("unexpected focus my_rank: %#v", focusOut.MyRank)
 	}
 	if len(focusOut.Entries) != 2 {
@@ -200,7 +200,7 @@ func TestLeaderboardEndpoints_UsePersistedMetricsAndPreserveVisibilityRules(t *t
 	if focusOut.Entries[0].User.Username != "charlie" || focusOut.Entries[0].Rank != 1 || focusOut.Entries[0].TotalFocusTimeMS != 500 {
 		t.Fatalf("unexpected first focus entry: %#v", focusOut.Entries[0])
 	}
-	if focusOut.Entries[1].User.Username != "bravo" || focusOut.Entries[1].Rank != 3 || focusOut.Entries[1].TotalFocusTimeMS != 410 {
+	if focusOut.Entries[1].User.Username != "bravo" || focusOut.Entries[1].Rank != 2 || focusOut.Entries[1].TotalFocusTimeMS != 410 {
 		t.Fatalf("unexpected second focus entry: %#v", focusOut.Entries[1])
 	}
 }

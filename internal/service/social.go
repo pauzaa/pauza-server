@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -31,8 +32,9 @@ type socialRepository interface {
 	ListFriends(ctx context.Context, db repository.DBTX, userID string, page, limit int) ([]repository.FriendRow, repository.PaginationResult, error)
 	ListFriendRequests(ctx context.Context, db repository.DBTX, userID string, direction repository.FriendRequestDirection) ([]repository.FriendRequestRow, error)
 	GetFriendship(ctx context.Context, db repository.DBTX, friendshipID string) (string, string, repository.FriendshipStatus, error)
-	AcceptFriendRequest(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
+	AcceptFriendRequest(ctx context.Context, db repository.DBTX, friendshipID, userID string) (string, error)
 	DeletePendingRequest(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
+	CancelFriendRequest(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
 	RemoveFriend(ctx context.Context, db repository.DBTX, friendshipID, userID string) error
 	SearchUsers(ctx context.Context, db repository.DBTX, prefix, excludeUserID string, limit int) ([]repository.BasicUserRow, error)
 	LoadRecentDailyAggregates(ctx context.Context, db repository.DBTX, userID string, days int) ([]struct {
@@ -71,13 +73,25 @@ type FriendMutationOutput struct {
 	Status       repository.FriendshipStatus
 }
 
+type FriendItem struct {
+	FriendshipID string
+	User         domain.BasicUser
+	Since        time.Time
+}
+
+type FriendRequestItem struct {
+	FriendshipID string
+	User         domain.BasicUser
+	CreatedAt    time.Time
+}
+
 type FriendListOutput struct {
-	Friends    []repository.FriendRow
+	Friends    []FriendItem
 	Pagination domain.PaginationResult
 }
 
 type FriendRequestsOutput struct {
-	Requests []repository.FriendRequestRow
+	Requests []FriendRequestItem
 }
 
 type FriendStatsOutput struct {
@@ -86,6 +100,7 @@ type FriendStatsOutput struct {
 		CurrentStreakDays int
 		LongestStreakDays int
 		TotalFocusTimeMS  int64
+		FocusTimeTodayMS  int64
 		DailyTrends       []struct {
 			LocalDay     string
 			EffectiveMS  int
@@ -164,57 +179,62 @@ func (s *SocialService) ListFriends(ctx context.Context, userID string, page, li
 	if err := s.requirePremium(ctx, userID); err != nil {
 		return FriendListOutput{}, err
 	}
-	items, pagination, err := s.repo.ListFriends(ctx, s.pool, userID, page, limit)
+	rows, pagination, err := s.repo.ListFriends(ctx, s.pool, userID, page, limit)
 	if err != nil {
 		s.logger.Error("listing friends", "err", err)
 		return FriendListOutput{}, ErrInternal
 	}
-	return FriendListOutput{Friends: items, Pagination: pagination}, nil
+	friends := make([]FriendItem, len(rows))
+	for i, r := range rows {
+		friends[i] = FriendItem{
+			FriendshipID: r.FriendshipID,
+			User:         basicUserFromRow(r.User),
+			Since:        r.Since,
+		}
+	}
+	return FriendListOutput{Friends: friends, Pagination: pagination}, nil
 }
 
 func (s *SocialService) ListFriendRequests(ctx context.Context, userID string, direction repository.FriendRequestDirection) (FriendRequestsOutput, error) {
 	if err := s.requirePremium(ctx, userID); err != nil {
 		return FriendRequestsOutput{}, err
 	}
-	items, err := s.repo.ListFriendRequests(ctx, s.pool, userID, direction)
+	rows, err := s.repo.ListFriendRequests(ctx, s.pool, userID, direction)
 	if err != nil {
 		s.logger.Error("listing friend requests", "direction", direction, "err", err)
 		return FriendRequestsOutput{}, ErrInternal
 	}
-	return FriendRequestsOutput{Requests: items}, nil
+	requests := make([]FriendRequestItem, len(rows))
+	for i, r := range rows {
+		requests[i] = FriendRequestItem{
+			FriendshipID: r.FriendshipID,
+			User:         basicUserFromRow(r.User),
+			CreatedAt:    r.CreatedAt,
+		}
+	}
+	return FriendRequestsOutput{Requests: requests}, nil
 }
 
 func (s *SocialService) AcceptFriend(ctx context.Context, userID, friendshipID string) (FriendMutationOutput, error) {
 	if err := s.requirePremium(ctx, userID); err != nil {
 		return FriendMutationOutput{}, err
 	}
-	requesterID, _, _, err := s.repo.GetFriendship(ctx, s.pool, friendshipID)
-	if errors.Is(err, repository.ErrNotFound) {
-		requesterID = ""
-	} else if err != nil {
-		s.logger.Error("loading friendship before accept", "err", err)
-		return FriendMutationOutput{}, ErrInternal
-	}
-	if err := s.repo.AcceptFriendRequest(ctx, s.pool, friendshipID, userID); err != nil {
+	requesterID, err := s.repo.AcceptFriendRequest(ctx, s.pool, friendshipID, userID)
+	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
-			return FriendMutationOutput{}, UnauthorizedError("Request not found")
+			return FriendMutationOutput{}, NotFoundError("Request not found")
 		}
 		s.logger.Error("accepting friendship", "err", err)
 		return FriendMutationOutput{}, ErrInternal
 	}
-	if requesterID != "" {
-		s.sendFriendNotification(ctx, requesterID, "friend_accepted", friendshipID, userID, "Friend request accepted", "%s accepted your friend request")
-	}
+	s.sendFriendNotification(ctx, requesterID, "friend_accepted", friendshipID, userID, "Friend request accepted", "%s accepted your friend request")
 	return FriendMutationOutput{FriendshipID: friendshipID, Status: repository.FriendshipStatusAccepted}, nil
 }
 
 func (s *SocialService) DeclineFriend(ctx context.Context, userID, friendshipID string) (MessageOutput, error) {
-	if err := s.requirePremium(ctx, userID); err != nil {
-		return MessageOutput{}, err
-	}
 	if err := s.repo.DeletePendingRequest(ctx, s.pool, friendshipID, userID); err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
-			return MessageOutput{}, UnauthorizedError("Request not found")
+			return MessageOutput{}, NotFoundError("Request not found")
 		}
 		s.logger.Error("declining friendship", "err", err)
 		return MessageOutput{}, ErrInternal
@@ -223,17 +243,25 @@ func (s *SocialService) DeclineFriend(ctx context.Context, userID, friendshipID 
 }
 
 func (s *SocialService) RemoveFriend(ctx context.Context, userID, friendshipID string) (MessageOutput, error) {
-	if err := s.requirePremium(ctx, userID); err != nil {
-		return MessageOutput{}, err
-	}
 	if err := s.repo.RemoveFriend(ctx, s.pool, friendshipID, userID); err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
-			return MessageOutput{}, UnauthorizedError("Friendship not found")
+			return MessageOutput{}, NotFoundError("Friendship not found")
 		}
 		s.logger.Error("removing friend", "err", err)
 		return MessageOutput{}, ErrInternal
 	}
 	return MessageOutput{Message: "Friend removed"}, nil
+}
+
+func (s *SocialService) CancelFriendRequest(ctx context.Context, userID, friendshipID string) (MessageOutput, error) {
+	if err := s.repo.CancelFriendRequest(ctx, s.pool, friendshipID, userID); err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return MessageOutput{}, NotFoundError("Request not found")
+		}
+		s.logger.Error("cancelling friend request", "err", err)
+		return MessageOutput{}, ErrInternal
+	}
+	return MessageOutput{Message: "Request cancelled"}, nil
 }
 
 func (s *SocialService) SearchUsers(ctx context.Context, userID, prefix string) ([]domain.BasicUser, error) {
@@ -367,6 +395,9 @@ func (s *SocialService) loadStatsForUser(ctx context.Context, userID string, day
 	out.Stats.CurrentStreakDays = consecutiveQualified(aggregates)
 	out.Stats.LongestStreakDays = longestQualified(allAggregates)
 	out.Stats.TotalFocusTimeMS = totalFocus
+	if len(aggregates) > 0 {
+		out.Stats.FocusTimeTodayMS = int64(aggregates[0].EffectiveMS)
+	}
 	for i, item := range aggregates {
 		if i >= days {
 			break

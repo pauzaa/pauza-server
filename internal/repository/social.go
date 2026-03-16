@@ -49,6 +49,7 @@ const (
 
 type LeaderboardRow struct {
 	Rank              int
+	TotalCount        int
 	User              BasicUserRow
 	CurrentStreakDays int
 	TotalFocusTimeMS  int64
@@ -267,19 +268,18 @@ func (r *SocialRepository) GetFriendship(ctx context.Context, db DBTX, friendshi
 	return requesterID, addresseeID, status, nil
 }
 
-func (r *SocialRepository) AcceptFriendRequest(ctx context.Context, db DBTX, friendshipID, userID string) error {
-	tag, err := db.Exec(ctx, `
+func (r *SocialRepository) AcceptFriendRequest(ctx context.Context, db DBTX, friendshipID, userID string) (string, error) {
+	var requesterID string
+	err := db.QueryRow(ctx, `
 		UPDATE friendships
 		SET status = 'accepted', updated_at = now()
 		WHERE id = $1 AND addressee_id = $2 AND status = 'pending'
-	`, friendshipID, userID)
+		RETURNING requester_id
+	`, friendshipID, userID).Scan(&requesterID)
 	if err != nil {
-		return fmt.Errorf("accepting friendship: %w", err)
+		return "", mapNoRows("accepting friendship", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return requesterID, nil
 }
 
 func (r *SocialRepository) DeletePendingRequest(ctx context.Context, db DBTX, friendshipID, userID string) error {
@@ -300,6 +300,17 @@ func (r *SocialRepository) RemoveFriend(ctx context.Context, db DBTX, friendship
 	`, friendshipID, userID)
 	if err != nil {
 		return fmt.Errorf("removing friend: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *SocialRepository) CancelFriendRequest(ctx context.Context, db DBTX, friendshipID, userID string) error {
+	tag, err := db.Exec(ctx, `DELETE FROM friendships WHERE id = $1 AND requester_id = $2 AND status = 'pending'`, friendshipID, userID)
+	if err != nil {
+		return fmt.Errorf("cancelling friend request: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
@@ -466,18 +477,20 @@ func (r *SocialRepository) RefreshLeaderboardMetrics(ctx context.Context, db DBT
 
 func (r *SocialRepository) ListLeaderboardEntries(ctx context.Context, db DBTX, metric LeaderboardMetric, page, limit int) ([]LeaderboardRow, int, error) {
 	offset := (page - 1) * limit
-	var total int
-	if err := db.QueryRow(ctx, `SELECT count(*) FROM users WHERE leaderboard_visible = true`).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("counting leaderboard users: %w", err)
+
+	query, err := leaderboardEntriesQuery(metric)
+	if err != nil {
+		return nil, 0, err
 	}
 
-	rows, err := db.Query(ctx, leaderboardEntriesQuery(metric), limit, offset)
+	rows, err := db.Query(ctx, query, limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("listing leaderboard entries: %w", err)
 	}
 	defer rows.Close()
 
 	var out []LeaderboardRow
+	var total int
 	for rows.Next() {
 		var item LeaderboardRow
 		if err := rows.Scan(
@@ -489,20 +502,34 @@ func (r *SocialRepository) ListLeaderboardEntries(ctx context.Context, db DBTX, 
 			&item.User.LeaderboardVisible,
 			&item.CurrentStreakDays,
 			&item.TotalFocusTimeMS,
+			&item.TotalCount,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scanning leaderboard entry: %w", err)
 		}
+		total = item.TotalCount
 		out = append(out, item)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("iterating leaderboard entries: %w", err)
 	}
+
+	// Fallback: if no rows returned (out-of-range page), run count query
+	if len(out) == 0 {
+		if err := db.QueryRow(ctx, `SELECT count(*) FROM users WHERE leaderboard_visible = true`).Scan(&total); err != nil {
+			return nil, 0, fmt.Errorf("counting leaderboard users: %w", err)
+		}
+	}
+
 	return out, total, nil
 }
 
 func (r *SocialRepository) GetLeaderboardRank(ctx context.Context, db DBTX, metric LeaderboardMetric, userID string) (LeaderboardRow, error) {
+	query, err := leaderboardRankQuery(metric)
+	if err != nil {
+		return LeaderboardRow{}, err
+	}
 	var out LeaderboardRow
-	err := db.QueryRow(ctx, leaderboardRankQuery(metric), userID).Scan(
+	err = db.QueryRow(ctx, query, userID).Scan(
 		&out.Rank,
 		&out.User.ID,
 		&out.User.Name,
@@ -518,7 +545,11 @@ func (r *SocialRepository) GetLeaderboardRank(ctx context.Context, db DBTX, metr
 	return out, nil
 }
 
-func leaderboardEntriesQuery(metric LeaderboardMetric) string {
+func leaderboardEntriesQuery(metric LeaderboardMetric) (string, error) {
+	orderExpr, err := leaderboardMetricOrderExpr(metric)
+	if err != nil {
+		return "", err
+	}
 	return fmt.Sprintf(`
 		WITH ranked AS (
 			SELECT ROW_NUMBER() OVER (ORDER BY %s DESC, u.username ASC) AS rank,
@@ -528,19 +559,24 @@ func leaderboardEntriesQuery(metric LeaderboardMetric) string {
 			       u.profile_picture_url,
 			       u.leaderboard_visible,
 			       COALESCE(m.current_streak_days, 0) AS current_streak_days,
-			       COALESCE(m.total_focus_time_ms, 0) AS total_focus_time_ms
+			       COALESCE(m.total_focus_time_ms, 0) AS total_focus_time_ms,
+			       COUNT(*) OVER() AS total_count
 			FROM users u
 			LEFT JOIN leaderboard_metrics m ON m.user_id = u.id
+			WHERE u.leaderboard_visible = true
 		)
-		SELECT rank, id, name, username, profile_picture_url, leaderboard_visible, current_streak_days, total_focus_time_ms
+		SELECT rank, id, name, username, profile_picture_url, leaderboard_visible, current_streak_days, total_focus_time_ms, total_count
 		FROM ranked
-		WHERE leaderboard_visible = true
 		ORDER BY rank
 		LIMIT $1 OFFSET $2
-	`, leaderboardMetricOrderExpr(metric))
+	`, orderExpr), nil
 }
 
-func leaderboardRankQuery(metric LeaderboardMetric) string {
+func leaderboardRankQuery(metric LeaderboardMetric) (string, error) {
+	orderExpr, err := leaderboardMetricOrderExpr(metric)
+	if err != nil {
+		return "", err
+	}
 	return fmt.Sprintf(`
 		WITH ranked AS (
 			SELECT ROW_NUMBER() OVER (ORDER BY %s DESC, u.username ASC) AS rank,
@@ -553,21 +589,22 @@ func leaderboardRankQuery(metric LeaderboardMetric) string {
 			       COALESCE(m.total_focus_time_ms, 0) AS total_focus_time_ms
 			FROM users u
 			LEFT JOIN leaderboard_metrics m ON m.user_id = u.id
+			WHERE u.leaderboard_visible = true OR u.id = $1
 		)
 		SELECT rank, id, name, username, profile_picture_url, leaderboard_visible, current_streak_days, total_focus_time_ms
 		FROM ranked
 		WHERE id = $1
-	`, leaderboardMetricOrderExpr(metric))
+	`, orderExpr), nil
 }
 
-func leaderboardMetricOrderExpr(metric LeaderboardMetric) string {
+func leaderboardMetricOrderExpr(metric LeaderboardMetric) (string, error) {
 	switch metric {
 	case LeaderboardMetricStreak:
-		return "COALESCE(m.current_streak_days, 0)"
+		return "COALESCE(m.current_streak_days, 0)", nil
 	case LeaderboardMetricFocusTime:
-		return "COALESCE(m.total_focus_time_ms, 0)"
+		return "COALESCE(m.total_focus_time_ms, 0)", nil
 	default:
-		panic("unsupported leaderboard metric")
+		return "", fmt.Errorf("unsupported leaderboard metric: %q", metric)
 	}
 }
 

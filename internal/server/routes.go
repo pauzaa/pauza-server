@@ -80,6 +80,7 @@ func mountRoutes(r chi.Router, cfg *config.Config, logger *slog.Logger, pool *pg
 				r.Get("/friends/requests/outgoing", deps.socialHandler.ListOutgoingRequests)
 				r.Post("/friends/requests/{id}/accept", deps.socialHandler.AcceptFriend)
 				r.Post("/friends/requests/{id}/decline", deps.socialHandler.DeclineFriend)
+				r.Post("/friends/requests/{id}/cancel", deps.socialHandler.CancelFriendRequest)
 				r.Delete("/friends/{id}", deps.socialHandler.RemoveFriend)
 				r.Get("/friends/{id}/stats", deps.socialHandler.FriendStats)
 				r.Get("/friends/search", deps.socialHandler.SearchUsers)

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -27,6 +28,7 @@ type SocialFriendService interface {
 	AcceptFriend(ctx context.Context, userID, friendshipID string) (service.FriendMutationOutput, error)
 	DeclineFriend(ctx context.Context, userID, friendshipID string) (service.MessageOutput, error)
 	RemoveFriend(ctx context.Context, userID, friendshipID string) (service.MessageOutput, error)
+	CancelFriendRequest(ctx context.Context, userID, friendshipID string) (service.MessageOutput, error)
 	SearchUsers(ctx context.Context, userID, prefix string) ([]domain.BasicUser, error)
 	FriendStats(ctx context.Context, userID, friendshipID string, days int) (service.FriendStatsOutput, error)
 }
@@ -70,6 +72,32 @@ type friendRequestRequest struct {
 	Username string `json:"username"`
 }
 
+type friendMutationResponse struct {
+	FriendshipID string `json:"friendship_id"`
+	Status       string `json:"status"`
+}
+
+type friendResponse struct {
+	FriendshipID string           `json:"friendship_id"`
+	User         domain.BasicUser `json:"user"`
+	Since        string           `json:"since"`
+}
+
+type friendListResponse struct {
+	Friends    []friendResponse         `json:"friends"`
+	Pagination domain.PaginationResult  `json:"pagination"`
+}
+
+type friendRequestItemResponse struct {
+	FriendshipID string           `json:"friendship_id"`
+	User         domain.BasicUser `json:"user"`
+	CreatedAt    string           `json:"created_at"`
+}
+
+type friendRequestsListResponse struct {
+	Requests []friendRequestItemResponse `json:"requests"`
+}
+
 type searchUsersResponse struct {
 	Users []domain.BasicUser `json:"users"`
 }
@@ -83,6 +111,7 @@ type friendStatsResponseStats struct {
 	CurrentStreakDays int                        `json:"current_streak_days"`
 	LongestStreakDays int                        `json:"longest_streak_days"`
 	TotalFocusTimeMS  int64                      `json:"total_focus_time_ms"`
+	FocusTimeTodayMS  int64                      `json:"focus_time_today_ms"`
 	DailyTrends       []friendStatsDailyTrend    `json:"daily_trends"`
 }
 
@@ -172,7 +201,15 @@ func (h *SocialHandler) ListFriends(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, h.logger, http.StatusOK, out, "list-friends")
+	resp := friendListResponse{Pagination: out.Pagination}
+	for _, f := range out.Friends {
+		resp.Friends = append(resp.Friends, friendResponse{
+			FriendshipID: f.FriendshipID,
+			User:         f.User,
+			Since:        f.Since.Format(time.RFC3339),
+		})
+	}
+	writeJSON(w, h.logger, http.StatusOK, resp, "list-friends")
 }
 
 func (h *SocialHandler) RequestFriend(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +230,10 @@ func (h *SocialHandler) RequestFriend(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, h.logger, http.StatusCreated, out, "request-friend")
+	writeJSON(w, h.logger, http.StatusCreated, friendMutationResponse{
+		FriendshipID: out.FriendshipID,
+		Status:       string(out.Status),
+	}, "request-friend")
 }
 
 func (h *SocialHandler) ListIncomingRequests(w http.ResponseWriter, r *http.Request) {
@@ -213,7 +253,15 @@ func (h *SocialHandler) listRequests(w http.ResponseWriter, r *http.Request, dir
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, h.logger, http.StatusOK, out, "list-friend-requests")
+	resp := friendRequestsListResponse{}
+	for _, req := range out.Requests {
+		resp.Requests = append(resp.Requests, friendRequestItemResponse{
+			FriendshipID: req.FriendshipID,
+			User:         req.User,
+			CreatedAt:    req.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	writeJSON(w, h.logger, http.StatusOK, resp, "list-friend-requests")
 }
 
 func (h *SocialHandler) AcceptFriend(w http.ResponseWriter, r *http.Request) {
@@ -231,7 +279,10 @@ func (h *SocialHandler) AcceptFriend(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, h.logger, http.StatusOK, out, "accept-friend")
+	writeJSON(w, h.logger, http.StatusOK, friendMutationResponse{
+		FriendshipID: out.FriendshipID,
+		Status:       string(out.Status),
+	}, "accept-friend")
 }
 
 func (h *SocialHandler) DeclineFriend(w http.ResponseWriter, r *http.Request) {
@@ -250,6 +301,24 @@ func (h *SocialHandler) DeclineFriend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeMessageResponse(w, h.logger, http.StatusOK, out.Message, "decline-friend")
+}
+
+func (h *SocialHandler) CancelFriendRequest(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		apperror.ValidationFieldErrors(w, "Invalid request", apperror.FieldErrors{"id": "id is required"})
+		return
+	}
+	out, err := h.svc.CancelFriendRequest(r.Context(), userID, id)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeMessageResponse(w, h.logger, http.StatusOK, out.Message, "cancel-friend-request")
 }
 
 func (h *SocialHandler) RemoveFriend(w http.ResponseWriter, r *http.Request) {
@@ -302,7 +371,7 @@ func (h *SocialHandler) FriendStats(w http.ResponseWriter, r *http.Request) {
 		apperror.ValidationFieldErrors(w, "Invalid request", apperror.FieldErrors{"id": "id is required"})
 		return
 	}
-	days := 30
+	days := 7
 	if raw := r.URL.Query().Get("days"); raw != "" {
 		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 90 {
 			days = parsed
@@ -319,6 +388,7 @@ func (h *SocialHandler) FriendStats(w http.ResponseWriter, r *http.Request) {
 			CurrentStreakDays: out.Stats.CurrentStreakDays,
 			LongestStreakDays: out.Stats.LongestStreakDays,
 			TotalFocusTimeMS:  out.Stats.TotalFocusTimeMS,
+			FocusTimeTodayMS:  out.Stats.FocusTimeTodayMS,
 		},
 	}
 	for _, t := range out.Stats.DailyTrends {

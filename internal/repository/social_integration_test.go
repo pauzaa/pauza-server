@@ -128,13 +128,13 @@ func TestSocialRepository_LeaderboardQueries(t *testing.T) {
 	if len(streakRows) != 3 {
 		t.Fatalf("streak rows len = %d, want 3", len(streakRows))
 	}
-	if streakRows[0].User.Username != "carol" || streakRows[0].Rank != 2 || streakRows[0].CurrentStreakDays != 2 {
+	if streakRows[0].User.Username != "carol" || streakRows[0].Rank != 1 || streakRows[0].CurrentStreakDays != 2 {
 		t.Fatalf("unexpected first streak row: %#v", streakRows[0])
 	}
-	if streakRows[1].User.Username != "dave" || streakRows[1].Rank != 3 || streakRows[1].CurrentStreakDays != 1 {
+	if streakRows[1].User.Username != "dave" || streakRows[1].Rank != 2 || streakRows[1].CurrentStreakDays != 1 {
 		t.Fatalf("unexpected second streak row: %#v", streakRows[1])
 	}
-	if streakRows[2].User.Username != "alice" || streakRows[2].Rank != 4 || streakRows[2].CurrentStreakDays != 0 {
+	if streakRows[2].User.Username != "alice" || streakRows[2].Rank != 3 || streakRows[2].CurrentStreakDays != 0 {
 		t.Fatalf("unexpected third streak row: %#v", streakRows[2])
 	}
 
@@ -148,10 +148,10 @@ func TestSocialRepository_LeaderboardQueries(t *testing.T) {
 	if focusRows[0].User.Username != "dave" || focusRows[0].Rank != 1 || focusRows[0].TotalFocusTimeMS != 700 {
 		t.Fatalf("unexpected first focus row: %#v", focusRows[0])
 	}
-	if focusRows[1].User.Username != "carol" || focusRows[1].Rank != 3 || focusRows[1].TotalFocusTimeMS != 300 {
+	if focusRows[1].User.Username != "carol" || focusRows[1].Rank != 2 || focusRows[1].TotalFocusTimeMS != 300 {
 		t.Fatalf("unexpected second focus row: %#v", focusRows[1])
 	}
-	if focusRows[2].User.Username != "alice" || focusRows[2].Rank != 4 || focusRows[2].TotalFocusTimeMS != 0 {
+	if focusRows[2].User.Username != "alice" || focusRows[2].Rank != 3 || focusRows[2].TotalFocusTimeMS != 0 {
 		t.Fatalf("unexpected third focus row: %#v", focusRows[2])
 	}
 

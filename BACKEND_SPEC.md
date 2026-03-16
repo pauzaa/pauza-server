@@ -1232,6 +1232,19 @@ Decline a pending friendship request. The friendship record is **hard-deleted**.
 | `200` | `{ "message": "Request declined" }` | Declined and deleted |
 | `404` | Error | Request not found |
 
+#### `POST /api/v1/friends/requests/:id/cancel`
+
+Cancel an outgoing pending friendship request. The friendship record is **hard-deleted**.
+
+**Auth:** Required (JWT).
+
+**Responses:**
+
+| Status | Body | Condition |
+|---|---|---|
+| `200` | `{ "message": "Request cancelled" }` | Cancelled and deleted |
+| `404` | Error | Request not found |
+
 #### `DELETE /api/v1/friends/:id`
 
 Remove an accepted friend. The friendship record is **hard-deleted**.
@@ -1265,6 +1278,7 @@ View a friend's stats. Only accessible if the two users are accepted friends.
     "current_streak_days": 12,
     "longest_streak_days": 30,
     "total_focus_time_ms": 86400000,
+    "focus_time_today_ms": 7200000,
     "daily_trends": [
       {
         "local_day": "2024-01-20",
@@ -1277,7 +1291,7 @@ View a friend's stats. Only accessible if the two users are accepted friends.
 }
 ```
 
-`daily_trends` returns the last 30 days by default. An optional `days` query parameter can be used to request a different range (max 90).
+`daily_trends` returns the last 7 days by default. An optional `days` query parameter can be used to request a different range (max 90).
 
 #### `GET /api/v1/friends/search`
 
@@ -1835,6 +1849,8 @@ who initiated the request.
      |--------------------------->|
      |                            |  push notification received
      |                            |
+     |---> cancel: record         |
+     |     hard-deleted           |
      |                            |  accept / decline
      |                            |---> accept: status -> accepted
      |                            |     push notification to requester
@@ -1847,7 +1863,7 @@ who initiated the request.
 ### 7.3 Data Access Rules
 
 - Only **accepted** friends can view each other's stats.
-- Stats include: current streak, longest streak, total focus time, and daily trends (last 30-90 days from `streak_daily_aggregates`).
+- Stats include: current streak, longest streak, total focus time, and daily trends (last 7-90 days from `streak_daily_aggregates`).
 - Friend stats are computed from the friend's replicated data on the server.
 
 ### 7.4 Subscription Dependency

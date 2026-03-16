@@ -1,6 +1,6 @@
 # API Endpoints Reference
 
-> Derived from source code. This document covers all **41 endpoints** currently
+> Derived from source code. This document covers all **42 endpoints** currently
 > wired in `internal/server/routes.go`.
 
 ---
@@ -1033,32 +1033,24 @@ List the authenticated user's accepted friends.
 
 **Success — 200 OK**
 
-> **Note:** `FriendListOutput`, `FriendRow`, `BasicUserRow`, and
-> `PaginationResult` have no JSON tags — field names are emitted as PascalCase
-> by Go's `encoding/json`. `Friends` may be `null` (not `[]`) when empty
-> (Go nil slice serialisation). The shared `BasicUserRow` type includes
-> `LeaderboardVisible`, but this endpoint's SQL does not populate it, so the
-> field currently serializes as `false`.
-
 ```json
 {
-  "Friends": [
+  "friends": [
     {
-      "FriendshipID": "uuid",
-      "User": {
-        "ID": "uuid",
-        "Name": "Jane",
-        "Username": "jane42",
-        "ProfilePictureURL": null,
-        "LeaderboardVisible": false
+      "friendship_id": "uuid",
+      "user": {
+        "id": "uuid",
+        "name": "Jane",
+        "username": "jane42",
+        "profile_picture_url": null
       },
-      "Since": "2025-01-15T08:30:00Z"
+      "since": "2025-01-15T08:30:00Z"
     }
   ],
-  "Pagination": {
-    "Page": 1,
-    "Limit": 20,
-    "Total": 5
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 5
   }
 }
 ```
@@ -1092,12 +1084,10 @@ Send a friend request to another user by username.
 
 **Success — 201 Created**
 
-> **Note:** `FriendMutationOutput` has no JSON tags — field names are PascalCase.
-
 ```json
 {
-  "FriendshipID": "uuid",
-  "Status": "pending"
+  "friendship_id": "uuid",
+  "status": "pending"
 }
 ```
 
@@ -1126,25 +1116,18 @@ List pending friend requests received by the authenticated user.
 
 **Success — 200 OK**
 
-> **Note:** `FriendRequestsOutput`, `FriendRequestRow`, and `BasicUserRow`
-> have no JSON tags — field names are PascalCase. `Requests` may be `null`
-> (not `[]`) when empty (Go nil slice serialisation). The shared
-> `BasicUserRow.LeaderboardVisible` field is not populated by this endpoint's
-> query and currently serializes as `false`.
-
 ```json
 {
-  "Requests": [
+  "requests": [
     {
-      "FriendshipID": "uuid",
-      "User": {
-        "ID": "uuid",
-        "Name": "Bob",
-        "Username": "bob99",
-        "ProfilePictureURL": null,
-        "LeaderboardVisible": false
+      "friendship_id": "uuid",
+      "user": {
+        "id": "uuid",
+        "name": "Bob",
+        "username": "bob99",
+        "profile_picture_url": null
       },
-      "CreatedAt": "2025-01-15T08:30:00Z"
+      "created_at": "2025-01-15T08:30:00Z"
     }
   ]
 }
@@ -1201,8 +1184,8 @@ Accept an incoming friend request.
 
 ```json
 {
-  "FriendshipID": "uuid",
-  "Status": "accepted"
+  "friendship_id": "uuid",
+  "status": "accepted"
 }
 ```
 
@@ -1210,7 +1193,8 @@ Accept an incoming friend request.
 
 | Code | When |
 |---|---|
-| `UNAUTHORIZED` (401) | Missing or invalid JWT, or request not found |
+| `UNAUTHORIZED` (401) | Missing or invalid JWT |
+| `NOT_FOUND` (404) | Request not found |
 | `SUBSCRIPTION_REQUIRED` (403) | No active premium subscription |
 | `RATE_LIMITED` (429) | Too many requests |
 | `INTERNAL_ERROR` (500) | Transient server error |
@@ -1225,7 +1209,6 @@ Decline an incoming friend request.
 |---|---|
 | **Auth** | User JWT |
 | **Rate limit** | `general-api` tier — per user ID (default 60 req/min) |
-| **Subscription** | Premium required |
 
 **Path parameters**
 
@@ -1245,8 +1228,42 @@ Decline an incoming friend request.
 
 | Code | When |
 |---|---|
-| `UNAUTHORIZED` (401) | Missing or invalid JWT, or request not found |
-| `SUBSCRIPTION_REQUIRED` (403) | No active premium subscription |
+| `UNAUTHORIZED` (401) | Missing or invalid JWT |
+| `NOT_FOUND` (404) | Request not found |
+| `RATE_LIMITED` (429) | Too many requests |
+| `INTERNAL_ERROR` (500) | Transient server error |
+
+---
+
+### `POST /api/v1/friends/requests/{id}/cancel`
+
+Cancel an outgoing friend request.
+
+| Property | Value |
+|---|---|
+| **Auth** | User JWT |
+| **Rate limit** | `general-api` tier — per user ID (default 60 req/min) |
+
+**Path parameters**
+
+| Param | Type | Required | Notes |
+|---|---|---|---|
+| `id` | string | yes | Friendship ID (not validated as UUID by the handler) |
+
+**Success — 200 OK**
+
+```json
+{
+  "message": "Request cancelled"
+}
+```
+
+**Errors**
+
+| Code | When |
+|---|---|
+| `UNAUTHORIZED` (401) | Missing or invalid JWT |
+| `NOT_FOUND` (404) | Request not found |
 | `RATE_LIMITED` (429) | Too many requests |
 | `INTERNAL_ERROR` (500) | Transient server error |
 
@@ -1260,7 +1277,6 @@ Remove an accepted friend.
 |---|---|
 | **Auth** | User JWT |
 | **Rate limit** | `general-api` tier — per user ID (default 60 req/min) |
-| **Subscription** | Premium required |
 
 **Path parameters**
 
@@ -1280,8 +1296,8 @@ Remove an accepted friend.
 
 | Code | When |
 |---|---|
-| `UNAUTHORIZED` (401) | Missing or invalid JWT, or friendship not found |
-| `SUBSCRIPTION_REQUIRED` (403) | No active premium subscription |
+| `UNAUTHORIZED` (401) | Missing or invalid JWT |
+| `NOT_FOUND` (404) | Friendship not found |
 | `RATE_LIMITED` (429) | Too many requests |
 | `INTERNAL_ERROR` (500) | Transient server error |
 
@@ -1307,27 +1323,23 @@ Get streak and focus-time statistics for a friend.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
-| `days` | int | 30 | Invalid or out-of-range values silently default to `30` (max `90`) |
+| `days` | int | 7 | Invalid or out-of-range values silently default to `7` (max `90`) |
 
 **Success — 200 OK**
 
-> **Note:** `FriendStatsOutput.User` is a `BasicUserRow` (PascalCase, no JSON
-> tags). The `Stats` struct uses JSON tags. `daily_trends` may be `null`
-> (not `[]`) when empty (Go nil slice serialisation).
-
 ```json
 {
-  "User": {
-    "ID": "uuid",
-    "Name": "Jane",
-    "Username": "jane42",
-    "ProfilePictureURL": null,
-    "LeaderboardVisible": true
+  "user": {
+    "id": "uuid",
+    "name": "Jane",
+    "username": "jane42",
+    "profile_picture_url": null
   },
-  "Stats": {
+  "stats": {
     "current_streak_days": 7,
     "longest_streak_days": 14,
     "total_focus_time_ms": 86400000,
+    "focus_time_today_ms": 3600000,
     "daily_trends": [
       {
         "local_day": "2025-01-15",
@@ -1403,10 +1415,11 @@ Search for users by username prefix.
 
 ### `GET /api/v1/leaderboard/streaks`
 
-Get the leaderboard ranked by current streak. Rankings are computed across
-**all users** (not just friends); `my_rank` reflects the caller's position
-among everyone. Only users with `leaderboard_visible = true` appear in the
-`entries` list.
+Get the leaderboard ranked by current streak. Only users with
+`leaderboard_visible = true` appear in the `entries` list, and ranks are
+contiguous (no gaps from hidden users). `my_rank` reflects the caller's
+position among visible users (the caller is included in the ranking even if
+they have opted out of visibility).
 
 | Property | Value |
 |---|---|
@@ -1474,7 +1487,8 @@ are omitted from the JSON output.
 ### `GET /api/v1/leaderboard/focus-time`
 
 Get the leaderboard ranked by total focus time. Same ranking logic as
-`/streaks` — all users are ranked, only visible users appear in `entries`.
+`/streaks` — only visible users appear in `entries` with contiguous ranks,
+and `my_rank` is computed among visible users plus the caller.
 
 | Property | Value |
 |---|---|
