@@ -46,5 +46,8 @@ func (p *OpenAIProvider) Complete(ctx context.Context, messages []Message) (stri
 	if len(resp.Choices) == 0 {
 		return "", fmt.Errorf("openai: empty response")
 	}
+	if resp.Choices[0].Message.Content == "" {
+		return "", fmt.Errorf("openai: empty response content")
+	}
 	return resp.Choices[0].Message.Content, nil
 }

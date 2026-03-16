@@ -22,16 +22,18 @@ const (
 )
 
 type SyncRepository interface {
-	SyncModes(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.Mode, string]) (syncmodel.TableResult[syncmodel.Mode, string], error)
+	// SyncModes returns the sync result and any cascade-affected streak days.
+	SyncModes(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.Mode, string]) (syncmodel.TableResult[syncmodel.Mode, string], []string, error)
 	SyncModeBlockedApps(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]) (syncmodel.TableResult[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey], error)
 	SyncSchedules(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.Schedule, string]) (syncmodel.TableResult[syncmodel.Schedule, string], error)
-	SyncRestrictionSessions(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.RestrictionSession, string]) (syncmodel.TableResult[syncmodel.RestrictionSession, string], error)
+	// SyncRestrictionSessions returns the sync result and any cascade-affected streak days.
+	SyncRestrictionSessions(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.RestrictionSession, string]) (syncmodel.TableResult[syncmodel.RestrictionSession, string], []string, error)
 	SyncRestrictionLifecycleEvents(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.RestrictionLifecycleEvent, string]) (syncmodel.TableResult[syncmodel.RestrictionLifecycleEvent, string], error)
 	SyncNFCLinkedChips(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.NFCLinkedChip, string]) (syncmodel.TableResult[syncmodel.NFCLinkedChip, string], error)
 	SyncQRLinkedCodes(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.QRLinkedCode, string]) (syncmodel.TableResult[syncmodel.QRLinkedCode, string], error)
 	SyncStreakSessionDailyRollups(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]) (syncmodel.TableResult[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey], error)
 	ListStreakDailyAggregateChanges(ctx context.Context, db DBTX, userID string, cursor int64) (syncmodel.TableResult[syncmodel.StreakDailyAggregate, string], error)
-	RecomputeStreakAggregates(ctx context.Context, db DBTX, userID string) error
+	RecomputeStreakAggregates(ctx context.Context, db DBTX, userID string, affectedDays []string) error
 }
 
 // LeaderboardRefresher is satisfied by any type that can recompute leaderboard
@@ -81,10 +83,11 @@ func (r *PgxSyncRepository) clearTombstones(ctx context.Context, db DBTX, userID
 	return nil
 }
 
-func (r *PgxSyncRepository) SyncModes(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.Mode, string]) (syncmodel.TableResult[syncmodel.Mode, string], error) {
+func (r *PgxSyncRepository) SyncModes(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.Mode, string]) (syncmodel.TableResult[syncmodel.Mode, string], []string, error) {
 	written := map[string]struct{}{}
 	deleted := map[string]struct{}{}
 	var versions []int64
+	var cascadeAffectedDays []string
 
 	if len(in.Upserts) > 0 {
 		var sb strings.Builder
@@ -108,18 +111,18 @@ func (r *PgxSyncRepository) SyncModes(ctx context.Context, db DBTX, userID strin
 			RETURNING id`)
 		rows, err := db.Query(ctx, sb.String(), args...)
 		if err != nil {
-			return syncmodel.TableResult[syncmodel.Mode, string]{}, fmt.Errorf("upserting modes: %w", err)
+			return syncmodel.TableResult[syncmodel.Mode, string]{}, nil, fmt.Errorf("upserting modes: %w", err)
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var id string
 			if err := rows.Scan(&id); err != nil {
-				return syncmodel.TableResult[syncmodel.Mode, string]{}, fmt.Errorf("scanning upserted mode id: %w", err)
+				return syncmodel.TableResult[syncmodel.Mode, string]{}, nil, fmt.Errorf("scanning upserted mode id: %w", err)
 			}
 			written[id] = struct{}{}
 		}
 		if err := rows.Err(); err != nil {
-			return syncmodel.TableResult[syncmodel.Mode, string]{}, fmt.Errorf("iterating upserted mode ids: %w", err)
+			return syncmodel.TableResult[syncmodel.Mode, string]{}, nil, fmt.Errorf("iterating upserted mode ids: %w", err)
 		}
 	}
 
@@ -129,36 +132,62 @@ func (r *PgxSyncRepository) SyncModes(ctx context.Context, db DBTX, userID strin
 			keys = append(keys, k)
 		}
 		if err := r.clearTombstones(ctx, db, userID, syncTableModes, keys); err != nil {
-			return syncmodel.TableResult[syncmodel.Mode, string]{}, err
+			return syncmodel.TableResult[syncmodel.Mode, string]{}, nil, err
 		}
 	}
 
-	var modeCascades map[string]map[string][]string
 	if len(in.Deletions) > 0 {
-		var err error
-		modeCascades, err = r.collectModeCascade(ctx, db, userID, in.Deletions)
+		modeCascades, err := r.collectModeCascade(ctx, db, userID, in.Deletions)
 		if err != nil {
-			return syncmodel.TableResult[syncmodel.Mode, string]{}, err
+			return syncmodel.TableResult[syncmodel.Mode, string]{}, nil, err
 		}
-	}
-	for _, id := range in.Deletions {
-		tag, err := db.Exec(ctx, "DELETE FROM modes WHERE user_id = $1 AND id = $2", userID, id)
+
+		delRows, err := db.Query(ctx, "DELETE FROM modes WHERE user_id = $1 AND id = ANY($2) RETURNING id", userID, in.Deletions)
 		if err != nil {
-			return syncmodel.TableResult[syncmodel.Mode, string]{}, fmt.Errorf("deleting mode: %w", err)
+			return syncmodel.TableResult[syncmodel.Mode, string]{}, nil, fmt.Errorf("deleting modes: %w", err)
 		}
-		if tag.RowsAffected() == 0 {
-			continue
+		var deletedIDs []string
+		for delRows.Next() {
+			var id string
+			if err := delRows.Scan(&id); err != nil {
+				delRows.Close()
+				return syncmodel.TableResult[syncmodel.Mode, string]{}, nil, fmt.Errorf("scanning deleted mode id: %w", err)
+			}
+			deletedIDs = append(deletedIDs, id)
+			deleted[id] = struct{}{}
 		}
-		if err := r.insertTombstone(ctx, db, userID, syncTableModes, id); err != nil {
-			return syncmodel.TableResult[syncmodel.Mode, string]{}, err
+		delRows.Close()
+		if err := delRows.Err(); err != nil {
+			return syncmodel.TableResult[syncmodel.Mode, string]{}, nil, fmt.Errorf("iterating deleted mode ids: %w", err)
 		}
-		deleted[id] = struct{}{}
-		for tableName, recordIDs := range modeCascades[id] {
-			for _, recordID := range recordIDs {
-				if err := r.insertTombstone(ctx, db, userID, tableName, recordID); err != nil {
-					return syncmodel.TableResult[syncmodel.Mode, string]{}, err
+
+		if err := r.insertTombstones(ctx, db, userID, syncTableModes, deletedIDs); err != nil {
+			return syncmodel.TableResult[syncmodel.Mode, string]{}, nil, err
+		}
+
+		cascadeTombstones := map[string][]string{}
+		daySet := map[string]struct{}{}
+		for _, id := range deletedIDs {
+			for tableName, recordIDs := range modeCascades[id] {
+				cascadeTombstones[tableName] = append(cascadeTombstones[tableName], recordIDs...)
+				if tableName == syncTableStreakSessionDailyRollups {
+					for _, key := range recordIDs {
+						rollupKey, decErr := decodeStreakSessionDailyRollupKey(key)
+						if decErr != nil {
+							return syncmodel.TableResult[syncmodel.Mode, string]{}, nil, decErr
+						}
+						daySet[rollupKey.LocalDay] = struct{}{}
+					}
 				}
 			}
+		}
+		for tableName, recordIDs := range cascadeTombstones {
+			if err := r.insertTombstones(ctx, db, userID, tableName, recordIDs); err != nil {
+				return syncmodel.TableResult[syncmodel.Mode, string]{}, nil, err
+			}
+		}
+		for day := range daySet {
+			cascadeAffectedDays = append(cascadeAffectedDays, day)
 		}
 	}
 
@@ -167,7 +196,7 @@ func (r *PgxSyncRepository) SyncModes(ctx context.Context, db DBTX, userID strin
 		WHERE user_id = $1 AND sync_version > $2
 		ORDER BY sync_version`, userID, in.Cursor)
 	if err != nil {
-		return syncmodel.TableResult[syncmodel.Mode, string]{}, fmt.Errorf("listing changed modes: %w", err)
+		return syncmodel.TableResult[syncmodel.Mode, string]{}, nil, fmt.Errorf("listing changed modes: %w", err)
 	}
 	defer rows.Close()
 
@@ -176,7 +205,7 @@ func (r *PgxSyncRepository) SyncModes(ctx context.Context, db DBTX, userID strin
 		var rec syncmodel.Mode
 		var version int64
 		if err := rows.Scan(&rec.ID, &rec.Title, &rec.TextOnScreen, &rec.Description, &rec.AllowedPausesCount, &rec.MinimumDurationMS, &rec.EndingPausingScenario, &rec.IconToken, &rec.CreatedAt, &rec.UpdatedAt, &version); err != nil {
-			return syncmodel.TableResult[syncmodel.Mode, string]{}, fmt.Errorf("scanning changed mode: %w", err)
+			return syncmodel.TableResult[syncmodel.Mode, string]{}, nil, fmt.Errorf("scanning changed mode: %w", err)
 		}
 		if _, ok := written[rec.ID]; ok {
 			continue
@@ -185,12 +214,12 @@ func (r *PgxSyncRepository) SyncModes(ctx context.Context, db DBTX, userID strin
 		versions = append(versions, version)
 	}
 	if err := rows.Err(); err != nil {
-		return syncmodel.TableResult[syncmodel.Mode, string]{}, fmt.Errorf("iterating changed modes: %w", err)
+		return syncmodel.TableResult[syncmodel.Mode, string]{}, nil, fmt.Errorf("iterating changed modes: %w", err)
 	}
 
 	tombstoneIDs, tombMaxV, err := r.listTombstones(ctx, db, userID, syncTableModes, in.Cursor, deleted)
 	if err != nil {
-		return syncmodel.TableResult[syncmodel.Mode, string]{}, err
+		return syncmodel.TableResult[syncmodel.Mode, string]{}, nil, err
 	}
 	if tombMaxV > 0 {
 		versions = append(versions, tombMaxV)
@@ -200,7 +229,7 @@ func (r *PgxSyncRepository) SyncModes(ctx context.Context, db DBTX, userID strin
 		NextCursor: computeNextCursor(in.Cursor, versions),
 		Upserts:    upserts,
 		Deletions:  tombstoneIDs,
-	}, nil
+	}, cascadeAffectedDays, nil
 }
 
 func (r *PgxSyncRepository) SyncModeBlockedApps(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]) (syncmodel.TableResult[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey], error) {
@@ -258,22 +287,46 @@ func (r *PgxSyncRepository) SyncModeBlockedApps(ctx context.Context, db DBTX, us
 		}
 	}
 
-	for _, keyObj := range in.Deletions {
-		key, err := encodeModeBlockedAppKey(keyObj)
+	if len(in.Deletions) > 0 {
+		var dsb strings.Builder
+		dargs := []any{userID}
+		dsb.WriteString("DELETE FROM mode_blocked_apps WHERE user_id = $1 AND (mode_id, platform, app_identifier) IN (")
+		for i, keyObj := range in.Deletions {
+			if i > 0 {
+				dsb.WriteString(", ")
+			}
+			base := len(dargs) + 1
+			fmt.Fprintf(&dsb, "($%d, $%d, $%d)", base, base+1, base+2)
+			dargs = append(dargs, keyObj.ModeID, keyObj.Platform, keyObj.AppIdentifier)
+		}
+		dsb.WriteString(") RETURNING mode_id, platform, app_identifier")
+		delRows, err := db.Query(ctx, dsb.String(), dargs...)
 		if err != nil {
+			return syncmodel.TableResult[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]{}, fmt.Errorf("deleting mode_blocked_apps: %w", err)
+		}
+		var deletedKeys []string
+		for delRows.Next() {
+			var modeID, appIdentifier string
+			var platform syncmodel.DevicePlatform
+			if err := delRows.Scan(&modeID, &platform, &appIdentifier); err != nil {
+				delRows.Close()
+				return syncmodel.TableResult[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]{}, fmt.Errorf("scanning deleted mode_blocked_app key: %w", err)
+			}
+			key, encErr := encodeModeBlockedAppKey(syncmodel.ModeBlockedAppKey{ModeID: modeID, Platform: platform, AppIdentifier: appIdentifier})
+			if encErr != nil {
+				delRows.Close()
+				return syncmodel.TableResult[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]{}, encErr
+			}
+			deletedKeys = append(deletedKeys, key)
+			deleted[key] = struct{}{}
+		}
+		delRows.Close()
+		if err := delRows.Err(); err != nil {
+			return syncmodel.TableResult[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]{}, fmt.Errorf("iterating deleted mode_blocked_app keys: %w", err)
+		}
+		if err := r.insertTombstones(ctx, db, userID, syncTableModeBlockedApps, deletedKeys); err != nil {
 			return syncmodel.TableResult[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]{}, err
 		}
-		tag, err := db.Exec(ctx, "DELETE FROM mode_blocked_apps WHERE user_id = $1 AND mode_id = $2 AND platform = $3 AND app_identifier = $4", userID, keyObj.ModeID, keyObj.Platform, keyObj.AppIdentifier)
-		if err != nil {
-			return syncmodel.TableResult[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]{}, fmt.Errorf("deleting mode_blocked_app: %w", err)
-		}
-		if tag.RowsAffected() == 0 {
-			continue
-		}
-		if err := r.insertTombstone(ctx, db, userID, syncTableModeBlockedApps, key); err != nil {
-			return syncmodel.TableResult[syncmodel.ModeBlockedApp, syncmodel.ModeBlockedAppKey]{}, err
-		}
-		deleted[key] = struct{}{}
 	}
 
 	rows, err := db.Query(ctx, `SELECT mode_id, platform, app_identifier, created_at, updated_at, sync_version
@@ -380,18 +433,28 @@ func (r *PgxSyncRepository) SyncSchedules(ctx context.Context, db DBTX, userID s
 		}
 	}
 
-	for _, id := range in.Deletions {
-		tag, err := db.Exec(ctx, "DELETE FROM schedules WHERE user_id = $1 AND id = $2", userID, id)
+	if len(in.Deletions) > 0 {
+		delRows, err := db.Query(ctx, "DELETE FROM schedules WHERE user_id = $1 AND id = ANY($2) RETURNING id", userID, in.Deletions)
 		if err != nil {
-			return syncmodel.TableResult[syncmodel.Schedule, string]{}, fmt.Errorf("deleting schedule: %w", err)
+			return syncmodel.TableResult[syncmodel.Schedule, string]{}, fmt.Errorf("deleting schedules: %w", err)
 		}
-		if tag.RowsAffected() == 0 {
-			continue
+		var deletedIDs []string
+		for delRows.Next() {
+			var id string
+			if err := delRows.Scan(&id); err != nil {
+				delRows.Close()
+				return syncmodel.TableResult[syncmodel.Schedule, string]{}, fmt.Errorf("scanning deleted schedule id: %w", err)
+			}
+			deletedIDs = append(deletedIDs, id)
+			deleted[id] = struct{}{}
 		}
-		if err := r.insertTombstone(ctx, db, userID, syncTableSchedules, id); err != nil {
+		delRows.Close()
+		if err := delRows.Err(); err != nil {
+			return syncmodel.TableResult[syncmodel.Schedule, string]{}, fmt.Errorf("iterating deleted schedule ids: %w", err)
+		}
+		if err := r.insertTombstones(ctx, db, userID, syncTableSchedules, deletedIDs); err != nil {
 			return syncmodel.TableResult[syncmodel.Schedule, string]{}, err
 		}
-		deleted[id] = struct{}{}
 	}
 
 	rows, err := db.Query(ctx, `SELECT id, mode_id, days, start_minute, end_minute, enabled, created_at, updated_at, sync_version
@@ -435,10 +498,11 @@ func (r *PgxSyncRepository) SyncSchedules(ctx context.Context, db DBTX, userID s
 	}, nil
 }
 
-func (r *PgxSyncRepository) SyncRestrictionSessions(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.RestrictionSession, string]) (syncmodel.TableResult[syncmodel.RestrictionSession, string], error) {
+func (r *PgxSyncRepository) SyncRestrictionSessions(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.RestrictionSession, string]) (syncmodel.TableResult[syncmodel.RestrictionSession, string], []string, error) {
 	written := map[string]struct{}{}
 	deleted := map[string]struct{}{}
 	var versions []int64
+	var cascadeAffectedDays []string
 
 	if len(in.Upserts) > 0 {
 		var sb strings.Builder
@@ -463,18 +527,18 @@ func (r *PgxSyncRepository) SyncRestrictionSessions(ctx context.Context, db DBTX
 			RETURNING session_id`)
 		rows, err := db.Query(ctx, sb.String(), args...)
 		if err != nil {
-			return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, fmt.Errorf("upserting restriction_sessions: %w", err)
+			return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, nil, fmt.Errorf("upserting restriction_sessions: %w", err)
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var sessionID string
 			if err := rows.Scan(&sessionID); err != nil {
-				return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, fmt.Errorf("scanning upserted restriction_session id: %w", err)
+				return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, nil, fmt.Errorf("scanning upserted restriction_session id: %w", err)
 			}
 			written[sessionID] = struct{}{}
 		}
 		if err := rows.Err(); err != nil {
-			return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, fmt.Errorf("iterating upserted restriction_session ids: %w", err)
+			return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, nil, fmt.Errorf("iterating upserted restriction_session ids: %w", err)
 		}
 	}
 
@@ -484,36 +548,62 @@ func (r *PgxSyncRepository) SyncRestrictionSessions(ctx context.Context, db DBTX
 			keys = append(keys, k)
 		}
 		if err := r.clearTombstones(ctx, db, userID, syncTableRestrictionSessions, keys); err != nil {
-			return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, err
+			return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, nil, err
 		}
 	}
 
-	var sessionCascades map[string]map[string][]string
 	if len(in.Deletions) > 0 {
-		var err error
-		sessionCascades, err = r.collectRestrictionSessionCascade(ctx, db, userID, in.Deletions)
+		sessionCascades, err := r.collectRestrictionSessionCascade(ctx, db, userID, in.Deletions)
 		if err != nil {
-			return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, err
+			return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, nil, err
 		}
-	}
-	for _, sessionID := range in.Deletions {
-		tag, err := db.Exec(ctx, "DELETE FROM restriction_sessions WHERE user_id = $1 AND session_id = $2", userID, sessionID)
+
+		delRows, err := db.Query(ctx, "DELETE FROM restriction_sessions WHERE user_id = $1 AND session_id = ANY($2) RETURNING session_id", userID, in.Deletions)
 		if err != nil {
-			return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, fmt.Errorf("deleting restriction_session: %w", err)
+			return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, nil, fmt.Errorf("deleting restriction_sessions: %w", err)
 		}
-		if tag.RowsAffected() == 0 {
-			continue
+		var deletedIDs []string
+		for delRows.Next() {
+			var sessionID string
+			if err := delRows.Scan(&sessionID); err != nil {
+				delRows.Close()
+				return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, nil, fmt.Errorf("scanning deleted restriction_session id: %w", err)
+			}
+			deletedIDs = append(deletedIDs, sessionID)
+			deleted[sessionID] = struct{}{}
 		}
-		if err := r.insertTombstone(ctx, db, userID, syncTableRestrictionSessions, sessionID); err != nil {
-			return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, err
+		delRows.Close()
+		if err := delRows.Err(); err != nil {
+			return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, nil, fmt.Errorf("iterating deleted restriction_session ids: %w", err)
 		}
-		deleted[sessionID] = struct{}{}
-		for tableName, recordIDs := range sessionCascades[sessionID] {
-			for _, recordID := range recordIDs {
-				if err := r.insertTombstone(ctx, db, userID, tableName, recordID); err != nil {
-					return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, err
+
+		if err := r.insertTombstones(ctx, db, userID, syncTableRestrictionSessions, deletedIDs); err != nil {
+			return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, nil, err
+		}
+
+		cascadeTombstones := map[string][]string{}
+		daySet := map[string]struct{}{}
+		for _, sessionID := range deletedIDs {
+			for tableName, recordIDs := range sessionCascades[sessionID] {
+				cascadeTombstones[tableName] = append(cascadeTombstones[tableName], recordIDs...)
+				if tableName == syncTableStreakSessionDailyRollups {
+					for _, key := range recordIDs {
+						rollupKey, decErr := decodeStreakSessionDailyRollupKey(key)
+						if decErr != nil {
+							return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, nil, decErr
+						}
+						daySet[rollupKey.LocalDay] = struct{}{}
+					}
 				}
 			}
+		}
+		for tableName, recordIDs := range cascadeTombstones {
+			if err := r.insertTombstones(ctx, db, userID, tableName, recordIDs); err != nil {
+				return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, nil, err
+			}
+		}
+		for day := range daySet {
+			cascadeAffectedDays = append(cascadeAffectedDays, day)
 		}
 	}
 
@@ -522,7 +612,7 @@ func (r *PgxSyncRepository) SyncRestrictionSessions(ctx context.Context, db DBTX
 		WHERE user_id = $1 AND sync_version > $2
 		ORDER BY sync_version`, userID, in.Cursor)
 	if err != nil {
-		return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, fmt.Errorf("listing changed restriction_sessions: %w", err)
+		return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, nil, fmt.Errorf("listing changed restriction_sessions: %w", err)
 	}
 	defer rows.Close()
 
@@ -531,7 +621,7 @@ func (r *PgxSyncRepository) SyncRestrictionSessions(ctx context.Context, db DBTX
 		var rec syncmodel.RestrictionSession
 		var version int64
 		if err := rows.Scan(&rec.SessionID, &rec.ModeID, &rec.Source, &rec.StartedAt, &rec.EndedAt, &rec.PauseCount, &rec.TotalPausedMS, &rec.LastPausedAt, &rec.IntegrityStatus, &rec.LastAnomalyReason, &rec.LastEventID, &rec.CreatedAt, &rec.UpdatedAt, &version); err != nil {
-			return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, fmt.Errorf("scanning changed restriction_session: %w", err)
+			return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, nil, fmt.Errorf("scanning changed restriction_session: %w", err)
 		}
 		if _, ok := written[rec.SessionID]; ok {
 			continue
@@ -540,12 +630,12 @@ func (r *PgxSyncRepository) SyncRestrictionSessions(ctx context.Context, db DBTX
 		versions = append(versions, version)
 	}
 	if err := rows.Err(); err != nil {
-		return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, fmt.Errorf("iterating changed restriction_sessions: %w", err)
+		return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, nil, fmt.Errorf("iterating changed restriction_sessions: %w", err)
 	}
 
 	tombstoneIDs, tombMaxV, err := r.listTombstones(ctx, db, userID, syncTableRestrictionSessions, in.Cursor, deleted)
 	if err != nil {
-		return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, err
+		return syncmodel.TableResult[syncmodel.RestrictionSession, string]{}, nil, err
 	}
 	if tombMaxV > 0 {
 		versions = append(versions, tombMaxV)
@@ -555,7 +645,7 @@ func (r *PgxSyncRepository) SyncRestrictionSessions(ctx context.Context, db DBTX
 		NextCursor: computeNextCursor(in.Cursor, versions),
 		Upserts:    upserts,
 		Deletions:  tombstoneIDs,
-	}, nil
+	}, cascadeAffectedDays, nil
 }
 
 func (r *PgxSyncRepository) SyncRestrictionLifecycleEvents(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.RestrictionLifecycleEvent, string]) (syncmodel.TableResult[syncmodel.RestrictionLifecycleEvent, string], error) {
@@ -685,18 +775,28 @@ func (r *PgxSyncRepository) SyncNFCLinkedChips(ctx context.Context, db DBTX, use
 		}
 	}
 
-	for _, id := range in.Deletions {
-		tag, err := db.Exec(ctx, "DELETE FROM nfc_linked_chips WHERE user_id = $1 AND id = $2", userID, id)
+	if len(in.Deletions) > 0 {
+		delRows, err := db.Query(ctx, "DELETE FROM nfc_linked_chips WHERE user_id = $1 AND id = ANY($2) RETURNING id", userID, in.Deletions)
 		if err != nil {
-			return syncmodel.TableResult[syncmodel.NFCLinkedChip, string]{}, fmt.Errorf("deleting nfc_linked_chip: %w", err)
+			return syncmodel.TableResult[syncmodel.NFCLinkedChip, string]{}, fmt.Errorf("deleting nfc_linked_chips: %w", err)
 		}
-		if tag.RowsAffected() == 0 {
-			continue
+		var deletedIDs []string
+		for delRows.Next() {
+			var id string
+			if err := delRows.Scan(&id); err != nil {
+				delRows.Close()
+				return syncmodel.TableResult[syncmodel.NFCLinkedChip, string]{}, fmt.Errorf("scanning deleted nfc_linked_chip id: %w", err)
+			}
+			deletedIDs = append(deletedIDs, id)
+			deleted[id] = struct{}{}
 		}
-		if err := r.insertTombstone(ctx, db, userID, syncTableNFCLinkedChips, id); err != nil {
+		delRows.Close()
+		if err := delRows.Err(); err != nil {
+			return syncmodel.TableResult[syncmodel.NFCLinkedChip, string]{}, fmt.Errorf("iterating deleted nfc_linked_chip ids: %w", err)
+		}
+		if err := r.insertTombstones(ctx, db, userID, syncTableNFCLinkedChips, deletedIDs); err != nil {
 			return syncmodel.TableResult[syncmodel.NFCLinkedChip, string]{}, err
 		}
-		deleted[id] = struct{}{}
 	}
 
 	rows, err := db.Query(ctx, `SELECT id, chip_identifier, name, created_at, updated_at, sync_version
@@ -790,18 +890,28 @@ func (r *PgxSyncRepository) SyncQRLinkedCodes(ctx context.Context, db DBTX, user
 		}
 	}
 
-	for _, id := range in.Deletions {
-		tag, err := db.Exec(ctx, "DELETE FROM qr_linked_codes WHERE user_id = $1 AND id = $2", userID, id)
+	if len(in.Deletions) > 0 {
+		delRows, err := db.Query(ctx, "DELETE FROM qr_linked_codes WHERE user_id = $1 AND id = ANY($2) RETURNING id", userID, in.Deletions)
 		if err != nil {
-			return syncmodel.TableResult[syncmodel.QRLinkedCode, string]{}, fmt.Errorf("deleting qr_linked_code: %w", err)
+			return syncmodel.TableResult[syncmodel.QRLinkedCode, string]{}, fmt.Errorf("deleting qr_linked_codes: %w", err)
 		}
-		if tag.RowsAffected() == 0 {
-			continue
+		var deletedIDs []string
+		for delRows.Next() {
+			var id string
+			if err := delRows.Scan(&id); err != nil {
+				delRows.Close()
+				return syncmodel.TableResult[syncmodel.QRLinkedCode, string]{}, fmt.Errorf("scanning deleted qr_linked_code id: %w", err)
+			}
+			deletedIDs = append(deletedIDs, id)
+			deleted[id] = struct{}{}
 		}
-		if err := r.insertTombstone(ctx, db, userID, syncTableQRLinkedCodes, id); err != nil {
+		delRows.Close()
+		if err := delRows.Err(); err != nil {
+			return syncmodel.TableResult[syncmodel.QRLinkedCode, string]{}, fmt.Errorf("iterating deleted qr_linked_code ids: %w", err)
+		}
+		if err := r.insertTombstones(ctx, db, userID, syncTableQRLinkedCodes, deletedIDs); err != nil {
 			return syncmodel.TableResult[syncmodel.QRLinkedCode, string]{}, err
 		}
-		deleted[id] = struct{}{}
 	}
 
 	rows, err := db.Query(ctx, `SELECT id, scan_value, name, created_at, updated_at, sync_version
@@ -898,22 +1008,45 @@ func (r *PgxSyncRepository) SyncStreakSessionDailyRollups(ctx context.Context, d
 		}
 	}
 
-	for _, keyObj := range in.Deletions {
-		key, err := encodeStreakSessionDailyRollupKey(keyObj)
+	if len(in.Deletions) > 0 {
+		var dsb strings.Builder
+		dargs := []any{userID}
+		dsb.WriteString("DELETE FROM streak_session_daily_rollups WHERE user_id = $1 AND (session_id, local_day) IN (")
+		for i, keyObj := range in.Deletions {
+			if i > 0 {
+				dsb.WriteString(", ")
+			}
+			base := len(dargs) + 1
+			fmt.Fprintf(&dsb, "($%d, $%d)", base, base+1)
+			dargs = append(dargs, keyObj.SessionID, keyObj.LocalDay)
+		}
+		dsb.WriteString(") RETURNING session_id, local_day")
+		delRows, err := db.Query(ctx, dsb.String(), dargs...)
 		if err != nil {
+			return syncmodel.TableResult[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]{}, fmt.Errorf("deleting streak_session_daily_rollups: %w", err)
+		}
+		var deletedKeys []string
+		for delRows.Next() {
+			var sessionID, localDay string
+			if err := delRows.Scan(&sessionID, &localDay); err != nil {
+				delRows.Close()
+				return syncmodel.TableResult[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]{}, fmt.Errorf("scanning deleted streak_session_daily_rollup key: %w", err)
+			}
+			key, encErr := encodeStreakSessionDailyRollupKey(syncmodel.StreakSessionDailyRollupKey{SessionID: sessionID, LocalDay: localDay})
+			if encErr != nil {
+				delRows.Close()
+				return syncmodel.TableResult[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]{}, encErr
+			}
+			deletedKeys = append(deletedKeys, key)
+			deleted[key] = struct{}{}
+		}
+		delRows.Close()
+		if err := delRows.Err(); err != nil {
+			return syncmodel.TableResult[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]{}, fmt.Errorf("iterating deleted streak_session_daily_rollup keys: %w", err)
+		}
+		if err := r.insertTombstones(ctx, db, userID, syncTableStreakSessionDailyRollups, deletedKeys); err != nil {
 			return syncmodel.TableResult[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]{}, err
 		}
-		tag, err := db.Exec(ctx, "DELETE FROM streak_session_daily_rollups WHERE user_id = $1 AND session_id = $2 AND local_day = $3", userID, keyObj.SessionID, keyObj.LocalDay)
-		if err != nil {
-			return syncmodel.TableResult[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]{}, fmt.Errorf("deleting streak_session_daily_rollup: %w", err)
-		}
-		if tag.RowsAffected() == 0 {
-			continue
-		}
-		if err := r.insertTombstone(ctx, db, userID, syncTableStreakSessionDailyRollups, key); err != nil {
-			return syncmodel.TableResult[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]{}, err
-		}
-		deleted[key] = struct{}{}
 	}
 
 	rows, err := db.Query(ctx, `SELECT session_id, local_day, effective_ms, updated_at, sync_version
@@ -1010,20 +1143,28 @@ func (r *PgxSyncRepository) ListStreakDailyAggregateChanges(ctx context.Context,
 	}, nil
 }
 
-func (r *PgxSyncRepository) RecomputeStreakAggregates(ctx context.Context, db DBTX, userID string) error {
+func (r *PgxSyncRepository) RecomputeStreakAggregates(ctx context.Context, db DBTX, userID string, affectedDays []string) error {
+	if len(affectedDays) == 0 {
+		return nil
+	}
+
 	_, err := db.Exec(ctx, `
 		INSERT INTO streak_daily_aggregates (user_id, local_day, effective_ms, qualified, source_session_count, updated_at)
 		SELECT $1, local_day, SUM(effective_ms),
 			CASE WHEN SUM(effective_ms) >= 1800000 THEN 1 ELSE 0 END,
 			COUNT(DISTINCT session_id),
 			EXTRACT(EPOCH FROM now())::bigint * 1000
-		FROM streak_session_daily_rollups WHERE user_id = $1
+		FROM streak_session_daily_rollups WHERE user_id = $1 AND local_day = ANY($2)
 		GROUP BY local_day
 		ON CONFLICT (user_id, local_day) DO UPDATE SET
 			effective_ms = EXCLUDED.effective_ms,
 			qualified = EXCLUDED.qualified,
 			source_session_count = EXCLUDED.source_session_count,
-			updated_at = EXCLUDED.updated_at`, userID)
+			updated_at = EXCLUDED.updated_at
+		WHERE streak_daily_aggregates.effective_ms IS DISTINCT FROM EXCLUDED.effective_ms
+		   OR streak_daily_aggregates.qualified IS DISTINCT FROM EXCLUDED.qualified
+		   OR streak_daily_aggregates.source_session_count IS DISTINCT FROM EXCLUDED.source_session_count`,
+		userID, affectedDays)
 	if err != nil {
 		return fmt.Errorf("recomputing streak aggregates: %w", err)
 	}
@@ -1031,36 +1172,49 @@ func (r *PgxSyncRepository) RecomputeStreakAggregates(ctx context.Context, db DB
 	rows, err := db.Query(ctx, `
 		DELETE FROM streak_daily_aggregates
 		WHERE user_id = $1
-		  AND local_day NOT IN (SELECT DISTINCT local_day FROM streak_session_daily_rollups WHERE user_id = $1)
-		RETURNING local_day`, userID)
+		  AND local_day = ANY($2)
+		  AND local_day NOT IN (SELECT DISTINCT local_day FROM streak_session_daily_rollups WHERE user_id = $1 AND local_day = ANY($2))
+		RETURNING local_day`, userID, affectedDays)
 	if err != nil {
 		return fmt.Errorf("deleting orphaned streak aggregates: %w", err)
 	}
 	defer rows.Close()
 
+	var orphanedDays []string
 	for rows.Next() {
 		var localDay string
 		if err := rows.Scan(&localDay); err != nil {
 			return fmt.Errorf("scanning deleted aggregate day: %w", err)
 		}
-		if err := r.insertTombstone(ctx, db, userID, syncTableStreakDailyAggregates, localDay); err != nil {
-			return err
-		}
+		orphanedDays = append(orphanedDays, localDay)
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	return r.insertTombstones(ctx, db, userID, syncTableStreakDailyAggregates, orphanedDays)
 }
 
-func (r *PgxSyncRepository) insertTombstone(ctx context.Context, db DBTX, userID string, tableName string, recordID string) error {
-	_, err := db.Exec(ctx,
-		`INSERT INTO sync_tombstones (user_id, table_name, record_id)
-		 VALUES ($1, $2, $3)
-		 ON CONFLICT (user_id, table_name, record_id) DO UPDATE SET
-		   deleted_at = now(),
-		   sync_version = DEFAULT`,
-		userID, tableName, recordID,
-	)
+func (r *PgxSyncRepository) insertTombstones(ctx context.Context, db DBTX, userID string, tableName string, recordIDs []string) error {
+	if len(recordIDs) == 0 {
+		return nil
+	}
+	var sb strings.Builder
+	args := []any{userID, tableName}
+	sb.WriteString(`INSERT INTO sync_tombstones (user_id, table_name, record_id) VALUES `)
+	for i, id := range recordIDs {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		args = append(args, id)
+		fmt.Fprintf(&sb, "($1, $2, $%d)", len(args))
+	}
+	sb.WriteString(` ON CONFLICT (user_id, table_name, record_id) DO UPDATE SET
+	   deleted_at = now(),
+	   sync_version = DEFAULT`)
+	_, err := db.Exec(ctx, sb.String(), args...)
 	if err != nil {
-		return fmt.Errorf("inserting tombstone for %s: %w", tableName, err)
+		return fmt.Errorf("inserting tombstones for %s: %w", tableName, err)
 	}
 	return nil
 }
@@ -1084,13 +1238,13 @@ func (r *PgxSyncRepository) listTombstones(ctx context.Context, db DBTX, userID,
 		if err := rows.Scan(&id, &version); err != nil {
 			return nil, 0, fmt.Errorf("scanning tombstone for %s: %w", tableName, err)
 		}
+		if version > maxVersion {
+			maxVersion = version
+		}
 		if _, excluded := excludeIDs[id]; excluded {
 			continue
 		}
 		ids = append(ids, id)
-		if version > maxVersion {
-			maxVersion = version
-		}
 	}
 	return ids, maxVersion, rows.Err()
 }

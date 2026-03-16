@@ -209,7 +209,7 @@ func TestPgxSyncRepository_RecomputeStreakAggregates_RefreshesLeaderboardMetrics
 		t.Fatalf("SyncStreakSessionDailyRollups(upsert): %v", err)
 	}
 
-	if err := repo.RecomputeStreakAggregates(ctx, pool, userID); err != nil {
+	if err := repo.RecomputeStreakAggregates(ctx, pool, userID, []string{"2026-03-03", "2026-03-02"}); err != nil {
 		t.Fatalf("RecomputeStreakAggregates: %v", err)
 	}
 
@@ -234,7 +234,7 @@ func TestPgxSyncRepository_RecomputeStreakAggregates_RefreshesLeaderboardMetrics
 		t.Fatalf("SyncStreakSessionDailyRollups(delete): %v", err)
 	}
 
-	if err := repo.RecomputeStreakAggregates(ctx, pool, userID); err != nil {
+	if err := repo.RecomputeStreakAggregates(ctx, pool, userID, []string{"2026-03-03", "2026-03-02"}); err != nil {
 		t.Fatalf("RecomputeStreakAggregates after delete: %v", err)
 	}
 }

@@ -278,6 +278,16 @@ func (h *AIHandler) DetectAddiction(w http.ResponseWriter, r *http.Request) {
 
 const dateLayout = "2006-01-02"
 
+// Validation limits for string and numeric fields.
+const (
+	maxAppIdentifierLen = 256
+	maxAppNameLen       = 256
+	maxDailyTimeMS      = 86_400_000  // 24 hours
+	maxWeeklyTimeMS     = 604_800_000 // 7 days
+	maxLaunchCount      = 100_000
+	maxUnlocks          = 100_000
+)
+
 func isValidDate(s string) bool {
 	if len(s) != 10 {
 		return false
@@ -286,30 +296,59 @@ func isValidDate(s string) bool {
 	return err == nil
 }
 
+// validateAppUsageItems validates a slice of appUsageItem with the given
+// time cap (daily or weekly). It writes errors into the provided fields map
+// using the given prefix (e.g. "app_usage" or "app_usage_history[0].apps").
+func validateAppUsageItems(items []appUsageItem, prefix string, maxTimeMS int64, fields apperror.FieldErrors) {
+	for i, item := range items {
+		if item.AppIdentifier == "" {
+			fields[fmt.Sprintf("%s[%d].app_identifier", prefix, i)] = "app_identifier is required"
+		} else if len(item.AppIdentifier) > maxAppIdentifierLen {
+			fields[fmt.Sprintf("%s[%d].app_identifier", prefix, i)] = fmt.Sprintf("app_identifier must not exceed %d characters", maxAppIdentifierLen)
+		}
+		if item.AppName == "" {
+			fields[fmt.Sprintf("%s[%d].app_name", prefix, i)] = "app_name is required"
+		} else if len(item.AppName) > maxAppNameLen {
+			fields[fmt.Sprintf("%s[%d].app_name", prefix, i)] = fmt.Sprintf("app_name must not exceed %d characters", maxAppNameLen)
+		}
+		if item.TotalTimeMS < 0 {
+			fields[fmt.Sprintf("%s[%d].total_time_ms", prefix, i)] = "total_time_ms must be >= 0"
+		} else if item.TotalTimeMS > maxTimeMS {
+			fields[fmt.Sprintf("%s[%d].total_time_ms", prefix, i)] = fmt.Sprintf("total_time_ms must not exceed %d", maxTimeMS)
+		}
+		if item.LaunchCount < 0 {
+			fields[fmt.Sprintf("%s[%d].launch_count", prefix, i)] = "launch_count must be >= 0"
+		} else if item.LaunchCount > maxLaunchCount {
+			fields[fmt.Sprintf("%s[%d].launch_count", prefix, i)] = fmt.Sprintf("launch_count must not exceed %d", maxLaunchCount)
+		}
+	}
+}
+
 func validateAnalyzeUsage(req analyzeUsageRequest) apperror.FieldErrors {
 	fields := apperror.FieldErrors{}
 	if req.Period != "daily" && req.Period != "weekly" {
 		fields["period"] = "period must be daily or weekly"
+	}
+	var timeCap int64 = maxDailyTimeMS
+	if req.Period == "weekly" {
+		timeCap = maxWeeklyTimeMS
 	}
 	if len(req.AppUsage) == 0 {
 		fields["app_usage"] = "app_usage is required"
 	} else if len(req.AppUsage) > 500 {
 		fields["app_usage"] = "app_usage must not exceed 500 items"
 	} else {
-		for i, item := range req.AppUsage {
-			if item.TotalTimeMS < 0 {
-				fields[fmt.Sprintf("app_usage[%d].total_time_ms", i)] = "total_time_ms must be >= 0"
-			}
-			if item.LaunchCount < 0 {
-				fields[fmt.Sprintf("app_usage[%d].launch_count", i)] = "launch_count must be >= 0"
-			}
-		}
+		validateAppUsageItems(req.AppUsage, "app_usage", timeCap, fields)
 	}
 	if req.TotalScreenTimeMS < 0 {
 		fields["total_screen_time_ms"] = "total_screen_time_ms must be >= 0"
+	} else if req.TotalScreenTimeMS > timeCap {
+		fields["total_screen_time_ms"] = fmt.Sprintf("total_screen_time_ms must not exceed %d", timeCap)
 	}
 	if req.TotalUnlocks < 0 {
 		fields["total_unlocks"] = "total_unlocks must be >= 0"
+	} else if req.TotalUnlocks > maxUnlocks {
+		fields["total_unlocks"] = fmt.Sprintf("total_unlocks must not exceed %d", maxUnlocks)
 	}
 	return fields
 }
@@ -320,12 +359,16 @@ func validateSuggestSchedule(req suggestScheduleRequest) apperror.FieldErrors {
 		fields["app_usage"] = "app_usage is required"
 	} else if len(req.AppUsage) > 500 {
 		fields["app_usage"] = "app_usage must not exceed 500 items"
+	} else {
+		validateAppUsageItems(req.AppUsage, "app_usage", maxWeeklyTimeMS, fields)
 	}
 	if req.PreferredFocusHours < 1 || req.PreferredFocusHours > 16 {
 		fields["preferred_focus_hours"] = "preferred_focus_hours must be between 1 and 16"
 	}
 	if req.Timezone == "" {
 		fields["timezone"] = "timezone is required"
+	} else if _, err := time.LoadLocation(req.Timezone); err != nil {
+		fields["timezone"] = "timezone must be a valid IANA timezone"
 	}
 	for i, slot := range req.CurrentSchedules {
 		for j, d := range slot.Days {
@@ -358,12 +401,18 @@ func validateDailyReport(req dailyReportRequest) apperror.FieldErrors {
 		fields["app_usage"] = "app_usage is required"
 	} else if len(req.AppUsage) > 500 {
 		fields["app_usage"] = "app_usage must not exceed 500 items"
+	} else {
+		validateAppUsageItems(req.AppUsage, "app_usage", maxDailyTimeMS, fields)
 	}
 	if req.TotalScreenTimeMS < 0 {
 		fields["total_screen_time_ms"] = "total_screen_time_ms must be >= 0"
+	} else if req.TotalScreenTimeMS > maxDailyTimeMS {
+		fields["total_screen_time_ms"] = fmt.Sprintf("total_screen_time_ms must not exceed %d", maxDailyTimeMS)
 	}
 	if req.TotalUnlocks < 0 {
 		fields["total_unlocks"] = "total_unlocks must be >= 0"
+	} else if req.TotalUnlocks > maxUnlocks {
+		fields["total_unlocks"] = fmt.Sprintf("total_unlocks must not exceed %d", maxUnlocks)
 	}
 	if req.StreakDays < 0 {
 		fields["streak_days"] = "streak_days must be >= 0"
@@ -377,6 +426,9 @@ func validateDailyReport(req dailyReportRequest) apperror.FieldErrors {
 			}
 			if s.EndedAt <= 0 {
 				fields[fmt.Sprintf("focus_sessions[%d].ended_at", i)] = "ended_at must be > 0"
+			}
+			if s.StartedAt > 0 && s.EndedAt > 0 && s.EndedAt <= s.StartedAt {
+				fields[fmt.Sprintf("focus_sessions[%d].ended_at", i)] = "ended_at must be greater than started_at"
 			}
 			if s.EffectiveMS < 0 {
 				fields[fmt.Sprintf("focus_sessions[%d].effective_ms", i)] = "effective_ms must be >= 0"
@@ -400,6 +452,11 @@ func validateDetectAddiction(req detectAddictionRequest) apperror.FieldErrors {
 			if !isValidDate(day.Date) {
 				fields[fmt.Sprintf("app_usage_history[%d].date", i)] = "date must be in YYYY-MM-DD format"
 			}
+			if len(day.Apps) > 500 {
+				fields[fmt.Sprintf("app_usage_history[%d].apps", i)] = "apps must not exceed 500 items"
+			} else {
+				validateAppUsageItems(day.Apps, fmt.Sprintf("app_usage_history[%d].apps", i), maxDailyTimeMS, fields)
+			}
 		}
 	}
 	if len(req.DailyScreenTimeHistory) == 0 {
@@ -413,9 +470,13 @@ func validateDetectAddiction(req detectAddictionRequest) apperror.FieldErrors {
 			}
 			if day.TotalScreenTimeMS < 0 {
 				fields[fmt.Sprintf("daily_screen_time_history[%d].total_screen_time_ms", i)] = "total_screen_time_ms must be >= 0"
+			} else if day.TotalScreenTimeMS > maxDailyTimeMS {
+				fields[fmt.Sprintf("daily_screen_time_history[%d].total_screen_time_ms", i)] = fmt.Sprintf("total_screen_time_ms must not exceed %d", maxDailyTimeMS)
 			}
 			if day.TotalUnlocks < 0 {
 				fields[fmt.Sprintf("daily_screen_time_history[%d].total_unlocks", i)] = "total_unlocks must be >= 0"
+			} else if day.TotalUnlocks > maxUnlocks {
+				fields[fmt.Sprintf("daily_screen_time_history[%d].total_unlocks", i)] = fmt.Sprintf("total_unlocks must not exceed %d", maxUnlocks)
 			}
 		}
 	}

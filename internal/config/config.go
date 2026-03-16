@@ -84,6 +84,7 @@ type Config struct {
 	AIModel      string        `envconfig:"AI_MODEL"`
 	AIRateLimit  int           `envconfig:"AI_RATE_LIMIT" default:"10"`
 	AIRateWindow time.Duration `envconfig:"AI_RATE_WINDOW" default:"1h"`
+	AITimeout    time.Duration `envconfig:"AI_TIMEOUT" default:"60s"`
 
 	// Cleanup job
 	CleanupInterval    time.Duration `envconfig:"CLEANUP_INTERVAL" default:"1h"`
@@ -278,6 +279,9 @@ func (c *Config) validateAI() error {
 	}
 	if c.AIRateWindow <= 0 {
 		return fmt.Errorf("AI_RATE_WINDOW must be positive, got %s", c.AIRateWindow)
+	}
+	if c.AITimeout <= 0 {
+		return fmt.Errorf("AI_TIMEOUT must be positive, got %s", c.AITimeout)
 	}
 	return nil
 }

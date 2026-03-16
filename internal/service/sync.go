@@ -61,14 +61,16 @@ func (s *SyncService) Sync(ctx context.Context, in SyncInput) (SyncOutput, error
 	}
 
 	out := SyncOutput{}
+	var affectedStreakDays []string
 
 	if in.Tables.Modes != nil {
-		result, syncErr := s.repo.SyncModes(ctx, tx, in.UserID, *in.Tables.Modes)
+		result, cascadeDays, syncErr := s.repo.SyncModes(ctx, tx, in.UserID, *in.Tables.Modes)
 		if syncErr != nil {
 			return s.syncInternal("syncing modes", syncErr)
 		}
 		result = normalizeTableResult(result)
 		out.Tables.Modes = &result
+		affectedStreakDays = append(affectedStreakDays, cascadeDays...)
 	}
 	if in.Tables.ModeBlockedApps != nil {
 		result, syncErr := s.repo.SyncModeBlockedApps(ctx, tx, in.UserID, *in.Tables.ModeBlockedApps)
@@ -87,12 +89,13 @@ func (s *SyncService) Sync(ctx context.Context, in SyncInput) (SyncOutput, error
 		out.Tables.Schedules = &result
 	}
 	if in.Tables.RestrictionSessions != nil {
-		result, syncErr := s.repo.SyncRestrictionSessions(ctx, tx, in.UserID, *in.Tables.RestrictionSessions)
+		result, cascadeDays, syncErr := s.repo.SyncRestrictionSessions(ctx, tx, in.UserID, *in.Tables.RestrictionSessions)
 		if syncErr != nil {
 			return s.syncInternal("syncing restriction_sessions", syncErr)
 		}
 		result = normalizeTableResult(result)
 		out.Tables.RestrictionSessions = &result
+		affectedStreakDays = append(affectedStreakDays, cascadeDays...)
 	}
 	if in.Tables.RestrictionLifecycleEvents != nil {
 		result, syncErr := s.repo.SyncRestrictionLifecycleEvents(ctx, tx, in.UserID, *in.Tables.RestrictionLifecycleEvents)
@@ -119,30 +122,34 @@ func (s *SyncService) Sync(ctx context.Context, in SyncInput) (SyncOutput, error
 		out.Tables.QRLinkedCodes = &result
 	}
 
-	// Process streak rollups first (may trigger recomputation)
-	var hadStreakWrites bool
+	// Process streak rollups (may trigger recomputation)
 	if in.Tables.StreakSessionDailyRollups != nil {
+		for _, u := range in.Tables.StreakSessionDailyRollups.Upserts {
+			affectedStreakDays = append(affectedStreakDays, u.LocalDay)
+		}
+		for _, d := range in.Tables.StreakSessionDailyRollups.Deletions {
+			affectedStreakDays = append(affectedStreakDays, d.LocalDay)
+		}
 		result, syncErr := s.repo.SyncStreakSessionDailyRollups(ctx, tx, in.UserID, *in.Tables.StreakSessionDailyRollups)
 		if syncErr != nil {
 			return s.syncInternal("syncing streak_session_daily_rollups", syncErr)
 		}
 		result = normalizeTableResult(result)
 		out.Tables.StreakSessionDailyRollups = &result
-		if len(in.Tables.StreakSessionDailyRollups.Upserts) > 0 || len(in.Tables.StreakSessionDailyRollups.Deletions) > 0 {
-			hadStreakWrites = true
-		}
 	}
 
-	// Also check restriction_sessions for writes that may affect streaks
-	if in.Tables.RestrictionSessions != nil {
-		if len(in.Tables.RestrictionSessions.Upserts) > 0 || len(in.Tables.RestrictionSessions.Deletions) > 0 {
-			hadStreakWrites = true
+	// Recompute streaks for affected days
+	if len(affectedStreakDays) > 0 {
+		// Deduplicate days
+		seen := make(map[string]struct{}, len(affectedStreakDays))
+		unique := make([]string, 0, len(affectedStreakDays))
+		for _, day := range affectedStreakDays {
+			if _, ok := seen[day]; !ok {
+				seen[day] = struct{}{}
+				unique = append(unique, day)
+			}
 		}
-	}
-
-	// Recompute streaks if needed
-	if hadStreakWrites {
-		if err := s.repo.RecomputeStreakAggregates(ctx, tx, in.UserID); err != nil {
+		if err := s.repo.RecomputeStreakAggregates(ctx, tx, in.UserID, unique); err != nil {
 			return s.syncInternal("recomputing streak aggregates", err)
 		}
 	}

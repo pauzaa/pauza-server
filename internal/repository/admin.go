@@ -51,13 +51,12 @@ type AdminUserDetailRow struct {
 
 // PlatformStatsRow holds the columns returned by the platform stats query.
 type PlatformStatsRow struct {
-	TotalUsers                int
-	ActiveUsers30d            int
-	PremiumUsers              int
-	ActivePremiumEntitlements int
-	TotalFriendships          int
-	AvgStreakDays             float64
-	AvgDailyFocusTimeMS       float64
+	TotalUsers          int
+	ActiveUsers30d      int
+	PremiumUsers        int
+	TotalFriendships    int
+	AvgStreakDays       float64
+	AvgDailyFocusTimeMS float64
 }
 
 // OverrideRow holds the columns returned by an active entitlement override lookup.
@@ -182,24 +181,14 @@ func (r *PgxAdminRepository) ListUsers(ctx context.Context, db DBTX, params List
 		whereSQL = "WHERE " + strings.Join(whereClauses, " AND ")
 	}
 
-	// Count query.
-	countQuery := fmt.Sprintf(
-		`SELECT COUNT(*) FROM users u %s`,
-		whereSQL,
-	)
-	var total int
-	if err := db.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("counting admin user list: %w", err)
-	}
-
-	// Data query.
-	dataQuery := fmt.Sprintf(
+	query := fmt.Sprintf(
 		`SELECT u.id, u.email, u.name, u.username, u.profile_picture_url, u.created_at,
 		        CASE
 		          WHEN o.action = 'grant'  THEN true
 		          WHEN o.action = 'revoke' THEN false
 		          ELSE COALESCE(e.is_active, false)
-		        END AS is_premium
+		        END AS is_premium,
+		        COUNT(*) OVER() AS total_count
 		 FROM users u
 		 LEFT JOIN user_entitlements e
 		   ON e.user_id = u.id AND e.entitlement = 'premium'
@@ -211,20 +200,23 @@ func (r *PgxAdminRepository) ListUsers(ctx context.Context, db DBTX, params List
 		 LIMIT $%d OFFSET $%d`,
 		whereSQL, argIdx, argIdx+1,
 	)
-	dataArgs := append(args, params.Limit, params.Offset) //nolint:gocritic // append to copy is intentional
+	args = append(args, params.Limit, params.Offset)
 
-	rows, err := db.Query(ctx, dataQuery, dataArgs...)
+	rows, err := db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("listing admin users: %w", err)
 	}
 	defer rows.Close()
 
-	var users []AdminUserRow
+	var (
+		users []AdminUserRow
+		total int
+	)
 	for rows.Next() {
 		var u AdminUserRow
 		if err := rows.Scan(
 			&u.ID, &u.Email, &u.Name, &u.Username, &u.ProfilePictureURL,
-			&u.CreatedAt, &u.IsPremium,
+			&u.CreatedAt, &u.IsPremium, &total,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scanning admin user row: %w", err)
 		}
@@ -304,20 +296,6 @@ func (r *PgxAdminRepository) GetPlatformStats(ctx context.Context, db DBTX) (Pla
 		          END = true
 		   ) AS premium_users,
 		   (SELECT COUNT(*)
-		    FROM users u2
-		    LEFT JOIN user_entitlements ue2
-		      ON ue2.user_id = u2.id AND ue2.entitlement = 'premium'
-		    LEFT JOIN admin_entitlement_overrides o2
-		      ON o2.user_id = u2.id AND o2.entitlement = 'premium'
-		      AND (o2.expires_at IS NULL OR o2.expires_at > now())
-		    WHERE (ue2.id IS NOT NULL OR o2.id IS NOT NULL)
-		      AND CASE
-		            WHEN o2.action = 'grant'  THEN true
-		            WHEN o2.action = 'revoke' THEN false
-		            ELSE COALESCE(ue2.is_active, false)
-		          END = true
-		   ) AS active_premium_entitlements,
-		   (SELECT COUNT(*)
 		    FROM friendships f
 		    WHERE f.status = 'accepted'
 		   ) AS total_friendships,
@@ -341,8 +319,7 @@ func (r *PgxAdminRepository) GetPlatformStats(ctx context.Context, db DBTX) (Pla
 		   ), 0) AS avg_daily_focus_time_ms`,
 	).Scan(
 		&s.TotalUsers, &s.ActiveUsers30d, &s.PremiumUsers,
-		&s.ActivePremiumEntitlements, &s.TotalFriendships,
-		&s.AvgStreakDays, &s.AvgDailyFocusTimeMS,
+		&s.TotalFriendships, &s.AvgStreakDays, &s.AvgDailyFocusTimeMS,
 	)
 	if err != nil {
 		return PlatformStatsRow{}, fmt.Errorf("getting platform stats: %w", err)
@@ -464,25 +441,11 @@ func (r *PgxAdminRepository) ListEntitlements(ctx context.Context, db DBTX, para
 		whereSQL = "WHERE " + strings.Join(whereClauses, " AND ")
 	}
 
-	// Count query.
-	countQuery := fmt.Sprintf(
-		`%s
-		 SELECT COUNT(*)
-		 FROM merged m
-		 JOIN users u ON u.id = m.user_id
-		 %s`,
-		baseCTE, whereSQL,
-	)
-	var total int
-	if err := db.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("counting admin entitlement list: %w", err)
-	}
-
-	// Data query.
-	dataQuery := fmt.Sprintf(
+	query := fmt.Sprintf(
 		`%s
 		 SELECT m.user_id, u.email, u.username, m.entitlement, m.is_active,
-		        m.current_period_end, m.updated_at
+		        m.current_period_end, m.updated_at,
+		        COUNT(*) OVER() AS total_count
 		 FROM merged m
 		 JOIN users u ON u.id = m.user_id
 		 %s
@@ -490,20 +453,23 @@ func (r *PgxAdminRepository) ListEntitlements(ctx context.Context, db DBTX, para
 		 LIMIT $%d OFFSET $%d`,
 		baseCTE, whereSQL, argIdx, argIdx+1,
 	)
-	dataArgs := append(args, params.Limit, params.Offset) //nolint:gocritic // append to copy is intentional
+	args = append(args, params.Limit, params.Offset)
 
-	rows, err := db.Query(ctx, dataQuery, dataArgs...)
+	rows, err := db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("listing admin entitlements: %w", err)
 	}
 	defer rows.Close()
 
-	var entitlements []AdminEntitlementListRow
+	var (
+		entitlements []AdminEntitlementListRow
+		total        int
+	)
 	for rows.Next() {
 		var e AdminEntitlementListRow
 		if err := rows.Scan(
 			&e.UserID, &e.Email, &e.Username, &e.Entitlement,
-			&e.IsActive, &e.CurrentPeriodEnd, &e.UpdatedAt,
+			&e.IsActive, &e.CurrentPeriodEnd, &e.UpdatedAt, &total,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scanning admin entitlement row: %w", err)
 		}

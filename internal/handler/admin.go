@@ -114,13 +114,12 @@ type adminUserDetailResponse struct {
 }
 
 type adminStatsResponse struct {
-	TotalUsers                int     `json:"total_users"`
-	ActiveUsers30d            int     `json:"active_users_30d"`
-	PremiumUsers              int     `json:"users_with_premium_entitlement"`
-	ActivePremiumEntitlements int     `json:"active_premium_entitlements"`
-	TotalFriendships          int     `json:"total_friendships"`
-	AvgStreakDays             float64 `json:"avg_streak_days"`
-	AvgDailyFocusTimeMS       float64 `json:"avg_daily_focus_time_ms"`
+	TotalUsers          int     `json:"total_users"`
+	ActiveUsers30d      int     `json:"active_users_30d"`
+	PremiumUsers        int     `json:"users_with_premium_entitlement"`
+	TotalFriendships    int     `json:"total_friendships"`
+	AvgStreakDays       float64 `json:"avg_streak_days"`
+	AvgDailyFocusTimeMS float64 `json:"avg_daily_focus_time_ms"`
 }
 
 type manageEntitlementRequest struct {
@@ -268,13 +267,12 @@ func (h *AdminHandler) GetPlatformStats(w http.ResponseWriter, r *http.Request) 
 	}
 
 	resp := adminStatsResponse{
-		TotalUsers:                out.TotalUsers,
-		ActiveUsers30d:            out.ActiveUsers30d,
-		PremiumUsers:              out.PremiumUsers,
-		ActivePremiumEntitlements: out.ActivePremiumEntitlements,
-		TotalFriendships:          out.TotalFriendships,
-		AvgStreakDays:             out.AvgStreakDays,
-		AvgDailyFocusTimeMS:       out.AvgDailyFocusTimeMS,
+		TotalUsers:          out.TotalUsers,
+		ActiveUsers30d:      out.ActiveUsers30d,
+		PremiumUsers:        out.PremiumUsers,
+		TotalFriendships:    out.TotalFriendships,
+		AvgStreakDays:       out.AvgStreakDays,
+		AvgDailyFocusTimeMS: out.AvgDailyFocusTimeMS,
 	}
 
 	writeJSON(w, h.logger, http.StatusOK, resp, "admin-stats")

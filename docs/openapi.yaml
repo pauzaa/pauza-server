@@ -632,6 +632,7 @@ components:
             $ref: "#/components/schemas/ModeInput"
         deletions:
           type: array
+          maxItems: 5000
           items:
             type: string
             minLength: 1
@@ -653,6 +654,7 @@ components:
             $ref: "#/components/schemas/ModeBlockedAppInput"
         deletions:
           type: array
+          maxItems: 5000
           items:
             $ref: "#/components/schemas/ModeBlockedAppDeletion"
 
@@ -673,6 +675,7 @@ components:
             $ref: "#/components/schemas/ScheduleInput"
         deletions:
           type: array
+          maxItems: 5000
           items:
             type: string
             minLength: 1
@@ -694,6 +697,7 @@ components:
             $ref: "#/components/schemas/RestrictionSessionInput"
         deletions:
           type: array
+          maxItems: 5000
           items:
             type: string
             minLength: 1
@@ -732,6 +736,7 @@ components:
             $ref: "#/components/schemas/NFCLinkedChipInput"
         deletions:
           type: array
+          maxItems: 5000
           items:
             type: string
             minLength: 1
@@ -753,6 +758,7 @@ components:
             $ref: "#/components/schemas/QRLinkedCodeInput"
         deletions:
           type: array
+          maxItems: 5000
           items:
             type: string
             minLength: 1
@@ -774,6 +780,7 @@ components:
             $ref: "#/components/schemas/StreakSessionDailyRollupInput"
         deletions:
           type: array
+          maxItems: 5000
           items:
             $ref: "#/components/schemas/StreakSessionDailyRollupDeletion"
 
@@ -1690,14 +1697,22 @@ components:
       properties:
         app_identifier:
           type: string
+          minLength: 1
+          maxLength: 256
           description: Platform bundle/package identifier.
         app_name:
           type: string
+          minLength: 1
+          maxLength: 256
         total_time_ms:
           type: integer
           format: int64
+          minimum: 0
+          description: Maximum 86400000 (24h) for daily periods, 604800000 (7d) for weekly.
         launch_count:
           type: integer
+          minimum: 0
+          maximum: 100000
         category:
           type: string
           description: Optional app category (e.g. social, entertainment).
@@ -1718,8 +1733,12 @@ components:
         total_screen_time_ms:
           type: integer
           format: int64
+          minimum: 0
+          description: Maximum 86400000 (24h) for daily, 604800000 (7d) for weekly.
         total_unlocks:
           type: integer
+          minimum: 0
+          maximum: 100000
 
     ScheduleSlot:
       type: object
@@ -1753,6 +1772,7 @@ components:
           maximum: 16
         timezone:
           type: string
+          description: Must be a valid IANA timezone (e.g. America/New_York, Asia/Almaty).
 
     FocusSessionSummary:
       type: object
@@ -1760,14 +1780,18 @@ components:
         started_at:
           type: integer
           format: int64
+          description: Must be > 0.
         ended_at:
           type: integer
           format: int64
+          description: Must be > 0 and greater than started_at.
         pause_count:
           type: integer
+          minimum: 0
         effective_ms:
           type: integer
           format: int64
+          minimum: 0
 
     DailyReportRequest:
       type: object
@@ -1789,10 +1813,15 @@ components:
         total_screen_time_ms:
           type: integer
           format: int64
+          minimum: 0
+          maximum: 86400000
         total_unlocks:
           type: integer
+          minimum: 0
+          maximum: 100000
         streak_days:
           type: integer
+          minimum: 0
 
     DayAppUsage:
       type: object
@@ -1805,6 +1834,7 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AppUsageItem"
+          maxItems: 500
 
     DayScreenTime:
       type: object
@@ -1816,8 +1846,12 @@ components:
         total_screen_time_ms:
           type: integer
           format: int64
+          minimum: 0
+          maximum: 86400000
         total_unlocks:
           type: integer
+          minimum: 0
+          maximum: 100000
 
     DayFirstUnlock:
       type: object

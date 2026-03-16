@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"time"
 
 	"github.com/IsorilovA/pauza-server/internal/ai"
 	"github.com/IsorilovA/pauza-server/internal/repository"
@@ -23,18 +24,23 @@ type AIService struct {
 	pool        repository.Pool
 	entitlement aiEntitlementChecker
 	logger      *slog.Logger
+	timeout     time.Duration
 }
 
 // NewAIService creates a new AIService.
-func NewAIService(provider ai.Provider, pool repository.Pool, entitlement aiEntitlementChecker, logger *slog.Logger) *AIService {
+func NewAIService(provider ai.Provider, pool repository.Pool, entitlement aiEntitlementChecker, logger *slog.Logger, timeout time.Duration) *AIService {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if timeout <= 0 {
+		timeout = 60 * time.Second
 	}
 	return &AIService{
 		provider:    provider,
 		pool:        pool,
 		entitlement: entitlement,
 		logger:      logger,
+		timeout:     timeout,
 	}
 }
 
@@ -169,6 +175,9 @@ func (s *AIService) complete(ctx context.Context, systemPrompt string, userData 
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: string(userJSON)},
 	}
+
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
 
 	text, err := s.provider.Complete(ctx, messages)
 	if err != nil {

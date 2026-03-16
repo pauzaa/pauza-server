@@ -88,7 +88,7 @@ func buildDependencies(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Po
 	socialService := service.NewSocialService(pool, repository.NewSocialRepository(), pushSender, logger)
 	socialHandler := handler.NewSocialHandler(socialService, logger)
 
-	adminService := service.NewAdminService(pool, adminRepo, entitlementRepo, cfg.JWTSecret, cfg.AdminJWTAccessTokenTTL, logger)
+	adminService := service.NewAdminService(pool, adminRepo, cfg.JWTSecret, cfg.AdminJWTAccessTokenTTL, logger)
 	adminHandler := handler.NewAdminHandler(adminService, logger)
 
 	rcClient := revenuecat.NewClient(cfg.RevenueCatAPIKey)
@@ -98,7 +98,7 @@ func buildDependencies(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Po
 	var aiHandler *handler.AIHandler
 	if aiProvider != nil {
 		socialRepo := repository.NewSocialRepository()
-		aiService := service.NewAIService(aiProvider, pool, socialRepo, logger)
+		aiService := service.NewAIService(aiProvider, pool, socialRepo, logger, cfg.AITimeout)
 		aiHandler = handler.NewAIHandler(aiService, logger)
 	}
 

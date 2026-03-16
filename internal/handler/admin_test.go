@@ -412,7 +412,7 @@ func TestAdminGetPlatformStats_HappyPath(t *testing.T) {
 		getPlatformStatsFn: func(_ context.Context) (service.PlatformStatsOutput, error) {
 			return service.PlatformStatsOutput{
 				TotalUsers: 100, ActiveUsers30d: 42,
-				PremiumUsers: 10, ActivePremiumEntitlements: 10,
+				PremiumUsers: 10,
 				TotalFriendships: 25, AvgStreakDays: 3.5,
 				AvgDailyFocusTimeMS: 1800000,
 			}, nil
@@ -435,9 +435,6 @@ func TestAdminGetPlatformStats_HappyPath(t *testing.T) {
 	}
 	if body.PremiumUsers != 10 {
 		t.Errorf("users_with_premium_entitlement = %d, want 10", body.PremiumUsers)
-	}
-	if body.ActivePremiumEntitlements != 10 {
-		t.Errorf("active_premium_entitlements = %d, want 10", body.ActivePremiumEntitlements)
 	}
 	if body.AvgStreakDays != 3.5 {
 		t.Errorf("avg_streak_days = %f, want 3.5", body.AvgStreakDays)

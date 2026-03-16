@@ -101,14 +101,10 @@ func (f *fakeAdminRepo) UserExists(ctx context.Context, db repository.DBTX, user
 const testJWTSecret = "test-secret-at-least-32-bytes-long!"
 const testAdminTokenTTL = 1 * time.Hour
 
-func newTestAdminService(
-	adminRepo *fakeAdminRepo,
-	entRepo *fakeEntitlementRepo,
-) *AdminService {
+func newTestAdminService(adminRepo *fakeAdminRepo) *AdminService {
 	return NewAdminService(
 		&fakePool{},
 		adminRepo,
-		entRepo,
 		testJWTSecret,
 		testAdminTokenTTL,
 		slog.New(slog.NewTextHandler(devNull{}, &slog.HandlerOptions{Level: slog.LevelError})),
@@ -145,7 +141,7 @@ func TestLogin_ValidCredentials_ReturnsToken(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	out, err := svc.Login(context.Background(), LoginInput{
 		Username: "admin",
@@ -185,7 +181,7 @@ func TestLogin_WrongPassword_ReturnsUnauthorized(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	_, err := svc.Login(context.Background(), LoginInput{
 		Username: "admin",
@@ -205,7 +201,7 @@ func TestLogin_UnknownUsername_ReturnsUnauthorized(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	_, err := svc.Login(context.Background(), LoginInput{
 		Username: "nonexistent",
@@ -225,7 +221,7 @@ func TestLogin_DBError_ReturnsInternal(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	_, err := svc.Login(context.Background(), LoginInput{
 		Username: "admin",
@@ -259,7 +255,7 @@ func TestListUsers_HappyPath(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	out, err := svc.ListUsers(context.Background(), ListUsersInput{})
 	if err != nil {
@@ -303,7 +299,7 @@ func TestListUsers_WithSearchAndPagination(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	out, err := svc.ListUsers(context.Background(), ListUsersInput{
 		Page:   2,
@@ -327,7 +323,7 @@ func TestListUsers_DBError_ReturnsInternal(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	_, err := svc.ListUsers(context.Background(), ListUsersInput{})
 	if !errors.Is(err, ErrInternal) {
@@ -364,7 +360,7 @@ func TestGetUserDetail_Found(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	out, err := svc.GetUserDetail(context.Background(), GetUserDetailInput{UserID: "user-001"})
 	if err != nil {
@@ -393,7 +389,7 @@ func TestGetUserDetail_NotFound(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	_, err := svc.GetUserDetail(context.Background(), GetUserDetailInput{UserID: "nonexistent"})
 	if !errors.Is(err, ErrNotFound) {
@@ -410,7 +406,7 @@ func TestGetUserDetail_DBError_ReturnsInternal(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	_, err := svc.GetUserDetail(context.Background(), GetUserDetailInput{UserID: "user-001"})
 	if !errors.Is(err, ErrInternal) {
@@ -428,18 +424,17 @@ func TestGetPlatformStats_HappyPath(t *testing.T) {
 	adminRepo := &fakeAdminRepo{
 		getPlatformStatsFn: func(context.Context, repository.DBTX) (repository.PlatformStatsRow, error) {
 			return repository.PlatformStatsRow{
-				TotalUsers:                100,
-				ActiveUsers30d:            42,
-				PremiumUsers:              10,
-				ActivePremiumEntitlements: 10,
-				TotalFriendships:          25,
-				AvgStreakDays:             3.5,
-				AvgDailyFocusTimeMS:       1800000,
+				TotalUsers:          100,
+				ActiveUsers30d:      42,
+				PremiumUsers:        10,
+				TotalFriendships:    25,
+				AvgStreakDays:       3.5,
+				AvgDailyFocusTimeMS: 1800000,
 			}, nil
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	out, err := svc.GetPlatformStats(context.Background())
 	if err != nil {
@@ -462,7 +457,7 @@ func TestGetPlatformStats_DBError_ReturnsInternal(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	_, err := svc.GetPlatformStats(context.Background())
 	if !errors.Is(err, ErrInternal) {
@@ -492,7 +487,7 @@ func TestManageEntitlement_Grant_HappyPath(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	out, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
 		UserID:      "user-001",
@@ -533,7 +528,7 @@ func TestManageEntitlement_Revoke_SetsOverrideAction(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	_, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
 		UserID:      "user-001",
@@ -565,7 +560,7 @@ func TestManageEntitlement_TemporaryGrant_SetsExpiry(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	_, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
 		UserID:      "user-001",
@@ -604,7 +599,7 @@ func TestManageEntitlement_PermanentGrant_NilExpiry(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	_, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
 		UserID:      "user-001",
@@ -621,38 +616,6 @@ func TestManageEntitlement_PermanentGrant_NilExpiry(t *testing.T) {
 	}
 }
 
-func TestManageEntitlement_InvalidAction_ReturnsError(t *testing.T) {
-	t.Parallel()
-
-	svc := newTestAdminService(&fakeAdminRepo{}, &fakeEntitlementRepo{})
-
-	_, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
-		UserID:      "user-001",
-		Entitlement: repository.EntitlementPremium,
-		Action:      repository.AdminOverrideAction("suspend"),
-	})
-	var apiErr *APIError
-	if !errors.As(err, &apiErr) || apiErr.Code != "VALIDATION_ERROR" {
-		t.Fatalf("ManageEntitlement() error = %v, want validation API error", err)
-	}
-}
-
-func TestManageEntitlement_InvalidEntitlement_ReturnsError(t *testing.T) {
-	t.Parallel()
-
-	svc := newTestAdminService(&fakeAdminRepo{}, &fakeEntitlementRepo{})
-
-	_, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
-		UserID:      "user-001",
-		Entitlement: repository.Entitlement("gold"),
-		Action:      repository.AdminOverrideGrant,
-	})
-	var apiErr *APIError
-	if !errors.As(err, &apiErr) || apiErr.Code != "VALIDATION_ERROR" {
-		t.Fatalf("ManageEntitlement() error = %v, want validation API error", err)
-	}
-}
-
 func TestManageEntitlement_UserNotFound_ReturnsNotFound(t *testing.T) {
 	t.Parallel()
 
@@ -662,7 +625,7 @@ func TestManageEntitlement_UserNotFound_ReturnsNotFound(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	_, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
 		UserID:      "nonexistent",
@@ -683,7 +646,7 @@ func TestManageEntitlement_UserExistsDBError_ReturnsInternal(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	_, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
 		UserID:      "user-001",
@@ -707,7 +670,7 @@ func TestManageEntitlement_OverrideUpsertError_ReturnsInternal(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	_, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
 		UserID:      "user-001",
@@ -716,45 +679,6 @@ func TestManageEntitlement_OverrideUpsertError_ReturnsInternal(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInternal) {
 		t.Fatalf("ManageEntitlement() error = %v, want ErrInternal", err)
-	}
-}
-
-func TestManageEntitlement_DoesNotMutateUserEntitlements(t *testing.T) {
-	t.Parallel()
-
-	// Verify that ManageEntitlement does NOT call GetEntitlement or
-	// UpsertEntitlement on the entitlement repository. The admin override
-	// table is the sole write target so that temporary overrides expire
-	// cleanly without leaving behind mutated snapshot state.
-	adminRepo := &fakeAdminRepo{
-		userExistsFn: func(context.Context, repository.DBTX, string) (bool, error) {
-			return true, nil
-		},
-		upsertEntitlementOverrideFn: func(context.Context, repository.DBTX, repository.UpsertOverrideParams) error {
-			return nil
-		},
-	}
-
-	entRepo := &fakeEntitlementRepo{
-		getEntitlementFn: func(context.Context, repository.DBTX, string, string) (repository.EntitlementDetailRow, error) {
-			t.Error("GetEntitlement should not be called")
-			return repository.EntitlementDetailRow{}, repository.ErrNotFound
-		},
-		upsertEntitlementFn: func(context.Context, repository.DBTX, repository.UpsertEntitlementParams) error {
-			t.Error("UpsertEntitlement should not be called")
-			return nil
-		},
-	}
-
-	svc := newTestAdminService(adminRepo, entRepo)
-
-	_, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
-		UserID:      "user-001",
-		Entitlement: "premium",
-		Action:      "grant",
-	})
-	if err != nil {
-		t.Fatalf("ManageEntitlement() error = %v, want nil", err)
 	}
 }
 
@@ -775,7 +699,7 @@ func TestManageEntitlement_MessageFormat(t *testing.T) {
 				},
 			}
 
-			svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+			svc := newTestAdminService(adminRepo)
 
 			out, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
 				UserID:      "user-001",
@@ -813,7 +737,7 @@ func TestListEntitlements_HappyPath(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	out, err := svc.ListEntitlements(context.Background(), ListEntitlementsInput{})
 	if err != nil {
@@ -839,7 +763,7 @@ func TestListEntitlements_DBError_ReturnsInternal(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminService(adminRepo, &fakeEntitlementRepo{})
+	svc := newTestAdminService(adminRepo)
 
 	_, err := svc.ListEntitlements(context.Background(), ListEntitlementsInput{})
 	if !errors.Is(err, ErrInternal) {

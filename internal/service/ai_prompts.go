@@ -22,6 +22,8 @@ Guidelines:
 - Be supportive and non-judgmental in tone.
 - Use hours and minutes for time (e.g. "2h 15m"), not milliseconds.
 - Compare to general healthy usage benchmarks when relevant.
+- If the data appears incomplete or contains only a single app, still provide a useful analysis.
+- Respond in the same language as the app names in the data.
 - Keep the total response concise (under 400 words).`
 
 const focusSchedulePrompt = `You are a focus schedule advisor for Pauza, a digital wellbeing app that helps people build healthy phone habits through focus sessions.
@@ -50,6 +52,8 @@ Guidelines:
 - Account for existing schedules and don't create conflicts.
 - Prefer focus blocks during high-usage periods identified in the data.
 - Use 12-hour time format with AM/PM.
+- If the data appears incomplete or contains only a single app, still provide a useful analysis.
+- Respond in the same language as the app names in the data.
 - Keep the total response concise (under 400 words).`
 
 const dailyReportPrompt = `You are a daily screen time reporter for Pauza, a digital wellbeing app.
@@ -79,6 +83,8 @@ Guidelines:
 - Start with something positive.
 - Be encouraging even on bad days — frame improvements as opportunities.
 - Use hours and minutes for time, not milliseconds.
+- If the data appears incomplete or contains only a single app, still provide a useful analysis.
+- Respond in the same language as the app names in the data.
 - Keep the total response concise (under 350 words).`
 
 const addictionCheckPrompt = `You are a digital wellness advisor for Pauza, a screen time management app. You specialize in identifying potentially addictive phone usage patterns.
@@ -110,5 +116,8 @@ Guidelines:
 - Base your assessment on established digital wellness research.
 - Distinguish between heavy use and genuinely problematic patterns.
 - Consider that some high usage may be work-related or otherwise intentional.
+- Consider the total number of days of history provided — what counts as "escalating" over 7 days is different from 30 days.
 - Use hours and minutes for time, not milliseconds.
+- If the data appears incomplete or contains only a single app, still provide a useful analysis.
+- Respond in the same language as the app names in the data.
 - Keep the total response concise (under 500 words).`

@@ -131,27 +131,31 @@ func (r Request) ValidateAndConvert() (Tables, apperror.FieldErrors) {
 
 	if r.Tables.Modes != nil {
 		validateTableCursor(fields, "tables.modes", r.Tables.Modes.Cursor)
-		validateBatchSize(fields, "tables.modes", len(r.Tables.Modes.Upserts))
+		validateBatchSize(fields, "tables.modes.upserts", len(r.Tables.Modes.Upserts))
+		validateBatchSize(fields, "tables.modes.deletions", len(r.Tables.Modes.Deletions))
 		out.Modes = convertModes(fields, *r.Tables.Modes)
 	}
 	if r.Tables.ModeBlockedApps != nil {
 		validateTableCursor(fields, "tables.mode_blocked_apps", r.Tables.ModeBlockedApps.Cursor)
-		validateBatchSize(fields, "tables.mode_blocked_apps", len(r.Tables.ModeBlockedApps.Upserts))
+		validateBatchSize(fields, "tables.mode_blocked_apps.upserts", len(r.Tables.ModeBlockedApps.Upserts))
+		validateBatchSize(fields, "tables.mode_blocked_apps.deletions", len(r.Tables.ModeBlockedApps.Deletions))
 		out.ModeBlockedApps = convertModeBlockedApps(fields, *r.Tables.ModeBlockedApps)
 	}
 	if r.Tables.Schedules != nil {
 		validateTableCursor(fields, "tables.schedules", r.Tables.Schedules.Cursor)
-		validateBatchSize(fields, "tables.schedules", len(r.Tables.Schedules.Upserts))
+		validateBatchSize(fields, "tables.schedules.upserts", len(r.Tables.Schedules.Upserts))
+		validateBatchSize(fields, "tables.schedules.deletions", len(r.Tables.Schedules.Deletions))
 		out.Schedules = convertSchedules(fields, *r.Tables.Schedules)
 	}
 	if r.Tables.RestrictionSessions != nil {
 		validateTableCursor(fields, "tables.restriction_sessions", r.Tables.RestrictionSessions.Cursor)
-		validateBatchSize(fields, "tables.restriction_sessions", len(r.Tables.RestrictionSessions.Upserts))
+		validateBatchSize(fields, "tables.restriction_sessions.upserts", len(r.Tables.RestrictionSessions.Upserts))
+		validateBatchSize(fields, "tables.restriction_sessions.deletions", len(r.Tables.RestrictionSessions.Deletions))
 		out.RestrictionSessions = convertRestrictionSessions(fields, *r.Tables.RestrictionSessions)
 	}
 	if r.Tables.RestrictionLifecycleEvents != nil {
 		validateTableCursor(fields, "tables.restriction_lifecycle_events", r.Tables.RestrictionLifecycleEvents.Cursor)
-		validateBatchSize(fields, "tables.restriction_lifecycle_events", len(r.Tables.RestrictionLifecycleEvents.Upserts))
+		validateBatchSize(fields, "tables.restriction_lifecycle_events.upserts", len(r.Tables.RestrictionLifecycleEvents.Upserts))
 		if len(r.Tables.RestrictionLifecycleEvents.Deletions) > 0 {
 			fields["tables.restriction_lifecycle_events.deletions"] = "deletions not supported for append-only table"
 		}
@@ -159,17 +163,20 @@ func (r Request) ValidateAndConvert() (Tables, apperror.FieldErrors) {
 	}
 	if r.Tables.NFCLinkedChips != nil {
 		validateTableCursor(fields, "tables.nfc_linked_chips", r.Tables.NFCLinkedChips.Cursor)
-		validateBatchSize(fields, "tables.nfc_linked_chips", len(r.Tables.NFCLinkedChips.Upserts))
+		validateBatchSize(fields, "tables.nfc_linked_chips.upserts", len(r.Tables.NFCLinkedChips.Upserts))
+		validateBatchSize(fields, "tables.nfc_linked_chips.deletions", len(r.Tables.NFCLinkedChips.Deletions))
 		out.NFCLinkedChips = convertNFCLinkedChips(fields, *r.Tables.NFCLinkedChips)
 	}
 	if r.Tables.QRLinkedCodes != nil {
 		validateTableCursor(fields, "tables.qr_linked_codes", r.Tables.QRLinkedCodes.Cursor)
-		validateBatchSize(fields, "tables.qr_linked_codes", len(r.Tables.QRLinkedCodes.Upserts))
+		validateBatchSize(fields, "tables.qr_linked_codes.upserts", len(r.Tables.QRLinkedCodes.Upserts))
+		validateBatchSize(fields, "tables.qr_linked_codes.deletions", len(r.Tables.QRLinkedCodes.Deletions))
 		out.QRLinkedCodes = convertQRLinkedCodes(fields, *r.Tables.QRLinkedCodes)
 	}
 	if r.Tables.StreakSessionDailyRollups != nil {
 		validateTableCursor(fields, "tables.streak_session_daily_rollups", r.Tables.StreakSessionDailyRollups.Cursor)
-		validateBatchSize(fields, "tables.streak_session_daily_rollups", len(r.Tables.StreakSessionDailyRollups.Upserts))
+		validateBatchSize(fields, "tables.streak_session_daily_rollups.upserts", len(r.Tables.StreakSessionDailyRollups.Upserts))
+		validateBatchSize(fields, "tables.streak_session_daily_rollups.deletions", len(r.Tables.StreakSessionDailyRollups.Deletions))
 		out.StreakSessionDailyRollups = convertStreakSessionDailyRollups(fields, *r.Tables.StreakSessionDailyRollups)
 	}
 	if r.Tables.StreakDailyAggregates != nil {
@@ -197,9 +204,9 @@ func validateTableCursor(fields apperror.FieldErrors, tablePath string, cursor *
 	}
 }
 
-func validateBatchSize(fields apperror.FieldErrors, tablePath string, count int) {
+func validateBatchSize(fields apperror.FieldErrors, fieldPath string, count int) {
 	if count > maxUpsertBatch {
-		fields[tablePath+".upserts"] = "upserts exceeds maximum batch size of " + itoa(maxUpsertBatch)
+		fields[fieldPath] = "exceeds maximum batch size of " + itoa(maxUpsertBatch)
 	}
 }
 

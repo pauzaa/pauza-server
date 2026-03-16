@@ -6,7 +6,6 @@ import (
 
 	"github.com/IsorilovA/pauza-server/internal/apperror"
 	"github.com/IsorilovA/pauza-server/internal/domain"
-	"github.com/IsorilovA/pauza-server/internal/repository"
 )
 
 var ErrConflict = errors.New("conflict")
@@ -83,18 +82,6 @@ func RateLimitedError(message string, retryAfter time.Duration) error {
 		RetryAfter: retryAfter,
 		Cause:      ErrRateLimited,
 	}
-}
-
-func invalidEntitlementError(entitlement repository.Entitlement) error {
-	return ValidationError("Invalid request body", apperror.FieldErrors{
-		"entitlement": "entitlement must be " + string(repository.EntitlementPremium),
-	})
-}
-
-func invalidAdminActionError() error {
-	return ValidationError("Invalid request body", apperror.FieldErrors{
-		"action": "action must be grant or revoke",
-	})
 }
 
 type StartAuthInput struct {

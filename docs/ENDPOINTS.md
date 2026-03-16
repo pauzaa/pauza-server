@@ -1551,7 +1551,7 @@ Each table key is **optional**. When present, it must contain:
 |---|---|---|---|
 | `cursor` | int64 | yes | Monotonic sync cursor (`0` for first sync); use `next_cursor` from the previous response |
 | `upserts` | array | no | Records to create/update; max **5000** items per table per request |
-| `deletions` | array | no | Keys of records to delete; each key is validated (see per-table rules below) |
+| `deletions` | array | no | Keys of records to delete; max **5000** items per table per request; each key is validated (see per-table rules below) |
 
 #### Table: `modes`
 
@@ -1716,7 +1716,7 @@ schemas match the upsert/deletion types described above.
 
 | Code | When |
 |---|---|
-| `VALIDATION_ERROR` (422) | Missing `cursor`, invalid field values, blank deletion IDs, `upserts` exceeding 5000 items, duplicate keys within a batch, same key in both upserts and deletions, or unknown JSON fields anywhere in the payload |
+| `VALIDATION_ERROR` (422) | Missing `cursor`, invalid field values, blank deletion IDs, `upserts` or `deletions` exceeding 5000 items, duplicate keys within a batch, same key in both upserts and deletions, or unknown JSON fields anywhere in the payload |
 | `UNAUTHORIZED` (401) | Missing or invalid JWT, or user not found |
 | `RATE_LIMITED` (429) | Too many requests |
 | `INTERNAL_ERROR` (500) | Transient server error |
@@ -1767,14 +1767,14 @@ Analyze phone usage patterns for a daily or weekly period.
 | Field | Type | Required | Validation |
 |---|---|---|---|
 | `period` | string | yes | `daily` or `weekly` |
-| `app_usage` | array | yes | At least one entry |
-| `app_usage[].app_identifier` | string | yes | — |
-| `app_usage[].app_name` | string | yes | — |
-| `app_usage[].total_time_ms` | int64 | yes | — |
-| `app_usage[].launch_count` | int | yes | — |
+| `app_usage` | array | yes | 1–500 items |
+| `app_usage[].app_identifier` | string | yes | Non-empty, max 256 chars |
+| `app_usage[].app_name` | string | yes | Non-empty, max 256 chars |
+| `app_usage[].total_time_ms` | int64 | yes | ≥ 0; max 86400000 (daily) / 604800000 (weekly) |
+| `app_usage[].launch_count` | int | yes | ≥ 0, max 100000 |
 | `app_usage[].category` | string | no | e.g. `social`, `entertainment` |
-| `total_screen_time_ms` | int64 | no | — |
-| `total_unlocks` | int | no | — |
+| `total_screen_time_ms` | int64 | no | ≥ 0; max 86400000 (daily) / 604800000 (weekly) |
+| `total_unlocks` | int | no | ≥ 0, max 100000 |
 
 ### `POST /api/v1/ai/focus-schedule`
 
@@ -1791,13 +1791,13 @@ Suggest optimal focus schedules based on app usage and existing schedules.
 
 | Field | Type | Required | Validation |
 |---|---|---|---|
-| `app_usage` | array | yes | At least one entry (same shape as usage-analysis) |
+| `app_usage` | array | yes | 1–500 items (same field rules as usage-analysis) |
 | `current_schedules` | array | no | Existing schedule slots |
-| `current_schedules[].days` | int[] | — | Day-of-week numbers |
+| `current_schedules[].days` | int[] | — | Day-of-week numbers (0-6) |
 | `current_schedules[].start_minute` | int | — | 0-1439 |
-| `current_schedules[].end_minute` | int | — | 0-1439 |
+| `current_schedules[].end_minute` | int | — | 0-1439, must be > start_minute |
 | `preferred_focus_hours` | int | yes | 1-16 |
-| `timezone` | string | yes | IANA timezone (e.g. `Asia/Almaty`) |
+| `timezone` | string | yes | Valid IANA timezone (e.g. `Asia/Almaty`); validated via `time.LoadLocation` |
 
 ### `POST /api/v1/ai/daily-report`
 
@@ -1815,15 +1815,15 @@ Generate a daily screen time report with highlights, wins, and improvement areas
 | Field | Type | Required | Validation |
 |---|---|---|---|
 | `date` | string | yes | `YYYY-MM-DD` |
-| `app_usage` | array | yes | At least one entry |
-| `focus_sessions` | array | no | Focus session summaries |
-| `focus_sessions[].started_at` | int64 | — | Unix ms |
-| `focus_sessions[].ended_at` | int64 | — | Unix ms |
-| `focus_sessions[].pause_count` | int | — | — |
-| `focus_sessions[].effective_ms` | int64 | — | — |
-| `total_screen_time_ms` | int64 | no | — |
-| `total_unlocks` | int | no | — |
-| `streak_days` | int | no | — |
+| `app_usage` | array | yes | 1–500 items (same field rules as usage-analysis, daily caps) |
+| `focus_sessions` | array | no | Max 100 items |
+| `focus_sessions[].started_at` | int64 | — | Must be > 0 |
+| `focus_sessions[].ended_at` | int64 | — | Must be > 0 and > started_at |
+| `focus_sessions[].pause_count` | int | — | ≥ 0 |
+| `focus_sessions[].effective_ms` | int64 | — | ≥ 0 |
+| `total_screen_time_ms` | int64 | no | ≥ 0, max 86400000 |
+| `total_unlocks` | int | no | ≥ 0, max 100000 |
+| `streak_days` | int | no | ≥ 0 |
 
 ### `POST /api/v1/ai/addiction-check`
 
@@ -1840,13 +1840,13 @@ Analyze multi-day usage history for addictive behavior patterns.
 
 | Field | Type | Required | Validation |
 |---|---|---|---|
-| `app_usage_history` | array | yes | At least one entry |
+| `app_usage_history` | array | yes | 1–365 items |
 | `app_usage_history[].date` | string | yes | `YYYY-MM-DD` |
-| `app_usage_history[].apps` | array | yes | Same `app_usage` item shape |
-| `daily_screen_time_history` | array | yes | At least one entry |
+| `app_usage_history[].apps` | array | yes | Max 500 items; same field rules as usage-analysis (daily caps) |
+| `daily_screen_time_history` | array | yes | 1–365 items |
 | `daily_screen_time_history[].date` | string | yes | `YYYY-MM-DD` |
-| `daily_screen_time_history[].total_screen_time_ms` | int64 | yes | — |
-| `daily_screen_time_history[].total_unlocks` | int | yes | — |
-| `first_unlock_times` | array | no | — |
+| `daily_screen_time_history[].total_screen_time_ms` | int64 | yes | ≥ 0, max 86400000 |
+| `daily_screen_time_history[].total_unlocks` | int | yes | ≥ 0, max 100000 |
+| `first_unlock_times` | array | no | Max 365 items |
 | `first_unlock_times[].date` | string | — | `YYYY-MM-DD` |
 | `first_unlock_times[].time_of_day_minute` | int | — | 0-1439 |

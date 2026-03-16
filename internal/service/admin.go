@@ -112,13 +112,12 @@ type AdminEntitlementItem struct {
 
 // PlatformStatsOutput holds the aggregate statistics returned by the admin dashboard.
 type PlatformStatsOutput struct {
-	TotalUsers                int
-	ActiveUsers30d            int
-	PremiumUsers              int
-	ActivePremiumEntitlements int
-	TotalFriendships          int
-	AvgStreakDays             float64
-	AvgDailyFocusTimeMS       float64
+	TotalUsers          int
+	ActiveUsers30d      int
+	PremiumUsers        int
+	TotalFriendships    int
+	AvgStreakDays       float64
+	AvgDailyFocusTimeMS float64
 }
 
 // ---------------------------------------------------------------------------
@@ -132,30 +131,27 @@ type PlatformStatsOutput struct {
 
 // AdminService encapsulates admin business logic.
 type AdminService struct {
-	pool            repository.Pool
-	adminRepo       repository.AdminRepository
-	entitlementRepo repository.EntitlementRepository
-	jwtSecret       string
-	adminTokenTTL   time.Duration
-	logger          *slog.Logger
+	pool          repository.Pool
+	adminRepo     repository.AdminRepository
+	jwtSecret     string
+	adminTokenTTL time.Duration
+	logger        *slog.Logger
 }
 
 // NewAdminService creates an AdminService with its required dependencies.
 func NewAdminService(
 	pool repository.Pool,
 	adminRepo repository.AdminRepository,
-	entitlementRepo repository.EntitlementRepository,
 	jwtSecret string,
 	adminTokenTTL time.Duration,
 	logger *slog.Logger,
 ) *AdminService {
 	return &AdminService{
-		pool:            pool,
-		adminRepo:       adminRepo,
-		entitlementRepo: entitlementRepo,
-		jwtSecret:       jwtSecret,
-		adminTokenTTL:   adminTokenTTL,
-		logger:          logger,
+		pool:          pool,
+		adminRepo:     adminRepo,
+		jwtSecret:     jwtSecret,
+		adminTokenTTL: adminTokenTTL,
+		logger:        logger,
 	}
 }
 
@@ -265,13 +261,12 @@ func (s *AdminService) GetPlatformStats(ctx context.Context) (PlatformStatsOutpu
 	}
 
 	return PlatformStatsOutput{
-		TotalUsers:                row.TotalUsers,
-		ActiveUsers30d:            row.ActiveUsers30d,
-		PremiumUsers:              row.PremiumUsers,
-		ActivePremiumEntitlements: row.ActivePremiumEntitlements,
-		TotalFriendships:          row.TotalFriendships,
-		AvgStreakDays:             row.AvgStreakDays,
-		AvgDailyFocusTimeMS:       row.AvgDailyFocusTimeMS,
+		TotalUsers:          row.TotalUsers,
+		ActiveUsers30d:      row.ActiveUsers30d,
+		PremiumUsers:        row.PremiumUsers,
+		TotalFriendships:    row.TotalFriendships,
+		AvgStreakDays:       row.AvgStreakDays,
+		AvgDailyFocusTimeMS: row.AvgDailyFocusTimeMS,
 	}, nil
 }
 
@@ -281,13 +276,6 @@ func (s *AdminService) GetPlatformStats(ctx context.Context) (PlatformStatsOutpu
 // authorization while active; user_entitlements (the RevenueCat snapshot) is
 // not mutated so that temporary overrides expire cleanly.
 func (s *AdminService) ManageEntitlement(ctx context.Context, in ManageEntitlementInput) (MessageOutput, error) {
-	if in.Action != repository.AdminOverrideGrant && in.Action != repository.AdminOverrideRevoke {
-		return MessageOutput{}, invalidAdminActionError()
-	}
-	if in.Entitlement != repository.EntitlementPremium {
-		return MessageOutput{}, invalidEntitlementError(in.Entitlement)
-	}
-
 	// Check user existence before starting the transaction.
 	exists, err := s.adminRepo.UserExists(ctx, s.pool, in.UserID)
 	if err != nil {
