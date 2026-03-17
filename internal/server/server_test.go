@@ -1117,9 +1117,9 @@ func TestNew_AdminProtectedRoutesRequireAuth(t *testing.T) {
 		body   string
 	}{
 		{"list_users", http.MethodGet, "/api/v1/admin/users", ""},
-		{"get_user_detail", http.MethodGet, "/api/v1/admin/users/some-id", ""},
+		{"get_user_detail", http.MethodGet, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001", ""},
 		{"get_stats", http.MethodGet, "/api/v1/admin/stats", ""},
-		{"manage_entitlement", http.MethodPost, "/api/v1/admin/users/some-id/entitlements",
+		{"manage_entitlement", http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
 			`{"action":"grant","entitlement":"premium"}`},
 		{"list_entitlements", http.MethodGet, "/api/v1/admin/entitlements", ""},
 	}
@@ -1171,9 +1171,9 @@ func TestNew_AdminProtectedRoutesRejectUserJWT(t *testing.T) {
 		body   string
 	}{
 		{"list_users", http.MethodGet, "/api/v1/admin/users", ""},
-		{"get_user_detail", http.MethodGet, "/api/v1/admin/users/some-id", ""},
+		{"get_user_detail", http.MethodGet, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001", ""},
 		{"get_stats", http.MethodGet, "/api/v1/admin/stats", ""},
-		{"manage_entitlement", http.MethodPost, "/api/v1/admin/users/some-id/entitlements",
+		{"manage_entitlement", http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
 			`{"action":"grant","entitlement":"premium"}`},
 		{"list_entitlements", http.MethodGet, "/api/v1/admin/entitlements", ""},
 	}
@@ -1220,9 +1220,9 @@ func TestNew_AdminProtectedRoutesAcceptAdminJWT(t *testing.T) {
 		body   string
 	}{
 		{"list_users", http.MethodGet, "/api/v1/admin/users", ""},
-		{"get_user_detail", http.MethodGet, "/api/v1/admin/users/some-id", ""},
+		{"get_user_detail", http.MethodGet, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001", ""},
 		{"get_stats", http.MethodGet, "/api/v1/admin/stats", ""},
-		{"manage_entitlement", http.MethodPost, "/api/v1/admin/users/some-id/entitlements",
+		{"manage_entitlement", http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
 			`{"action":"grant","entitlement":"premium"}`},
 		{"list_entitlements", http.MethodGet, "/api/v1/admin/entitlements", ""},
 	}

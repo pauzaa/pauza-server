@@ -8,8 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-
 	"github.com/IsorilovA/pauza-server/internal/apperror"
 	"github.com/IsorilovA/pauza-server/internal/domain"
 	"github.com/IsorilovA/pauza-server/internal/pagination"
@@ -220,11 +218,8 @@ func (h *AdminHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 
 // GetUserDetail handles GET /api/v1/admin/users/{id}.
 func (h *AdminHandler) GetUserDetail(w http.ResponseWriter, r *http.Request) {
-	userID := chi.URLParam(r, "id")
-	if userID == "" {
-		apperror.ValidationFieldErrors(w, "Invalid request", apperror.FieldErrors{
-			"id": "user id is required",
-		})
+	userID, ok := parseUUIDParam(w, r, "id")
+	if !ok {
 		return
 	}
 
@@ -280,11 +275,8 @@ func (h *AdminHandler) GetPlatformStats(w http.ResponseWriter, r *http.Request) 
 
 // ManageEntitlement handles POST /api/v1/admin/users/{id}/entitlements.
 func (h *AdminHandler) ManageEntitlement(w http.ResponseWriter, r *http.Request) {
-	userID := chi.URLParam(r, "id")
-	if userID == "" {
-		apperror.ValidationFieldErrors(w, "Invalid request", apperror.FieldErrors{
-			"id": "user id is required",
-		})
+	userID, ok := parseUUIDParam(w, r, "id")
+	if !ok {
 		return
 	}
 

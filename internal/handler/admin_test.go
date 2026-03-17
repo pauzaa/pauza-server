@@ -224,7 +224,7 @@ func TestAdminListUsers_HappyPath(t *testing.T) {
 			return service.ListUsersOutput{
 				Users: []service.AdminUserItem{
 					{
-						ID: "user-001", Email: "alice@example.com",
+						ID: "00000000-0000-0000-0000-000000000001", Email: "alice@example.com",
 						Name: "Alice", Username: "alice",
 						IsPremium: true, CreatedAt: now,
 					},
@@ -249,8 +249,8 @@ func TestAdminListUsers_HappyPath(t *testing.T) {
 	if len(body.Users) != 1 {
 		t.Fatalf("len(users) = %d, want 1", len(body.Users))
 	}
-	if body.Users[0].ID != "user-001" {
-		t.Errorf("users[0].id = %q, want %q", body.Users[0].ID, "user-001")
+	if body.Users[0].ID != "00000000-0000-0000-0000-000000000001" {
+		t.Errorf("users[0].id = %q, want %q", body.Users[0].ID, "00000000-0000-0000-0000-000000000001")
 	}
 	if !body.Users[0].PremiumEntitlementActive {
 		t.Error("users[0].premium_entitlement_active = false, want true")
@@ -324,11 +324,11 @@ func TestAdminGetUserDetail_HappyPath(t *testing.T) {
 
 	h := newTestAdminHandler(&mockAdminService{
 		getUserDetailFn: func(_ context.Context, in service.GetUserDetailInput) (service.UserDetailOutput, error) {
-			if in.UserID != "user-001" {
-				t.Errorf("userID = %q, want %q", in.UserID, "user-001")
+			if in.UserID != "00000000-0000-0000-0000-000000000001" {
+				t.Errorf("userID = %q, want %q", in.UserID, "00000000-0000-0000-0000-000000000001")
 			}
 			return service.UserDetailOutput{
-				ID: "user-001", Email: "alice@example.com",
+				ID: "00000000-0000-0000-0000-000000000001", Email: "alice@example.com",
 				Name: "Alice", Username: "alice",
 				ProfilePictureURL: &picURL, LeaderboardVisible: true,
 				CreatedAt: now, IsPremium: true,
@@ -338,8 +338,8 @@ func TestAdminGetUserDetail_HappyPath(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/users/user-001", nil)
-	req = withChiURLParam(req, "id", "user-001")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001", nil)
+	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000001")
 	rec := httptest.NewRecorder()
 	h.GetUserDetail(rec, req)
 
@@ -350,8 +350,8 @@ func TestAdminGetUserDetail_HappyPath(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.ID != "user-001" {
-		t.Errorf("id = %q, want %q", body.ID, "user-001")
+	if body.ID != "00000000-0000-0000-0000-000000000001" {
+		t.Errorf("id = %q, want %q", body.ID, "00000000-0000-0000-0000-000000000001")
 	}
 	if !body.IsPremium {
 		t.Error("is_premium = false, want true")
@@ -384,8 +384,8 @@ func TestAdminGetUserDetail_NotFound(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/users/nonexistent", nil)
-	req = withChiURLParam(req, "id", "nonexistent")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/users/00000000-0000-0000-0000-000000000099", nil)
+	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000099")
 	rec := httptest.NewRecorder()
 	h.GetUserDetail(rec, req)
 
@@ -465,9 +465,9 @@ func TestAdminGetPlatformStats_ServiceError(t *testing.T) {
 func TestAdminManageEntitlement_InvalidAction(t *testing.T) {
 	t.Parallel()
 	h := newTestAdminHandler(&mockAdminService{})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/user-001/entitlements",
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
 		strings.NewReader(`{"action":"suspend","entitlement":"premium"}`))
-	req = withChiURLParam(req, "id", "user-001")
+	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000001")
 	rec := httptest.NewRecorder()
 	h.ManageEntitlement(rec, req)
 
@@ -479,9 +479,9 @@ func TestAdminManageEntitlement_InvalidAction(t *testing.T) {
 func TestAdminManageEntitlement_MissingEntitlement(t *testing.T) {
 	t.Parallel()
 	h := newTestAdminHandler(&mockAdminService{})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/user-001/entitlements",
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
 		strings.NewReader(`{"action":"grant"}`))
-	req = withChiURLParam(req, "id", "user-001")
+	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000001")
 	rec := httptest.NewRecorder()
 	h.ManageEntitlement(rec, req)
 
@@ -491,9 +491,9 @@ func TestAdminManageEntitlement_MissingEntitlement(t *testing.T) {
 func TestAdminManageEntitlement_InvalidExpiresAt(t *testing.T) {
 	t.Parallel()
 	h := newTestAdminHandler(&mockAdminService{})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/user-001/entitlements",
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
 		strings.NewReader(`{"action":"grant","entitlement":"premium","expires_at":"not-a-date"}`))
-	req = withChiURLParam(req, "id", "user-001")
+	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000001")
 	rec := httptest.NewRecorder()
 	h.ManageEntitlement(rec, req)
 
@@ -505,9 +505,9 @@ func TestAdminManageEntitlement_PastExpiresAt(t *testing.T) {
 	h := newTestAdminHandler(&mockAdminService{})
 	past := time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339)
 	body := fmt.Sprintf(`{"action":"grant","entitlement":"premium","expires_at":"%s"}`, past)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/user-001/entitlements",
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
 		strings.NewReader(body))
-	req = withChiURLParam(req, "id", "user-001")
+	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000001")
 	rec := httptest.NewRecorder()
 	h.ManageEntitlement(rec, req)
 
@@ -527,9 +527,9 @@ func TestAdminManageEntitlement_ValidExpiresAtPassedToService(t *testing.T) {
 
 	future := time.Now().Add(48 * time.Hour).UTC().Format(time.RFC3339)
 	body := fmt.Sprintf(`{"action":"grant","entitlement":"premium","expires_at":"%s"}`, future)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/user-001/entitlements",
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
 		strings.NewReader(body))
-	req = withChiURLParam(req, "id", "user-001")
+	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000001")
 	rec := httptest.NewRecorder()
 	h.ManageEntitlement(rec, req)
 
@@ -539,8 +539,8 @@ func TestAdminManageEntitlement_ValidExpiresAtPassedToService(t *testing.T) {
 	if gotInput.ExpiresAt == nil {
 		t.Fatal("expected ExpiresAt to be non-nil")
 	}
-	if gotInput.UserID != "user-001" {
-		t.Errorf("userID = %q, want %q", gotInput.UserID, "user-001")
+	if gotInput.UserID != "00000000-0000-0000-0000-000000000001" {
+		t.Errorf("userID = %q, want %q", gotInput.UserID, "00000000-0000-0000-0000-000000000001")
 	}
 }
 
@@ -552,9 +552,9 @@ func TestAdminManageEntitlement_ServiceNotFound(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/nonexistent/entitlements",
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000099/entitlements",
 		strings.NewReader(`{"action":"grant","entitlement":"premium"}`))
-	req = withChiURLParam(req, "id", "nonexistent")
+	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000099")
 	rec := httptest.NewRecorder()
 	h.ManageEntitlement(rec, req)
 
@@ -573,9 +573,9 @@ func TestAdminManageEntitlement_ServiceInvalidAction(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/user-001/entitlements",
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
 		strings.NewReader(`{"action":"grant","entitlement":"premium"}`))
-	req = withChiURLParam(req, "id", "user-001")
+	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000001")
 	rec := httptest.NewRecorder()
 	h.ManageEntitlement(rec, req)
 
@@ -594,9 +594,9 @@ func TestAdminManageEntitlement_ServiceInvalidEntitlement(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/user-001/entitlements",
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
 		strings.NewReader(`{"action":"grant","entitlement":"premium"}`))
-	req = withChiURLParam(req, "id", "user-001")
+	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000001")
 	rec := httptest.NewRecorder()
 	h.ManageEntitlement(rec, req)
 
@@ -613,9 +613,9 @@ func TestAdminManageEntitlement_Success(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/user-001/entitlements",
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
 		strings.NewReader(`{"action":"grant","entitlement":"premium"}`))
-	req = withChiURLParam(req, "id", "user-001")
+	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000001")
 	rec := httptest.NewRecorder()
 	h.ManageEntitlement(rec, req)
 
@@ -645,7 +645,7 @@ func TestAdminListEntitlements_HappyPath(t *testing.T) {
 			return service.ListEntitlementsOutput{
 				Entitlements: []service.AdminEntitlementItem{
 					{
-						UserID: "user-001", Email: "alice@example.com",
+						UserID: "00000000-0000-0000-0000-000000000001", Email: "alice@example.com",
 						Username: "alice", Entitlement: "premium",
 						IsActive: true, CurrentPeriodEnd: &periodEnd,
 						UpdatedAt: now,
@@ -670,8 +670,8 @@ func TestAdminListEntitlements_HappyPath(t *testing.T) {
 	if len(body.Entitlements) != 1 {
 		t.Fatalf("len(entitlements) = %d, want 1", len(body.Entitlements))
 	}
-	if body.Entitlements[0].UserID != "user-001" {
-		t.Errorf("entitlements[0].user_id = %q, want %q", body.Entitlements[0].UserID, "user-001")
+	if body.Entitlements[0].UserID != "00000000-0000-0000-0000-000000000001" {
+		t.Errorf("entitlements[0].user_id = %q, want %q", body.Entitlements[0].UserID, "00000000-0000-0000-0000-000000000001")
 	}
 	if body.Entitlements[0].CurrentPeriodEnd == nil || *body.Entitlements[0].CurrentPeriodEnd != "2026-04-10T12:00:00Z" {
 		t.Errorf("current_period_end = %v, want %q", body.Entitlements[0].CurrentPeriodEnd, "2026-04-10T12:00:00Z")

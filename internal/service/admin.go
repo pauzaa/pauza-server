@@ -296,6 +296,9 @@ func (s *AdminService) ManageEntitlement(ctx context.Context, in ManageEntitleme
 		Action:      in.Action,
 		ExpiresAt:   in.ExpiresAt,
 	}); err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return MessageOutput{}, NotFoundError("User not found")
+		}
 		s.logger.Error("upserting entitlement override", "user_id", in.UserID, "err", err)
 		return MessageOutput{}, ErrInternal
 	}

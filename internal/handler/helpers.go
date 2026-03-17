@@ -8,10 +8,24 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+
 	"github.com/IsorilovA/pauza-server/internal/apperror"
 	"github.com/IsorilovA/pauza-server/internal/middleware"
 	"github.com/IsorilovA/pauza-server/internal/service"
 )
+
+func parseUUIDParam(w http.ResponseWriter, r *http.Request, param string) (string, bool) {
+	raw := chi.URLParam(r, param)
+	if _, err := uuid.Parse(raw); err != nil {
+		apperror.ValidationFieldErrors(w, "Invalid request", apperror.FieldErrors{
+			param: param + " must be a valid UUID",
+		})
+		return "", false
+	}
+	return raw, true
+}
 
 func requireUser(w http.ResponseWriter, r *http.Request) (string, bool) {
 	user, ok := middleware.UserFromContext(r.Context())

@@ -7,7 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"golang.org/x/sync/errgroup"
 )
 
 // ---------------------------------------------------------------------------
@@ -139,6 +142,28 @@ func NewPgxAdminRepository() *PgxAdminRepository {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+func safeGo(g *errgroup.Group, fn func() error) {
+	g.Go(func() (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("panic: %v", r)
+			}
+		}()
+		return fn()
+	})
+}
+
+func escapeILIKE(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
+}
+
+// ---------------------------------------------------------------------------
 // Implementations
 // ---------------------------------------------------------------------------
 
@@ -167,7 +192,7 @@ func (r *PgxAdminRepository) ListUsers(ctx context.Context, db DBTX, params List
 	)
 
 	if params.Search != "" {
-		pattern := "%" + params.Search + "%"
+		pattern := "%" + escapeILIKE(params.Search) + "%"
 		whereClauses = append(whereClauses, fmt.Sprintf(
 			`(u.email ILIKE $%d OR u.username ILIKE $%d OR u.name ILIKE $%d)`,
 			argIdx, argIdx, argIdx,
@@ -275,53 +300,66 @@ func (r *PgxAdminRepository) GetUserDetail(ctx context.Context, db DBTX, userID 
 
 func (r *PgxAdminRepository) GetPlatformStats(ctx context.Context, db DBTX) (PlatformStatsRow, error) {
 	var s PlatformStatsRow
-	err := db.QueryRow(ctx,
-		`SELECT
-		   (SELECT COUNT(*) FROM users) AS total_users,
-		   (SELECT COUNT(DISTINCT rs.user_id)
-		    FROM restriction_sessions rs
-		    WHERE rs.started_at > EXTRACT(EPOCH FROM (now() - INTERVAL '30 days')) * 1000
-		   ) AS active_users_30d,
-		   (SELECT COUNT(*)
-		    FROM users u
-		    LEFT JOIN user_entitlements ue
-		      ON ue.user_id = u.id AND ue.entitlement = 'premium'
-		    LEFT JOIN admin_entitlement_overrides o
-		      ON o.user_id = u.id AND o.entitlement = 'premium'
-		      AND (o.expires_at IS NULL OR o.expires_at > now())
-		    WHERE CASE
-		            WHEN o.action = 'grant'  THEN true
-		            WHEN o.action = 'revoke' THEN false
-		            ELSE COALESCE(ue.is_active, false)
-		          END = true
-		   ) AS premium_users,
-		   (SELECT COUNT(*)
-		    FROM friendships f
-		    WHERE f.status = 'accepted'
-		   ) AS total_friendships,
-		   COALESCE((
-		     SELECT AVG(streak_days)
-		     FROM (
-		       SELECT COUNT(*) AS streak_days
-		       FROM streak_daily_aggregates sda
-		       WHERE sda.qualified = 1
-		       GROUP BY sda.user_id
-		     ) AS user_streaks
-		   ), 0) AS avg_streak_days,
-		   COALESCE((
-		     SELECT AVG(daily_ms)
-		     FROM (
-		       SELECT AVG(sda2.effective_ms) AS daily_ms
-		       FROM streak_daily_aggregates sda2
-		       WHERE sda2.effective_ms > 0
-		       GROUP BY sda2.user_id
-		     ) AS user_daily_focus
-		   ), 0) AS avg_daily_focus_time_ms`,
-	).Scan(
-		&s.TotalUsers, &s.ActiveUsers30d, &s.PremiumUsers,
-		&s.TotalFriendships, &s.AvgStreakDays, &s.AvgDailyFocusTimeMS,
-	)
-	if err != nil {
+	g, ctx := errgroup.WithContext(ctx)
+
+	safeGo(g, func() error {
+		return db.QueryRow(ctx, `SELECT COUNT(*) FROM users`).Scan(&s.TotalUsers)
+	})
+
+	safeGo(g, func() error {
+		return db.QueryRow(ctx,
+			`SELECT COUNT(DISTINCT rs.user_id)
+			 FROM restriction_sessions rs
+			 WHERE rs.started_at > EXTRACT(EPOCH FROM (now() - INTERVAL '30 days')) * 1000`,
+		).Scan(&s.ActiveUsers30d)
+	})
+
+	safeGo(g, func() error {
+		return db.QueryRow(ctx,
+			`SELECT COUNT(*)
+			 FROM users u
+			 LEFT JOIN user_entitlements ue
+			   ON ue.user_id = u.id AND ue.entitlement = 'premium'
+			 LEFT JOIN admin_entitlement_overrides o
+			   ON o.user_id = u.id AND o.entitlement = 'premium'
+			   AND (o.expires_at IS NULL OR o.expires_at > now())
+			 WHERE CASE
+			         WHEN o.action = 'grant'  THEN true
+			         WHEN o.action = 'revoke' THEN false
+			         ELSE COALESCE(ue.is_active, false)
+			       END = true`,
+		).Scan(&s.PremiumUsers)
+	})
+
+	safeGo(g, func() error {
+		return db.QueryRow(ctx,
+			`SELECT COUNT(*) FROM friendships WHERE status = 'accepted'`,
+		).Scan(&s.TotalFriendships)
+	})
+
+	safeGo(g, func() error {
+		return db.QueryRow(ctx,
+			`SELECT COALESCE(AVG(current_streak_days)::float8, 0)
+			 FROM leaderboard_metrics
+			 WHERE current_streak_days > 0`,
+		).Scan(&s.AvgStreakDays)
+	})
+
+	safeGo(g, func() error {
+		return db.QueryRow(ctx,
+			`SELECT COALESCE((
+			   SELECT AVG(daily_ms)
+			   FROM (
+			     SELECT AVG(sda2.effective_ms) AS daily_ms
+			     FROM streak_daily_aggregates sda2
+			     WHERE sda2.effective_ms > 0
+			     GROUP BY sda2.user_id
+			   ) AS user_daily_focus
+			 ), 0)`,
+		).Scan(&s.AvgDailyFocusTimeMS)
+	})
+
+	if err := g.Wait(); err != nil {
 		return PlatformStatsRow{}, fmt.Errorf("getting platform stats: %w", err)
 	}
 	return s, nil
@@ -338,6 +376,10 @@ func (r *PgxAdminRepository) UpsertEntitlementOverride(ctx context.Context, db D
 		params.UserID, string(params.Entitlement), string(params.Action), params.ExpiresAt,
 	)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == pgerrcode.ForeignKeyViolation {
+			return ErrNotFound
+		}
 		return fmt.Errorf("upserting entitlement override: %w", err)
 	}
 	return nil

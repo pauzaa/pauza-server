@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -18,10 +17,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/IsorilovA/pauza-server/internal/config"
-	"github.com/IsorilovA/pauza-server/internal/database"
 	"github.com/IsorilovA/pauza-server/internal/mail"
 	"github.com/IsorilovA/pauza-server/internal/server"
-	"github.com/IsorilovA/pauza-server/migrations"
+	"github.com/IsorilovA/pauza-server/internal/testdb"
 )
 
 const (
@@ -90,15 +88,6 @@ func (s *captureSender) lastOTP(email string, purpose mail.Purpose) string {
 	return ""
 }
 
-func testDatabaseURL(t *testing.T) string {
-	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL is not set")
-	}
-	return url
-}
-
 func testConfig() *config.Config {
 	return &config.Config{
 		Port:                 8080,
@@ -129,29 +118,8 @@ func testConfig() *config.Config {
 func setupTestServer(t *testing.T) (*httptest.Server, *pgxpool.Pool, *captureSender, string) {
 	t.Helper()
 
-	dbURL := testDatabaseURL(t)
+	pool, _ := testdb.New(t)
 	photoDir := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		t.Fatalf("creating test pool: %v", err)
-	}
-
-	for _, q := range []string{
-		"DROP SCHEMA public CASCADE",
-		"CREATE SCHEMA public",
-		"GRANT ALL ON SCHEMA public TO current_user",
-	} {
-		if _, err := pool.Exec(ctx, q); err != nil {
-			t.Fatalf("resetting database (%s): %v", q, err)
-		}
-	}
-
-	if err := database.RunMigrations(slog.New(slog.NewTextHandler(io.Discard, nil)), dbURL, migrations.FS); err != nil {
-		t.Fatalf("applying migrations: %v", err)
-	}
 
 	sender := &captureSender{}
 	cfg := testConfig()
@@ -166,7 +134,6 @@ func setupTestServer(t *testing.T) (*httptest.Server, *pgxpool.Pool, *captureSen
 	t.Cleanup(func() {
 		ts.Close()
 		cleanup()
-		pool.Close()
 	})
 
 	return ts, pool, sender, photoDir

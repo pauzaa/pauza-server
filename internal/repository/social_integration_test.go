@@ -4,58 +4,18 @@ package repository
 
 import (
 	"context"
-	"io"
-	"log/slog"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/IsorilovA/pauza-server/internal/database"
 	"github.com/IsorilovA/pauza-server/internal/syncmodel"
-	"github.com/IsorilovA/pauza-server/migrations"
+	"github.com/IsorilovA/pauza-server/internal/testdb"
 )
 
 func testSocialRepoPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("TEST_DATABASE_URL is not set; skipping integration test")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		t.Fatalf("creating test pool: %v", err)
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		t.Fatalf("pinging test pool: %v", err)
-	}
-
-	resetQueries := []string{
-		"DROP SCHEMA public CASCADE",
-		"CREATE SCHEMA public",
-		"GRANT ALL ON SCHEMA public TO current_user",
-	}
-	for _, q := range resetQueries {
-		if _, err := pool.Exec(ctx, q); err != nil {
-			pool.Close()
-			t.Fatalf("resetting database (%s): %v", q, err)
-		}
-	}
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if err := database.RunMigrations(logger, dbURL, migrations.FS); err != nil {
-		pool.Close()
-		t.Fatalf("applying migrations: %v", err)
-	}
-
-	t.Cleanup(func() { pool.Close() })
+	pool, _ := testdb.New(t)
 	return pool
 }
 
