@@ -210,7 +210,7 @@ func TestWebhook_InvalidJSON_ReturnsValidationError(t *testing.T) {
 	}
 }
 
-func TestWebhook_InvalidEnumValue_ReturnsValidationError(t *testing.T) {
+func TestWebhook_UnknownEnumValue_Tolerated(t *testing.T) {
 	t.Parallel()
 
 	svc := &mockWebhookService{}
@@ -223,11 +223,38 @@ func TestWebhook_InvalidEnumValue_ReturnsValidationError(t *testing.T) {
 
 	h.HandleRevenueCat(rec, req)
 
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want 422", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if svc.called {
-		t.Fatal("service should not have been called")
+	if !svc.called {
+		t.Fatal("expected service to be called")
+	}
+	if svc.lastEvt.Environment != "LOCAL" {
+		t.Fatalf("environment = %q, want LOCAL", svc.lastEvt.Environment)
+	}
+}
+
+func TestWebhook_UnknownEventType_Tolerated(t *testing.T) {
+	t.Parallel()
+
+	svc := &mockWebhookService{}
+	h := newTestWebhookHandler(svc)
+
+	payload := `{"event":{"type":"FUTURE_EVENT","id":"evt-2","app_user_id":"user-2","environment":"PRODUCTION"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/revenuecat", strings.NewReader(payload))
+	req.Header.Set("Authorization", "Bearer "+testWebhookSecret)
+	rec := httptest.NewRecorder()
+
+	h.HandleRevenueCat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !svc.called {
+		t.Fatal("expected service to be called")
+	}
+	if svc.lastEvt.Type != "FUTURE_EVENT" {
+		t.Fatalf("event type = %q, want FUTURE_EVENT", svc.lastEvt.Type)
 	}
 }
 

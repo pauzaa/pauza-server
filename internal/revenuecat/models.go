@@ -23,28 +23,17 @@ const (
 	WebhookEventTypeTest                 WebhookEventType = "TEST"
 	WebhookEventTypeTemporaryEntitlement WebhookEventType = "TEMPORARY_ENTITLEMENT_GRANT"
 	WebhookEventTypeInvoiceIssuance      WebhookEventType = "INVOICE_ISSUANCE"
+	WebhookEventTypeSubscriptionExtended WebhookEventType = "SUBSCRIPTION_EXTENDED"
+	WebhookEventTypeRefundReversed       WebhookEventType = "REFUND_REVERSED"
+	WebhookEventTypeVirtualCurrency      WebhookEventType = "VIRTUAL_CURRENCY_TRANSACTION"
+	WebhookEventTypeExperimentEnrollment WebhookEventType = "EXPERIMENT_ENROLLMENT"
 )
 
 func parseWebhookEventType(raw string) (WebhookEventType, error) {
-	switch WebhookEventType(raw) {
-	case WebhookEventTypeInitialPurchase,
-		WebhookEventTypeRenewal,
-		WebhookEventTypeCancellation,
-		WebhookEventTypeUncancellation,
-		WebhookEventTypeNonRenewingPurchase,
-		WebhookEventTypeProductChange,
-		WebhookEventTypeBillingIssue,
-		WebhookEventTypeSubscriberAlias,
-		WebhookEventTypeSubscriptionPaused,
-		WebhookEventTypeExpiration,
-		WebhookEventTypeTransfer,
-		WebhookEventTypeTest,
-		WebhookEventTypeTemporaryEntitlement,
-		WebhookEventTypeInvoiceIssuance:
-		return WebhookEventType(raw), nil
-	default:
-		return "", fmt.Errorf("invalid webhook event type %q", raw)
+	if raw == "" {
+		return "", fmt.Errorf("empty webhook event type")
 	}
+	return WebhookEventType(raw), nil
 }
 
 func (t WebhookEventType) String() string { return string(t) }
@@ -68,12 +57,10 @@ const (
 )
 
 func parseWebhookEnvironment(raw string) (WebhookEnvironment, error) {
-	switch WebhookEnvironment(raw) {
-	case WebhookEnvironmentSandbox, WebhookEnvironmentProduction:
-		return WebhookEnvironment(raw), nil
-	default:
-		return "", fmt.Errorf("invalid webhook environment %q", raw)
+	if raw == "" {
+		return "", fmt.Errorf("empty webhook environment")
 	}
+	return WebhookEnvironment(raw), nil
 }
 
 func (e WebhookEnvironment) String() string { return string(e) }
@@ -95,16 +82,12 @@ const (
 	WebhookPeriodTypeNormal  WebhookPeriodType = "NORMAL"
 	WebhookPeriodTypeIntro   WebhookPeriodType = "INTRO"
 	WebhookPeriodTypeTrial   WebhookPeriodType = "TRIAL"
-	WebhookPeriodTypePrepaid WebhookPeriodType = "PREPAID"
+	WebhookPeriodTypePrepaid      WebhookPeriodType = "PREPAID"
+	WebhookPeriodTypePromotional  WebhookPeriodType = "PROMOTIONAL"
 )
 
 func parseWebhookPeriodType(raw string) (WebhookPeriodType, error) {
-	switch WebhookPeriodType(raw) {
-	case "", WebhookPeriodTypeNormal, WebhookPeriodTypeIntro, WebhookPeriodTypeTrial, WebhookPeriodTypePrepaid:
-		return WebhookPeriodType(raw), nil
-	default:
-		return "", fmt.Errorf("invalid webhook period type %q", raw)
-	}
+	return WebhookPeriodType(raw), nil
 }
 
 func (p WebhookPeriodType) String() string { return string(p) }
@@ -131,15 +114,13 @@ const (
 	WebhookStoreAmazon      WebhookStore = "AMAZON"
 	WebhookStoreRCBilling   WebhookStore = "RC_BILLING"
 	WebhookStoreExternal    WebhookStore = "EXTERNAL"
+	WebhookStorePaddle      WebhookStore = "PADDLE"
+	WebhookStoreRoku        WebhookStore = "ROKU"
+	WebhookStoreTestStore   WebhookStore = "TEST_STORE"
 )
 
 func parseWebhookStore(raw string) (WebhookStore, error) {
-	switch WebhookStore(raw) {
-	case "", WebhookStoreAppStore, WebhookStoreMacAppStore, WebhookStorePlayStore, WebhookStoreStripe, WebhookStorePromotional, WebhookStoreAmazon, WebhookStoreRCBilling, WebhookStoreExternal:
-		return WebhookStore(raw), nil
-	default:
-		return "", fmt.Errorf("invalid webhook store %q", raw)
-	}
+	return WebhookStore(raw), nil
 }
 
 func (s WebhookStore) String() string { return string(s) }

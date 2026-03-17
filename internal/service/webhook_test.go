@@ -317,6 +317,10 @@ func TestWebhook_RC404_UpsertsInactive(t *testing.T) {
 	if upserted.CurrentPeriodEnd != nil {
 		t.Errorf("upserted.CurrentPeriodEnd = %v, want nil for RC 404", upserted.CurrentPeriodEnd)
 	}
+	if upserted.RevenueCatOriginalAppUserID != nil {
+		t.Errorf("upserted.RevenueCatOriginalAppUserID = %v, want nil for RC 404 (SQL COALESCE preserves existing value)",
+			*upserted.RevenueCatOriginalAppUserID)
+	}
 }
 
 // TestWebhook_TransientRCError_ReturnsError verifies that a transient

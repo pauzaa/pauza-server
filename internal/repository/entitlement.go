@@ -63,7 +63,7 @@ func (r *PgxEntitlementRepository) UpsertEntitlement(ctx context.Context, db DBT
 		ON CONFLICT (user_id, entitlement) DO UPDATE SET
 			is_active                       = EXCLUDED.is_active,
 			revenuecat_app_user_id          = EXCLUDED.revenuecat_app_user_id,
-			revenuecat_original_app_user_id = EXCLUDED.revenuecat_original_app_user_id,
+			revenuecat_original_app_user_id = COALESCE(EXCLUDED.revenuecat_original_app_user_id, user_entitlements.revenuecat_original_app_user_id),
 			current_period_end              = EXCLUDED.current_period_end,
 			last_webhook_event_at           = EXCLUDED.last_webhook_event_at,
 			updated_at                      = now()`,
