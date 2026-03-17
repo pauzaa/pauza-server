@@ -19,6 +19,9 @@ func mountRoutes(r chi.Router, cfg *config.Config, logger *slog.Logger, pool *pg
 	photosDir := http.Dir(cfg.PhotoStorageDir)
 	r.Get("/photos/*", photosHandler(photosDir))
 
+	r.Get("/docs", docsPageHandler())
+	r.Get("/docs/openapi.yaml", docsSpecHandler())
+
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(limitBody) // defense-in-depth: cap request bodies to 1 MiB by default
 

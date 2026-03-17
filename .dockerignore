@@ -4,7 +4,7 @@
 .idea/
 .vscode/
 deploy/
-docs/
+docs/*.md
 docker-compose*.yml
 *.md
 .DS_Store
