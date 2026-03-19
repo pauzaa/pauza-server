@@ -10,6 +10,11 @@ import (
 )
 
 const (
+	// qualificationThresholdMs is the minimum daily focus time (30 minutes)
+	// required to mark a day as "qualified" for streak counting.
+	// Must match StreakConstants.targetDurationPerDay on the app side.
+	qualificationThresholdMs = 1_800_000
+
 	syncTableModes                      = "modes"
 	syncTableModeBlockedApps            = "mode_blocked_apps"
 	syncTableSchedules                  = "schedules"
@@ -34,6 +39,7 @@ type SyncRepository interface {
 	SyncStreakSessionDailyRollups(ctx context.Context, db DBTX, userID string, in syncmodel.TableSync[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey]) (syncmodel.TableResult[syncmodel.StreakSessionDailyRollup, syncmodel.StreakSessionDailyRollupKey], error)
 	ListStreakDailyAggregateChanges(ctx context.Context, db DBTX, userID string, cursor int64) (syncmodel.TableResult[syncmodel.StreakDailyAggregate, string], error)
 	RecomputeStreakAggregates(ctx context.Context, db DBTX, userID string, affectedDays []string) error
+	RefreshLeaderboard(ctx context.Context, db DBTX, userID string) error
 }
 
 // LeaderboardRefresher is satisfied by any type that can recompute leaderboard
@@ -1151,7 +1157,7 @@ func (r *PgxSyncRepository) RecomputeStreakAggregates(ctx context.Context, db DB
 	_, err := db.Exec(ctx, `
 		INSERT INTO streak_daily_aggregates (user_id, local_day, effective_ms, qualified, source_session_count, updated_at)
 		SELECT $1, local_day, SUM(effective_ms),
-			CASE WHEN SUM(effective_ms) >= 1800000 THEN 1 ELSE 0 END,
+			CASE WHEN SUM(effective_ms) >= $3 THEN 1 ELSE 0 END,
 			COUNT(DISTINCT session_id),
 			EXTRACT(EPOCH FROM now())::bigint * 1000
 		FROM streak_session_daily_rollups WHERE user_id = $1 AND local_day = ANY($2)
@@ -1164,7 +1170,7 @@ func (r *PgxSyncRepository) RecomputeStreakAggregates(ctx context.Context, db DB
 		WHERE streak_daily_aggregates.effective_ms IS DISTINCT FROM EXCLUDED.effective_ms
 		   OR streak_daily_aggregates.qualified IS DISTINCT FROM EXCLUDED.qualified
 		   OR streak_daily_aggregates.source_session_count IS DISTINCT FROM EXCLUDED.source_session_count`,
-		userID, affectedDays)
+		userID, affectedDays, qualificationThresholdMs)
 	if err != nil {
 		return fmt.Errorf("recomputing streak aggregates: %w", err)
 	}
@@ -1193,6 +1199,10 @@ func (r *PgxSyncRepository) RecomputeStreakAggregates(ctx context.Context, db DB
 	}
 
 	return r.insertTombstones(ctx, db, userID, syncTableStreakDailyAggregates, orphanedDays)
+}
+
+func (r *PgxSyncRepository) RefreshLeaderboard(ctx context.Context, db DBTX, userID string) error {
+	return r.leaderboard.RefreshLeaderboardMetrics(ctx, db, userID)
 }
 
 func (r *PgxSyncRepository) insertTombstones(ctx context.Context, db DBTX, userID string, tableName string, recordIDs []string) error {

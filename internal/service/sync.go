@@ -152,6 +152,9 @@ func (s *SyncService) Sync(ctx context.Context, in SyncInput) (SyncOutput, error
 		if err := s.repo.RecomputeStreakAggregates(ctx, tx, in.UserID, unique); err != nil {
 			return s.syncInternal("recomputing streak aggregates", err)
 		}
+		if err := s.repo.RefreshLeaderboard(ctx, tx, in.UserID); err != nil {
+			return s.syncInternal("refreshing leaderboard metrics", err)
+		}
 	}
 
 	// Streak daily aggregates - read-only pull
