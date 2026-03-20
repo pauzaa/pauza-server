@@ -22,13 +22,14 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockAdminService struct {
-	loginFn             func(ctx context.Context, in service.LoginInput) (service.LoginOutput, error)
-	listUsersFn         func(ctx context.Context, in service.ListUsersInput) (service.ListUsersOutput, error)
-	getUserDetailFn     func(ctx context.Context, in service.GetUserDetailInput) (service.UserDetailOutput, error)
-	getPlatformStatsFn  func(ctx context.Context) (service.PlatformStatsOutput, error)
-	manageEntitlementFn func(ctx context.Context, in service.ManageEntitlementInput) (service.MessageOutput, error)
-	listEntitlementsFn  func(ctx context.Context, in service.ListEntitlementsInput) (service.ListEntitlementsOutput, error)
-	getRCChartFn        func(ctx context.Context, in revenuecat.ChartParams) (*revenuecat.ChartResponse, error)
+	loginFn                  func(ctx context.Context, in service.LoginInput) (service.LoginOutput, error)
+	listUsersFn              func(ctx context.Context, in service.ListUsersInput) (service.ListUsersOutput, error)
+	getUserDetailFn          func(ctx context.Context, in service.GetUserDetailInput) (service.UserDetailOutput, error)
+	getPlatformStatsFn       func(ctx context.Context) (service.PlatformStatsOutput, error)
+	manageEntitlementFn      func(ctx context.Context, in service.ManageEntitlementInput) (service.MessageOutput, error)
+	listEntitlementsFn       func(ctx context.Context, in service.ListEntitlementsInput) (service.ListEntitlementsOutput, error)
+	getRCChartFn             func(ctx context.Context, in revenuecat.ChartParams) (*revenuecat.ChartResponse, error)
+	getUserRCSubscriptionFn  func(ctx context.Context, in service.GetUserDetailInput) (*service.RCSubscriberOutput, error)
 }
 
 func (m *mockAdminService) Login(ctx context.Context, in service.LoginInput) (service.LoginOutput, error) {
@@ -73,12 +74,12 @@ func (m *mockAdminService) ListEntitlements(ctx context.Context, in service.List
 	return service.ListEntitlementsOutput{}, nil
 }
 
-func (m *mockAdminService) GetUserGrowth(ctx context.Context, in service.TimeSeriesInput) ([]service.TimeSeriesPoint, error) {
-	return nil, nil
+func (m *mockAdminService) GetUserGrowth(ctx context.Context, in service.TimeSeriesInput) (service.TimeSeriesOutput, error) {
+	return service.TimeSeriesOutput{}, nil
 }
 
-func (m *mockAdminService) GetActiveUsers(ctx context.Context, in service.TimeSeriesInput) ([]service.TimeSeriesPoint, error) {
-	return nil, nil
+func (m *mockAdminService) GetActiveUsers(ctx context.Context, in service.TimeSeriesInput) (service.TimeSeriesOutput, error) {
+	return service.TimeSeriesOutput{}, nil
 }
 
 func (m *mockAdminService) GetRCOverview(ctx context.Context) (*revenuecat.OverviewMetrics, error) {
@@ -90,6 +91,13 @@ func (m *mockAdminService) GetRCChart(ctx context.Context, in revenuecat.ChartPa
 		return m.getRCChartFn(ctx, in)
 	}
 	return &revenuecat.ChartResponse{}, nil
+}
+
+func (m *mockAdminService) GetUserRCSubscription(ctx context.Context, in service.GetUserDetailInput) (*service.RCSubscriberOutput, error) {
+	if m.getUserRCSubscriptionFn != nil {
+		return m.getUserRCSubscriptionFn(ctx, in)
+	}
+	return &service.RCSubscriberOutput{}, nil
 }
 
 func newTestAdminHandler(svc *mockAdminService) *AdminHandler {
@@ -911,5 +919,98 @@ func TestGetRCChart_ServiceError(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
+// =========================================================================
+// GetUserRCSubscription handler tests
+// =========================================================================
+
+func TestGetUserRCSubscription_HappyPath(t *testing.T) {
+	t.Parallel()
+	h := newTestAdminHandler(&mockAdminService{
+		getUserRCSubscriptionFn: func(_ context.Context, in service.GetUserDetailInput) (*service.RCSubscriberOutput, error) {
+			return &service.RCSubscriberOutput{
+				AppUserID: "rc_123",
+				Entitlements: []service.RCSubscriberEntitlement{
+					{
+						EntitlementID:     "premium",
+						IsActive:          true,
+						ProductIdentifier: "monthly_sub",
+						PurchaseDate:      time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+					},
+				},
+			}, nil
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/revenuecat", nil)
+	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000001")
+	rec := httptest.NewRecorder()
+	h.GetUserRCSubscription(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body adminRCSubscriberResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decoding body: %v", err)
+	}
+	if body.AppUserID != "rc_123" {
+		t.Fatalf("app_user_id = %q, want %q", body.AppUserID, "rc_123")
+	}
+	if len(body.Entitlements) != 1 {
+		t.Fatalf("entitlements count = %d, want 1", len(body.Entitlements))
+	}
+}
+
+func TestGetUserRCSubscription_InvalidUUID(t *testing.T) {
+	t.Parallel()
+	h := newTestAdminHandler(&mockAdminService{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/users/not-a-uuid/revenuecat", nil)
+	req = withChiURLParam(req, "id", "not-a-uuid")
+	rec := httptest.NewRecorder()
+	h.GetUserRCSubscription(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", rec.Code)
+	}
+}
+
+func TestGetUserRCSubscription_UserNotFound(t *testing.T) {
+	t.Parallel()
+	h := newTestAdminHandler(&mockAdminService{
+		getUserRCSubscriptionFn: func(_ context.Context, _ service.GetUserDetailInput) (*service.RCSubscriberOutput, error) {
+			return nil, service.NotFoundError("User not found")
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/revenuecat", nil)
+	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000001")
+	rec := httptest.NewRecorder()
+	h.GetUserRCSubscription(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestGetUserRCSubscription_NoRCID(t *testing.T) {
+	t.Parallel()
+	h := newTestAdminHandler(&mockAdminService{
+		getUserRCSubscriptionFn: func(_ context.Context, _ service.GetUserDetailInput) (*service.RCSubscriberOutput, error) {
+			return nil, service.NotFoundError("User has no RevenueCat subscription")
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/revenuecat", nil)
+	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000001")
+	rec := httptest.NewRecorder()
+	h.GetUserRCSubscription(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }

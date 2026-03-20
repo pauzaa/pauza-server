@@ -36,13 +36,14 @@ type AdminEntitlementsService interface {
 }
 
 type AdminTimeSeriesService interface {
-	GetUserGrowth(ctx context.Context, in service.TimeSeriesInput) ([]service.TimeSeriesPoint, error)
-	GetActiveUsers(ctx context.Context, in service.TimeSeriesInput) ([]service.TimeSeriesPoint, error)
+	GetUserGrowth(ctx context.Context, in service.TimeSeriesInput) (service.TimeSeriesOutput, error)
+	GetActiveUsers(ctx context.Context, in service.TimeSeriesInput) (service.TimeSeriesOutput, error)
 }
 
 type AdminRCService interface {
 	GetRCOverview(ctx context.Context) (*revenuecat.OverviewMetrics, error)
 	GetRCChart(ctx context.Context, params revenuecat.ChartParams) (*revenuecat.ChartResponse, error)
+	GetUserRCSubscription(ctx context.Context, in service.GetUserDetailInput) (*service.RCSubscriberOutput, error)
 }
 
 var _ AdminLoginService = (*service.AdminService)(nil)
@@ -271,10 +272,7 @@ func (h *AdminHandler) GetUserDetail(w http.ResponseWriter, r *http.Request) {
 		FriendCount:         out.FriendCount,
 		TotalSessions:       out.TotalSessions,
 		LastSessionTime:     out.LastSessionTime,
-	}
-	if out.CurrentPeriodEnd != nil {
-		s := out.CurrentPeriodEnd.UTC().Format(time.RFC3339)
-		resp.CurrentPeriodEnd = &s
+		CurrentPeriodEnd:    formatTimePtr(out.CurrentPeriodEnd),
 	}
 
 	writeJSON(w, h.logger, http.StatusOK, resp, "admin-user-detail")
@@ -386,19 +384,15 @@ func (h *AdminHandler) ListEntitlements(w http.ResponseWriter, r *http.Request) 
 
 	entitlements := make([]adminEntitlementItemResponse, len(out.Entitlements))
 	for i, e := range out.Entitlements {
-		item := adminEntitlementItemResponse{
-			UserID:      e.UserID,
-			Email:       e.Email,
-			Username:    e.Username,
-			Entitlement: e.Entitlement,
-			IsActive:    e.IsActive,
-			UpdatedAt:   e.UpdatedAt.UTC().Format(time.RFC3339),
+		entitlements[i] = adminEntitlementItemResponse{
+			UserID:           e.UserID,
+			Email:            e.Email,
+			Username:         e.Username,
+			Entitlement:      e.Entitlement,
+			IsActive:         e.IsActive,
+			CurrentPeriodEnd: formatTimePtr(e.CurrentPeriodEnd),
+			UpdatedAt:        e.UpdatedAt.UTC().Format(time.RFC3339),
 		}
-		if e.CurrentPeriodEnd != nil {
-			s := e.CurrentPeriodEnd.UTC().Format(time.RFC3339)
-			item.CurrentPeriodEnd = &s
-		}
-		entitlements[i] = item
 	}
 
 	resp := adminListEntitlementsResponse{
@@ -447,30 +441,22 @@ func toTimeSeriesResponse(points []service.TimeSeriesPoint, granularity string) 
 
 // GetUserGrowth handles GET /api/v1/admin/stats/user-growth.
 func (h *AdminHandler) GetUserGrowth(w http.ResponseWriter, r *http.Request) {
-	in := parseTimeSeriesInput(r)
-
-	points, err := h.svc.GetUserGrowth(r.Context(), in)
+	out, err := h.svc.GetUserGrowth(r.Context(), parseTimeSeriesInput(r))
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
-
-	normalized := service.NormalizeTimeSeriesInput(in)
-	writeJSON(w, h.logger, http.StatusOK, toTimeSeriesResponse(points, normalized.Granularity), "admin-user-growth")
+	writeJSON(w, h.logger, http.StatusOK, toTimeSeriesResponse(out.Points, out.Granularity), "admin-user-growth")
 }
 
 // GetActiveUsers handles GET /api/v1/admin/stats/active-users.
 func (h *AdminHandler) GetActiveUsers(w http.ResponseWriter, r *http.Request) {
-	in := parseTimeSeriesInput(r)
-
-	points, err := h.svc.GetActiveUsers(r.Context(), in)
+	out, err := h.svc.GetActiveUsers(r.Context(), parseTimeSeriesInput(r))
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
-
-	normalized := service.NormalizeTimeSeriesInput(in)
-	writeJSON(w, h.logger, http.StatusOK, toTimeSeriesResponse(points, normalized.Granularity), "admin-active-users")
+	writeJSON(w, h.logger, http.StatusOK, toTimeSeriesResponse(out.Points, out.Granularity), "admin-active-users")
 }
 
 // GetRCOverview handles GET /api/v1/admin/revenuecat/overview.
@@ -531,4 +517,49 @@ func (h *AdminHandler) GetRCChart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, h.logger, http.StatusOK, chart, "admin-rc-chart")
+}
+
+type adminRCSubscriberResponse struct {
+	AppUserID    string                          `json:"app_user_id"`
+	Entitlements []adminRCSubscriberEntitlementResponse `json:"entitlements"`
+}
+
+type adminRCSubscriberEntitlementResponse struct {
+	EntitlementID          string  `json:"entitlement_id"`
+	IsActive               bool    `json:"is_active"`
+	ProductIdentifier      string  `json:"product_identifier"`
+	PurchaseDate           string  `json:"purchase_date"`
+	ExpiresDate            *string `json:"expires_date"`
+	GracePeriodExpiresDate *string `json:"grace_period_expires_date"`
+}
+
+// GetUserRCSubscription handles GET /api/v1/admin/users/{id}/revenuecat.
+func (h *AdminHandler) GetUserRCSubscription(w http.ResponseWriter, r *http.Request) {
+	userID, ok := parseUUIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+
+	out, err := h.svc.GetUserRCSubscription(r.Context(), service.GetUserDetailInput{UserID: userID})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	entitlements := make([]adminRCSubscriberEntitlementResponse, len(out.Entitlements))
+	for i, e := range out.Entitlements {
+		entitlements[i] = adminRCSubscriberEntitlementResponse{
+			EntitlementID:          e.EntitlementID,
+			IsActive:               e.IsActive,
+			ProductIdentifier:      e.ProductIdentifier,
+			PurchaseDate:           e.PurchaseDate.UTC().Format(time.RFC3339),
+			ExpiresDate:            formatTimePtr(e.ExpiresDate),
+			GracePeriodExpiresDate: formatTimePtr(e.GracePeriodExpiresDate),
+		}
+	}
+
+	writeJSON(w, h.logger, http.StatusOK, adminRCSubscriberResponse{
+		AppUserID:    out.AppUserID,
+		Entitlements: entitlements,
+	}, "admin-user-rc")
 }

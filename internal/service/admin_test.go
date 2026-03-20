@@ -133,25 +133,14 @@ func (f *fakeAdminRepo) GetActiveUsers(ctx context.Context, db repository.DBTX, 
 const testJWTSecret = "test-secret-at-least-32-bytes-long!"
 const testAdminTokenTTL = 1 * time.Hour
 
-func newTestAdminService(adminRepo *fakeAdminRepo) *AdminService {
+func newTestAdminService(adminRepo *fakeAdminRepo, opts ...AdminServiceOption) *AdminService {
 	return NewAdminService(
 		&fakePool{},
 		adminRepo,
 		testJWTSecret,
 		testAdminTokenTTL,
 		slog.New(slog.NewTextHandler(devNull{}, &slog.HandlerOptions{Level: slog.LevelError})),
-		nil,
-	)
-}
-
-func newTestAdminServiceWithRC(adminRepo *fakeAdminRepo, rc RCMetricsFetcher) *AdminService {
-	return NewAdminService(
-		&fakePool{},
-		adminRepo,
-		testJWTSecret,
-		testAdminTokenTTL,
-		slog.New(slog.NewTextHandler(devNull{}, &slog.HandlerOptions{Level: slog.LevelError})),
-		rc,
+		opts...,
 	)
 }
 
@@ -872,7 +861,7 @@ func TestGetRCOverview_HappyPath(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminServiceWithRC(&fakeAdminRepo{}, fetcher)
+	svc := newTestAdminService(&fakeAdminRepo{}, WithRCMetricsFetcher(fetcher))
 
 	out, err := svc.GetRCOverview(context.Background())
 	if err != nil {
@@ -906,7 +895,7 @@ func TestGetRCOverview_FetchError_ReturnsInternal(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminServiceWithRC(&fakeAdminRepo{}, fetcher)
+	svc := newTestAdminService(&fakeAdminRepo{}, WithRCMetricsFetcher(fetcher))
 
 	_, err := svc.GetRCOverview(context.Background())
 	if !errors.Is(err, ErrInternal) {
@@ -936,7 +925,7 @@ func TestGetRCChart_HappyPath(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminServiceWithRC(&fakeAdminRepo{}, fetcher)
+	svc := newTestAdminService(&fakeAdminRepo{}, WithRCMetricsFetcher(fetcher))
 
 	out, err := svc.GetRCChart(context.Background(), revenuecat.ChartParams{
 		ChartName: "revenue",
@@ -981,7 +970,7 @@ func TestGetRCChart_FetchError_ReturnsInternal(t *testing.T) {
 		},
 	}
 
-	svc := newTestAdminServiceWithRC(&fakeAdminRepo{}, fetcher)
+	svc := newTestAdminService(&fakeAdminRepo{}, WithRCMetricsFetcher(fetcher))
 
 	_, err := svc.GetRCChart(context.Background(), revenuecat.ChartParams{
 		ChartName: "revenue",
@@ -990,5 +979,90 @@ func TestGetRCChart_FetchError_ReturnsInternal(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInternal) {
 		t.Fatalf("GetRCChart() error = %v, want ErrInternal", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fake RC subscriber fetcher (v1)
+// ---------------------------------------------------------------------------
+
+type fakeRCSubscriberFetcher struct {
+	getSubscriberFn func(ctx context.Context, appUserID string) (*revenuecat.SubscriberResponse, error)
+}
+
+func (f *fakeRCSubscriberFetcher) GetSubscriber(ctx context.Context, appUserID string) (*revenuecat.SubscriberResponse, error) {
+	if f.getSubscriberFn != nil {
+		return f.getSubscriberFn(ctx, appUserID)
+	}
+	return &revenuecat.SubscriberResponse{}, nil
+}
+
+// ---------------------------------------------------------------------------
+// GetUserRCSubscription tests
+// ---------------------------------------------------------------------------
+
+func TestGetUserRCSubscription_NoRCID(t *testing.T) {
+	t.Parallel()
+	repo := &fakeAdminRepo{
+		getUserDetailFn: func(_ context.Context, _ repository.DBTX, _ string) (repository.AdminUserDetailRow, error) {
+			return repository.AdminUserDetailRow{ID: "user-1", RevenueCatAppUserID: nil}, nil
+		},
+	}
+	svc := newTestAdminService(repo, WithRCSubscriberFetcher(&fakeRCSubscriberFetcher{}))
+
+	_, err := svc.GetUserRCSubscription(context.Background(), GetUserDetailInput{UserID: "user-1"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "NOT_FOUND" {
+		t.Fatalf("expected NOT_FOUND error, got %v", err)
+	}
+}
+
+func TestGetUserRCSubscription_HappyPath(t *testing.T) {
+	t.Parallel()
+	now := time.Now().Add(24 * time.Hour) // future expiry
+	rcID := "rc_app_123"
+	repo := &fakeAdminRepo{
+		getUserDetailFn: func(_ context.Context, _ repository.DBTX, _ string) (repository.AdminUserDetailRow, error) {
+			return repository.AdminUserDetailRow{ID: "user-1", RevenueCatAppUserID: &rcID}, nil
+		},
+	}
+	fetcher := &fakeRCSubscriberFetcher{
+		getSubscriberFn: func(_ context.Context, appUserID string) (*revenuecat.SubscriberResponse, error) {
+			if appUserID != "rc_app_123" {
+				t.Fatalf("appUserID = %q, want %q", appUserID, "rc_app_123")
+			}
+			return &revenuecat.SubscriberResponse{
+				Subscriber: revenuecat.Subscriber{
+					Entitlements: map[string]revenuecat.EntitlementObj{
+						"premium": {
+							ExpiresDate:       &now,
+							PurchaseDate:      time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+							ProductIdentifier: "monthly_sub",
+						},
+					},
+				},
+			}, nil
+		},
+	}
+	svc := newTestAdminService(repo, WithRCSubscriberFetcher(fetcher))
+
+	out, err := svc.GetUserRCSubscription(context.Background(), GetUserDetailInput{UserID: "user-1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.AppUserID != "rc_app_123" {
+		t.Fatalf("app_user_id = %q, want %q", out.AppUserID, "rc_app_123")
+	}
+	if len(out.Entitlements) != 1 {
+		t.Fatalf("entitlements count = %d, want 1", len(out.Entitlements))
+	}
+	if !out.Entitlements[0].IsActive {
+		t.Fatal("expected entitlement to be active")
+	}
+	if out.Entitlements[0].ProductIdentifier != "monthly_sub" {
+		t.Fatalf("product_identifier = %q, want %q", out.Entitlements[0].ProductIdentifier, "monthly_sub")
 	}
 }
