@@ -276,8 +276,9 @@ components:
         leaderboard_visible:
           type: boolean
         created_at:
-          type: string
-          format: date-time
+          type: integer
+          format: int64
+          description: Unix timestamp in milliseconds
         subscription:
           nullable: true
           allOf:
@@ -292,8 +293,9 @@ components:
         is_active:
           type: boolean
         current_period_end:
-          type: string
-          format: date-time
+          type: integer
+          format: int64
+          description: Unix timestamp in milliseconds
           nullable: true
 
     UpdateMeRequest:
@@ -432,8 +434,9 @@ components:
         user:
           $ref: "#/components/schemas/BasicUser"
         since:
-          type: string
-          format: date-time
+          type: integer
+          format: int64
+          description: Unix timestamp in milliseconds
 
     FriendRequestItemResponse:
       type: object
@@ -445,8 +448,9 @@ components:
         user:
           $ref: "#/components/schemas/BasicUser"
         created_at:
-          type: string
-          format: date-time
+          type: integer
+          format: int64
+          description: Unix timestamp in milliseconds
 
     PaginationResult:
       type: object
@@ -1557,8 +1561,9 @@ components:
         premium_entitlement_active:
           type: boolean
         created_at:
-          type: string
-          format: date-time
+          type: integer
+          format: int64
+          description: Unix timestamp in milliseconds
 
     AdminListUsersResponse:
       type: object
@@ -1601,13 +1606,15 @@ components:
         leaderboard_visible:
           type: boolean
         created_at:
-          type: string
-          format: date-time
+          type: integer
+          format: int64
+          description: Unix timestamp in milliseconds
         is_premium:
           type: boolean
         current_period_end:
-          type: string
-          format: date-time
+          type: integer
+          format: int64
+          description: Unix timestamp in milliseconds
           nullable: true
         revenuecat_app_user_id:
           type: string
@@ -1653,10 +1660,10 @@ components:
           type: string
           enum: [premium]
         expires_at:
-          type: string
-          format: date-time
+          type: integer
+          format: int64
           nullable: true
-          description: Optional RFC3339 timestamp; must be in the future when provided.
+          description: Unix timestamp in milliseconds; must be in the future when provided.
 
     AdminEntitlementItem:
       type: object
@@ -1674,12 +1681,14 @@ components:
         is_active:
           type: boolean
         current_period_end:
-          type: string
-          format: date-time
+          type: integer
+          format: int64
+          description: Unix timestamp in milliseconds
           nullable: true
         updated_at:
-          type: string
-          format: date-time
+          type: integer
+          format: int64
+          description: Unix timestamp in milliseconds
 
     AdminListEntitlementsResponse:
       type: object
@@ -1766,15 +1775,18 @@ components:
         product_identifier:
           type: string
         purchase_date:
-          type: string
-          format: date-time
+          type: integer
+          format: int64
+          description: Unix timestamp in milliseconds
         expires_date:
-          type: string
-          format: date-time
+          type: integer
+          format: int64
+          description: Unix timestamp in milliseconds
           nullable: true
         grace_period_expires_date:
-          type: string
-          format: date-time
+          type: integer
+          format: int64
+          description: Unix timestamp in milliseconds
           nullable: true
 
     AdminUserRCSubscriptionResponse:

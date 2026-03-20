@@ -9,7 +9,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/IsorilovA/pauza-server/internal/apperror"
 	"github.com/IsorilovA/pauza-server/internal/middleware"
@@ -100,14 +99,14 @@ type userResponse struct {
 	ProfilePictureURL  *string               `json:"profile_picture_url"`
 	PushEnabled        bool                  `json:"push_enabled"`
 	LeaderboardVisible bool                  `json:"leaderboard_visible"`
-	CreatedAt          string                `json:"created_at"`
+	CreatedAt          int64                 `json:"created_at"`
 	Subscription       *subscriptionResponse `json:"subscription"`
 }
 
 type subscriptionResponse struct {
 	Entitlement      string  `json:"entitlement"`
 	IsActive         bool    `json:"is_active"`
-	CurrentPeriodEnd *string `json:"current_period_end"`
+	CurrentPeriodEnd *int64 `json:"current_period_end"`
 }
 
 type refreshRequest struct {
@@ -188,7 +187,7 @@ func userProfileToResponse(p service.UserProfile) userResponse {
 		ProfilePictureURL:  p.ProfilePictureURL,
 		PushEnabled:        p.PushEnabled,
 		LeaderboardVisible: p.LeaderboardVisible,
-		CreatedAt:          p.CreatedAt.UTC().Format(time.RFC3339),
+		CreatedAt:          p.CreatedAt.UnixMilli(),
 	}
 	if p.Subscription != nil {
 		resp.Subscription = subscriptionInfoToResponse(p.Subscription)
@@ -201,7 +200,7 @@ func subscriptionInfoToResponse(info *service.EntitlementInfo) *subscriptionResp
 		Entitlement: info.Entitlement.String(),
 		IsActive:    info.IsActive,
 	}
-	resp.CurrentPeriodEnd = formatTimePtr(info.CurrentPeriodEnd)
+	resp.CurrentPeriodEnd = toUnixMsPtr(info.CurrentPeriodEnd)
 	return resp
 }
 

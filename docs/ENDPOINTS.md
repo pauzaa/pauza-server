@@ -13,7 +13,7 @@
 | **Content-Type** | `application/json` for all request and response bodies (except `POST /api/v1/me/photo` which uses `multipart/form-data`). |
 | **Request ID** | Every response includes an `X-Request-Id` header echoed from the inbound request (or auto-generated). |
 | **Body limit** | Request bodies are capped at **1 MiB** globally. `POST /api/v1/me/photo` and all `/api/v1/ai/*` endpoints use a **5 MiB** limit. Exceeding the limit returns a `VALIDATION_ERROR`. |
-| **Timestamps** | All timestamps in JSON responses use **UTC RFC 3339** (e.g. `2025-01-15T08:30:00Z`). Sync-table timestamps are **Unix milliseconds** (`int64`). |
+| **Timestamps** | All timestamps in JSON responses use **Unix milliseconds** (`int64`). Date-only fields use `YYYY-MM-DD` strings. Health-probe timestamps use UTC RFC 3339. |
 | **Pagination** | Endpoints that paginate accept `?page=` (default `1`) and `?limit=` (default `20`, max `100`). Invalid or out-of-range values are silently clamped to defaults rather than rejected. |
 | **Authentication** | Protected endpoints require `Authorization: Bearer <access_token>`. Access tokens include a `sid` (session ID) claim that ties the token to a specific login session. Admin endpoints require an admin JWT. The webhook endpoint uses a separate Bearer secret. |
 | **Unknown fields** | All JSON-body endpoints (except the webhook) use `DisallowUnknownFields()`, so unrecognised keys anywhere in the JSON payload are rejected with `VALIDATION_ERROR`. The webhook decoder does **not** enforce this (forward-compatible). |
@@ -215,7 +215,7 @@ Verify the OTP and obtain access/refresh tokens.
     "profile_picture_url": null,
     "push_enabled": true,
     "leaderboard_visible": true,
-    "created_at": "2025-01-15T08:30:00Z",
+    "created_at": 1736929800000,
     "subscription": null
   }
 }
@@ -227,7 +227,7 @@ The `subscription` field, when present:
 {
   "entitlement": "premium",
   "is_active": true,
-  "current_period_end": "2025-02-15T08:30:00Z"
+  "current_period_end": 1739607000000
 }
 ```
 
@@ -423,7 +423,7 @@ List all users with pagination and optional search.
       "username": "jane42",
       "profile_picture_url": null,
       "premium_entitlement_active": true,
-      "created_at": "2025-01-15T08:30:00Z"
+      "created_at": 1736929800000
     }
   ],
   "pagination": {
@@ -469,9 +469,9 @@ Get detailed information about a single user.
   "username": "jane42",
   "profile_picture_url": null,
   "leaderboard_visible": true,
-  "created_at": "2025-01-15T08:30:00Z",
+  "created_at": 1736929800000,
   "is_premium": true,
-  "current_period_end": "2025-02-15T08:30:00Z",
+  "current_period_end": 1739607000000,
   "revenuecat_app_user_id": "rc_abc123",
   "friend_count": 5,
   "total_sessions": 42,
@@ -546,7 +546,7 @@ Grant or revoke an entitlement override for a user.
 |---|---|---|---|
 | `action` | string | yes | `"grant"` or `"revoke"` |
 | `entitlement` | string | yes | Must be `"premium"` (the only accepted value) |
-| `expires_at` | string \| null | no | RFC 3339 timestamp, must be in the future |
+| `expires_at` | int64 \| null | no | Unix ms (int64), must be in the future |
 
 **Success — 200 OK**
 
@@ -597,8 +597,8 @@ List entitlement records with optional filtering.
       "username": "jane42",
       "entitlement": "premium",
       "is_active": true,
-      "current_period_end": "2025-02-15T08:30:00Z",
-      "updated_at": "2025-01-15T08:30:00Z"
+      "current_period_end": 1739607000000,
+      "updated_at": 1736929800000
     }
   ],
   "pagination": {
@@ -792,8 +792,8 @@ have a non-empty `revenuecat_app_user_id` in the database.
       "entitlement_id": "premium",
       "is_active": true,
       "product_identifier": "annual_premium",
-      "purchase_date": "2025-01-15T08:30:00Z",
-      "expires_date": "2026-01-15T08:30:00Z",
+      "purchase_date": 1736929800000,
+      "expires_date": 1768465800000,
       "grace_period_expires_date": null
     }
   ]
@@ -838,7 +838,7 @@ Get the authenticated user's profile.
   "profile_picture_url": null,
   "push_enabled": true,
   "leaderboard_visible": true,
-  "created_at": "2025-01-15T08:30:00Z",
+  "created_at": 1736929800000,
   "subscription": null
 }
 ```
@@ -1243,7 +1243,7 @@ List the authenticated user's accepted friends.
         "username": "jane42",
         "profile_picture_url": null
       },
-      "since": "2025-01-15T08:30:00Z"
+      "since": 1736929800000
     }
   ],
   "pagination": {
@@ -1326,7 +1326,7 @@ List pending friend requests received by the authenticated user.
         "username": "bob99",
         "profile_picture_url": null
       },
-      "created_at": "2025-01-15T08:30:00Z"
+      "created_at": 1736929800000
     }
   ]
 }

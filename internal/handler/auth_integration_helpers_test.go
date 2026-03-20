@@ -50,7 +50,7 @@ type authEnvelope struct {
 		ProfilePictureURL  *string `json:"profile_picture_url"`
 		PushEnabled        bool    `json:"push_enabled"`
 		LeaderboardVisible bool    `json:"leaderboard_visible"`
-		CreatedAt          string  `json:"created_at"`
+		CreatedAt          int64   `json:"created_at"`
 		Subscription       any     `json:"subscription"`
 	} `json:"user"`
 }
@@ -243,10 +243,7 @@ func assertAuthEnvelope(t *testing.T, got authEnvelope, email string) {
 	if got.User.Username == "" {
 		t.Fatal("expected user.username")
 	}
-	if got.User.CreatedAt == "" {
+	if got.User.CreatedAt == 0 {
 		t.Fatal("expected user.created_at")
-	}
-	if _, err := time.Parse(time.RFC3339, got.User.CreatedAt); err != nil {
-		t.Fatalf("created_at parse: %v", err)
 	}
 }

@@ -270,14 +270,14 @@ func TestVerifyOTP_Success(t *testing.T) {
 	if body.User.ID != "user-id" || body.User.Email != "user@example.com" {
 		t.Fatalf("user = %+v", body.User)
 	}
-	if body.User.CreatedAt != createdAt.Format(time.RFC3339) {
-		t.Fatalf("created_at = %q, want %q", body.User.CreatedAt, createdAt.Format(time.RFC3339))
+	if body.User.CreatedAt != createdAt.UnixMilli() {
+		t.Fatalf("created_at = %d, want %d", body.User.CreatedAt, createdAt.UnixMilli())
 	}
 	if body.User.Subscription == nil {
 		t.Fatal("expected subscription to be present")
 	}
-	if body.User.Subscription.CurrentPeriodEnd == nil || *body.User.Subscription.CurrentPeriodEnd != periodEnd.Format(time.RFC3339) {
-		t.Fatalf("current_period_end = %v, want %q", body.User.Subscription.CurrentPeriodEnd, periodEnd.Format(time.RFC3339))
+	if body.User.Subscription.CurrentPeriodEnd == nil || *body.User.Subscription.CurrentPeriodEnd != periodEnd.UnixMilli() {
+		t.Fatalf("current_period_end = %v, want %d", body.User.Subscription.CurrentPeriodEnd, periodEnd.UnixMilli())
 	}
 }
 

@@ -99,7 +99,7 @@ type adminUserItemResponse struct {
 	Username                 string  `json:"username"`
 	ProfilePictureURL        *string `json:"profile_picture_url"`
 	PremiumEntitlementActive bool    `json:"premium_entitlement_active"`
-	CreatedAt                string  `json:"created_at"`
+	CreatedAt                int64   `json:"created_at"`
 }
 
 type adminListUsersResponse struct {
@@ -120,9 +120,9 @@ type adminUserDetailResponse struct {
 	Username            string  `json:"username"`
 	ProfilePictureURL   *string `json:"profile_picture_url"`
 	LeaderboardVisible  bool    `json:"leaderboard_visible"`
-	CreatedAt           string  `json:"created_at"`
+	CreatedAt           int64   `json:"created_at"`
 	IsPremium           bool    `json:"is_premium"`
-	CurrentPeriodEnd    *string `json:"current_period_end"`
+	CurrentPeriodEnd    *int64  `json:"current_period_end"`
 	RevenueCatAppUserID *string `json:"revenuecat_app_user_id"`
 	FriendCount         int     `json:"friend_count"`
 	TotalSessions       int     `json:"total_sessions"`
@@ -141,7 +141,7 @@ type adminStatsResponse struct {
 type manageEntitlementRequest struct {
 	Action      domain.AdminOverrideAction `json:"action"`
 	Entitlement domain.Entitlement         `json:"entitlement"`
-	ExpiresAt   *string                    `json:"expires_at"`
+	ExpiresAt   *int64                     `json:"expires_at"`
 }
 
 type adminEntitlementItemResponse struct {
@@ -150,8 +150,8 @@ type adminEntitlementItemResponse struct {
 	Username         string  `json:"username"`
 	Entitlement      string  `json:"entitlement"`
 	IsActive         bool    `json:"is_active"`
-	CurrentPeriodEnd *string `json:"current_period_end"`
-	UpdatedAt        string  `json:"updated_at"`
+	CurrentPeriodEnd *int64 `json:"current_period_end"`
+	UpdatedAt        int64  `json:"updated_at"`
 }
 
 type adminListEntitlementsResponse struct {
@@ -228,7 +228,7 @@ func (h *AdminHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 			Username:                 u.Username,
 			ProfilePictureURL:        u.ProfilePictureURL,
 			PremiumEntitlementActive: u.IsPremium,
-			CreatedAt:                u.CreatedAt.UTC().Format(time.RFC3339),
+			CreatedAt:                u.CreatedAt.UnixMilli(),
 		}
 	}
 
@@ -266,13 +266,13 @@ func (h *AdminHandler) GetUserDetail(w http.ResponseWriter, r *http.Request) {
 		Username:            out.Username,
 		ProfilePictureURL:   out.ProfilePictureURL,
 		LeaderboardVisible:  out.LeaderboardVisible,
-		CreatedAt:           out.CreatedAt.UTC().Format(time.RFC3339),
+		CreatedAt:           out.CreatedAt.UnixMilli(),
 		IsPremium:           out.IsPremium,
 		RevenueCatAppUserID: out.RevenueCatAppUserID,
 		FriendCount:         out.FriendCount,
 		TotalSessions:       out.TotalSessions,
 		LastSessionTime:     out.LastSessionTime,
-		CurrentPeriodEnd:    formatTimePtr(out.CurrentPeriodEnd),
+		CurrentPeriodEnd:    toUnixMsPtr(out.CurrentPeriodEnd),
 	}
 
 	writeJSON(w, h.logger, http.StatusOK, resp, "admin-user-detail")
@@ -319,13 +319,15 @@ func (h *AdminHandler) ManageEntitlement(w http.ResponseWriter, r *http.Request)
 	}
 	var expiresAt *time.Time
 	if req.ExpiresAt != nil {
-		t, parseErr := time.Parse(time.RFC3339, *req.ExpiresAt)
-		if parseErr != nil {
-			fields["expires_at"] = "expires_at must be a valid RFC3339 timestamp"
-		} else if !t.After(time.Now()) {
-			fields["expires_at"] = "expires_at must be in the future"
+		if *req.ExpiresAt <= 0 {
+			fields["expires_at"] = "expires_at must be a positive Unix millisecond timestamp"
 		} else {
-			expiresAt = &t
+			t := time.UnixMilli(*req.ExpiresAt)
+			if !t.After(time.Now()) {
+				fields["expires_at"] = "expires_at must be in the future"
+			} else {
+				expiresAt = &t
+			}
 		}
 	}
 
@@ -390,8 +392,8 @@ func (h *AdminHandler) ListEntitlements(w http.ResponseWriter, r *http.Request) 
 			Username:         e.Username,
 			Entitlement:      e.Entitlement,
 			IsActive:         e.IsActive,
-			CurrentPeriodEnd: formatTimePtr(e.CurrentPeriodEnd),
-			UpdatedAt:        e.UpdatedAt.UTC().Format(time.RFC3339),
+			CurrentPeriodEnd: toUnixMsPtr(e.CurrentPeriodEnd),
+			UpdatedAt:        e.UpdatedAt.UnixMilli(),
 		}
 	}
 
@@ -530,9 +532,9 @@ type adminRCSubscriberEntitlementResponse struct {
 	EntitlementID          string  `json:"entitlement_id"`
 	IsActive               bool    `json:"is_active"`
 	ProductIdentifier      string  `json:"product_identifier"`
-	PurchaseDate           string  `json:"purchase_date"`
-	ExpiresDate            *string `json:"expires_date"`
-	GracePeriodExpiresDate *string `json:"grace_period_expires_date"`
+	PurchaseDate           int64  `json:"purchase_date"`
+	ExpiresDate            *int64 `json:"expires_date"`
+	GracePeriodExpiresDate *int64 `json:"grace_period_expires_date"`
 }
 
 // GetUserRCSubscription handles GET /api/v1/admin/users/{id}/revenuecat.
@@ -554,9 +556,9 @@ func (h *AdminHandler) GetUserRCSubscription(w http.ResponseWriter, r *http.Requ
 			EntitlementID:          e.EntitlementID,
 			IsActive:               e.IsActive,
 			ProductIdentifier:      e.ProductIdentifier,
-			PurchaseDate:           e.PurchaseDate.UTC().Format(time.RFC3339),
-			ExpiresDate:            formatTimePtr(e.ExpiresDate),
-			GracePeriodExpiresDate: formatTimePtr(e.GracePeriodExpiresDate),
+			PurchaseDate:           e.PurchaseDate.UnixMilli(),
+			ExpiresDate:            toUnixMsPtr(e.ExpiresDate),
+			GracePeriodExpiresDate: toUnixMsPtr(e.GracePeriodExpiresDate),
 		}
 	}
 

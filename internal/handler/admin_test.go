@@ -284,8 +284,8 @@ func TestAdminListUsers_HappyPath(t *testing.T) {
 	if !body.Users[0].PremiumEntitlementActive {
 		t.Error("users[0].premium_entitlement_active = false, want true")
 	}
-	if body.Users[0].CreatedAt != "2026-03-10T12:00:00Z" {
-		t.Errorf("users[0].created_at = %q, want %q", body.Users[0].CreatedAt, "2026-03-10T12:00:00Z")
+	if body.Users[0].CreatedAt != now.UnixMilli() {
+		t.Errorf("users[0].created_at = %d, want %d", body.Users[0].CreatedAt, now.UnixMilli())
 	}
 	if body.Pagination.Total != 1 || body.Pagination.Page != 1 || body.Pagination.Limit != 20 {
 		t.Errorf("pagination = %+v", body.Pagination)
@@ -385,8 +385,8 @@ func TestAdminGetUserDetail_HappyPath(t *testing.T) {
 	if !body.IsPremium {
 		t.Error("is_premium = false, want true")
 	}
-	if body.CurrentPeriodEnd == nil || *body.CurrentPeriodEnd != "2026-04-10T12:00:00Z" {
-		t.Errorf("current_period_end = %v, want %q", body.CurrentPeriodEnd, "2026-04-10T12:00:00Z")
+	if body.CurrentPeriodEnd == nil || *body.CurrentPeriodEnd != periodEnd.UnixMilli() {
+		t.Errorf("current_period_end = %v, want %d", body.CurrentPeriodEnd, periodEnd.UnixMilli())
 	}
 	if body.RevenueCatAppUserID == nil || *body.RevenueCatAppUserID != rcID {
 		t.Errorf("revenuecat_app_user_id = %v, want %q", body.RevenueCatAppUserID, rcID)
@@ -526,14 +526,17 @@ func TestAdminManageEntitlement_InvalidExpiresAt(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ManageEntitlement(rec, req)
 
-	assertValidationEnvelope(t, rec, []string{"expires_at"})
+	// "not-a-date" is not valid JSON for int64, so it should fail with a validation error
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
 }
 
 func TestAdminManageEntitlement_PastExpiresAt(t *testing.T) {
 	t.Parallel()
 	h := newTestAdminHandler(&mockAdminService{})
-	past := time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339)
-	body := fmt.Sprintf(`{"action":"grant","entitlement":"premium","expires_at":"%s"}`, past)
+	past := time.Now().Add(-24 * time.Hour).UnixMilli()
+	body := fmt.Sprintf(`{"action":"grant","entitlement":"premium","expires_at":%d}`, past)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
 		strings.NewReader(body))
 	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000001")
@@ -554,8 +557,8 @@ func TestAdminManageEntitlement_ValidExpiresAtPassedToService(t *testing.T) {
 		},
 	})
 
-	future := time.Now().Add(48 * time.Hour).UTC().Format(time.RFC3339)
-	body := fmt.Sprintf(`{"action":"grant","entitlement":"premium","expires_at":"%s"}`, future)
+	future := time.Now().Add(48 * time.Hour).UnixMilli()
+	body := fmt.Sprintf(`{"action":"grant","entitlement":"premium","expires_at":%d}`, future)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
 		strings.NewReader(body))
 	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000001")
@@ -702,8 +705,8 @@ func TestAdminListEntitlements_HappyPath(t *testing.T) {
 	if body.Entitlements[0].UserID != "00000000-0000-0000-0000-000000000001" {
 		t.Errorf("entitlements[0].user_id = %q, want %q", body.Entitlements[0].UserID, "00000000-0000-0000-0000-000000000001")
 	}
-	if body.Entitlements[0].CurrentPeriodEnd == nil || *body.Entitlements[0].CurrentPeriodEnd != "2026-04-10T12:00:00Z" {
-		t.Errorf("current_period_end = %v, want %q", body.Entitlements[0].CurrentPeriodEnd, "2026-04-10T12:00:00Z")
+	if body.Entitlements[0].CurrentPeriodEnd == nil || *body.Entitlements[0].CurrentPeriodEnd != periodEnd.UnixMilli() {
+		t.Errorf("current_period_end = %v, want %d", body.Entitlements[0].CurrentPeriodEnd, periodEnd.UnixMilli())
 	}
 	if body.Pagination.Total != 1 {
 		t.Errorf("pagination.total = %d, want 1", body.Pagination.Total)

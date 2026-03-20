@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -80,7 +79,7 @@ type friendMutationResponse struct {
 type friendResponse struct {
 	FriendshipID string           `json:"friendship_id"`
 	User         domain.BasicUser `json:"user"`
-	Since        string           `json:"since"`
+	Since        int64            `json:"since"`
 }
 
 type friendListResponse struct {
@@ -91,7 +90,7 @@ type friendListResponse struct {
 type friendRequestItemResponse struct {
 	FriendshipID string           `json:"friendship_id"`
 	User         domain.BasicUser `json:"user"`
-	CreatedAt    string           `json:"created_at"`
+	CreatedAt    int64            `json:"created_at"`
 }
 
 type friendRequestsListResponse struct {
@@ -206,7 +205,7 @@ func (h *SocialHandler) ListFriends(w http.ResponseWriter, r *http.Request) {
 		resp.Friends = append(resp.Friends, friendResponse{
 			FriendshipID: f.FriendshipID,
 			User:         f.User,
-			Since:        f.Since.Format(time.RFC3339),
+			Since:        f.Since.UnixMilli(),
 		})
 	}
 	writeJSON(w, h.logger, http.StatusOK, resp, "list-friends")
@@ -258,7 +257,7 @@ func (h *SocialHandler) listRequests(w http.ResponseWriter, r *http.Request, dir
 		resp.Requests = append(resp.Requests, friendRequestItemResponse{
 			FriendshipID: req.FriendshipID,
 			User:         req.User,
-			CreatedAt:    req.CreatedAt.Format(time.RFC3339),
+			CreatedAt:    req.CreatedAt.UnixMilli(),
 		})
 	}
 	writeJSON(w, h.logger, http.StatusOK, resp, "list-friend-requests")
