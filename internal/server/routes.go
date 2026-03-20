@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/cors"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/IsorilovA/pauza-server/internal/config"
@@ -43,6 +44,15 @@ func mountRoutes(r chi.Router, cfg *config.Config, logger *slog.Logger, pool *pg
 			Post("/webhooks/revenuecat", deps.webhookHandler.HandleRevenueCat)
 
 		r.Route("/admin", func(r chi.Router) {
+			// CORS — must be first so preflight OPTIONS are handled before auth/rate-limit
+			r.Use(cors.Handler(cors.Options{
+				AllowedOrigins:   cfg.ParseAdminCORSOrigins(),
+				AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+				AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Request-Id"},
+				AllowCredentials: false,
+				MaxAge:           300,
+			}))
+
 			r.With(authmw.RateLimit(limiters.admin, cfg.AdminRateLimit, authmw.IPKey)).Post("/login", deps.adminHandler.Login)
 
 			r.Group(func(r chi.Router) {

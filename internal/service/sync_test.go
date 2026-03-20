@@ -97,6 +97,10 @@ func (f *fakeSyncRepo) RecomputeStreakAggregates(ctx context.Context, db reposit
 	return nil
 }
 
+func (f *fakeSyncRepo) RefreshLeaderboard(ctx context.Context, db repository.DBTX, userID string) error {
+	return nil
+}
+
 func TestSync_MissingUser_ReturnsUnauthorized(t *testing.T) {
 	t.Parallel()
 
