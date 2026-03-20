@@ -981,6 +981,7 @@ components:
         reason:
           type: string
           minLength: 1
+          enum: [manual, nfc, qr, timer]
         occurred_at:
           type: integer
           format: int64
@@ -1539,6 +1540,7 @@ components:
 
     AdminUserItem:
       type: object
+      required: [id, email, name, username, premium_entitlement_active, created_at]
       properties:
         id:
           type: string
@@ -1582,6 +1584,7 @@ components:
 
     AdminUserDetail:
       type: object
+      required: [id, email, name, username, leaderboard_visible, created_at, is_premium, friend_count, total_sessions]
       properties:
         id:
           type: string
@@ -1620,6 +1623,7 @@ components:
 
     AdminStatsResponse:
       type: object
+      required: [total_users, active_users_30d, users_with_premium_entitlement, total_friendships, avg_streak_days, avg_daily_focus_time_ms]
       properties:
         total_users:
           type: integer
@@ -1656,6 +1660,7 @@ components:
 
     AdminEntitlementItem:
       type: object
+      required: [user_id, email, username, entitlement, is_active, updated_at]
       properties:
         user_id:
           type: string
@@ -1686,6 +1691,102 @@ components:
             $ref: "#/components/schemas/AdminEntitlementItem"
         pagination:
           $ref: "#/components/schemas/AdminPagination"
+
+    # -- Admin time-series --------------------------------------------------
+    AdminTimeSeriesDataPoint:
+      type: object
+      required: [date, value]
+      properties:
+        date:
+          type: string
+          description: Date in YYYY-MM-DD format.
+          example: "2025-01-15"
+        value:
+          type: integer
+
+    AdminTimeSeriesResponse:
+      type: object
+      required: [data, granularity]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminTimeSeriesDataPoint"
+        granularity:
+          type: string
+          enum: [day, week, month]
+
+    # -- Admin RevenueCat ---------------------------------------------------
+    AdminRCOverviewResponse:
+      type: object
+      required: [mrr, arr, active_subscribers, active_trials]
+      properties:
+        mrr:
+          type: integer
+          description: Monthly recurring revenue in cents.
+        arr:
+          type: integer
+          description: Annual recurring revenue in cents.
+        active_subscribers:
+          type: integer
+        active_trials:
+          type: integer
+
+    AdminRCChartPoint:
+      type: object
+      required: [date, value]
+      properties:
+        date:
+          type: string
+          description: Date in YYYY-MM-DD format.
+          example: "2025-01-15"
+        value:
+          type: integer
+
+    AdminRCChartResponse:
+      type: object
+      required: [name, data]
+      properties:
+        name:
+          type: string
+          enum: [revenue, customers_new, customers_active, churn]
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminRCChartPoint"
+
+    AdminRCSubscriberEntitlement:
+      type: object
+      required: [entitlement_id, is_active, product_identifier, purchase_date]
+      properties:
+        entitlement_id:
+          type: string
+        is_active:
+          type: boolean
+        product_identifier:
+          type: string
+        purchase_date:
+          type: string
+          format: date-time
+        expires_date:
+          type: string
+          format: date-time
+          nullable: true
+        grace_period_expires_date:
+          type: string
+          format: date-time
+          nullable: true
+
+    AdminUserRCSubscriptionResponse:
+      type: object
+      required: [app_user_id, entitlements]
+      properties:
+        app_user_id:
+          type: string
+        entitlements:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminRCSubscriberEntitlement"
 
     # -- AI Analysis --------------------------------------------------------
     AppUsageItem:
@@ -2847,6 +2948,8 @@ paths:
                 $ref: "#/components/schemas/FriendMutationResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/SubscriptionRequired"
         "404":
           $ref: "#/components/responses/NotFound"
         "429":
@@ -3032,10 +3135,11 @@ paths:
         - name: q
           in: query
           required: true
-          description: Username prefix (min 3 characters).
+          description: Username prefix (min 3, max 50 characters).
           schema:
             type: string
             minLength: 3
+            maxLength: 50
       responses:
         "200":
           description: Matching users returned.
@@ -3344,9 +3448,10 @@ paths:
         - name: id
           in: path
           required: true
-          description: User identifier. The handler only checks that the path segment is non-empty.
+          description: User UUID. Must be a valid UUID; a non-UUID value returns 422.
           schema:
             type: string
+            format: uuid
       responses:
         "200":
           description: Full user detail.
@@ -3417,9 +3522,10 @@ paths:
         - name: id
           in: path
           required: true
-          description: User identifier. The handler only checks that the path segment is non-empty.
+          description: User UUID. Must be a valid UUID; a non-UUID value returns 422.
           schema:
             type: string
+            format: uuid
       requestBody:
         required: true
         content:
@@ -3502,6 +3608,222 @@ paths:
                 $ref: "#/components/schemas/AdminListEntitlementsResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/admin/stats/user-growth:
+    get:
+      operationId: adminGetUserGrowth
+      tags: [Admin]
+      summary: User growth time series (admin)
+      description: Returns a time series of new-user registrations over the requested range. Requires an admin JWT. Rate limited by admin user ID using the `admin` tier. Invalid `range` values silently fall back to `30d`.
+      security:
+        - AdminJWT: []
+      parameters:
+        - name: range
+          in: query
+          description: Time range for the series. Invalid or missing values fall back to `30d`.
+          schema:
+            type: string
+            enum: [30d, 90d, 1y, all]
+            default: 30d
+        - name: granularity
+          in: query
+          description: Optional bucket size. Omit to let the server auto-select based on range. Invalid explicit values return 422.
+          schema:
+            type: string
+            enum: [day, week, month]
+      responses:
+        "200":
+          description: Time series data.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminTimeSeriesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/admin/stats/active-users:
+    get:
+      operationId: adminGetActiveUsers
+      tags: [Admin]
+      summary: Active users time series (admin)
+      description: Returns a time series of daily active users over the requested range. Requires an admin JWT. Rate limited by admin user ID using the `admin` tier. Invalid `range` values silently fall back to `30d`.
+      security:
+        - AdminJWT: []
+      parameters:
+        - name: range
+          in: query
+          description: Time range for the series. Invalid or missing values fall back to `30d`.
+          schema:
+            type: string
+            enum: [30d, 90d, 1y, all]
+            default: 30d
+        - name: granularity
+          in: query
+          description: Optional bucket size. Omit to let the server auto-select based on range. Invalid explicit values return 422.
+          schema:
+            type: string
+            enum: [day, week, month]
+      responses:
+        "200":
+          description: Time series data.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminTimeSeriesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/admin/revenuecat/overview:
+    get:
+      operationId: adminGetRCOverview
+      tags: [Admin]
+      summary: RevenueCat overview metrics (admin)
+      description: Returns aggregate RevenueCat subscription metrics. Requires an admin JWT. Rate limited by admin user ID using the `admin` tier.
+      security:
+        - AdminJWT: []
+      responses:
+        "200":
+          description: RevenueCat overview metrics.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminRCOverviewResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/admin/revenuecat/charts/{chart_name}:
+    get:
+      operationId: adminGetRCChart
+      tags: [Admin]
+      summary: RevenueCat chart data (admin)
+      description: Returns time-series chart data from RevenueCat for the specified chart. Requires an admin JWT. Rate limited by admin user ID using the `admin` tier. Invalid `chart_name` values return 422. Invalid `range` values silently fall back to `30d`.
+      security:
+        - AdminJWT: []
+      parameters:
+        - name: chart_name
+          in: path
+          required: true
+          description: Chart identifier. Must be one of the allowed values; any other value returns 422.
+          schema:
+            type: string
+            enum: [revenue, customers_new, customers_active, churn]
+        - name: range
+          in: query
+          description: Time range for the chart. Invalid or missing values fall back to `30d`.
+          schema:
+            type: string
+            enum: [30d, 90d, 1y, all]
+            default: 30d
+      responses:
+        "200":
+          description: Chart data returned.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminRCChartResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/admin/users/{id}/revenuecat:
+    get:
+      operationId: adminGetUserRCSubscription
+      tags: [Admin]
+      summary: Get user RevenueCat subscription (admin)
+      description: Returns RevenueCat entitlement and subscription details for a specific user. Requires an admin JWT. Rate limited by admin user ID using the `admin` tier.
+      security:
+        - AdminJWT: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: User UUID. Must be a valid UUID; a non-UUID value returns 422.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: User RevenueCat subscription data.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminUserRCSubscriptionResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
         "429":
