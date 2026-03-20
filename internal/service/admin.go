@@ -20,6 +20,11 @@ type RCMetricsFetcher interface {
 	GetChart(ctx context.Context, params revenuecat.ChartParams) (*revenuecat.ChartResponse, error)
 }
 
+// RCSubscriberFetcher abstracts the RevenueCat v1 subscriber lookup.
+type RCSubscriberFetcher interface {
+	GetSubscriber(ctx context.Context, appUserID string) (*revenuecat.SubscriberResponse, error)
+}
+
 // ---------------------------------------------------------------------------
 // Input / output types
 // ---------------------------------------------------------------------------
@@ -130,6 +135,28 @@ type TimeSeriesPoint struct {
 	Value int
 }
 
+// TimeSeriesOutput holds time-series data along with the resolved granularity.
+type TimeSeriesOutput struct {
+	Points      []TimeSeriesPoint
+	Granularity string
+}
+
+// RCSubscriberOutput holds the admin-facing view of a user's RevenueCat subscription.
+type RCSubscriberOutput struct {
+	AppUserID    string
+	Entitlements []RCSubscriberEntitlement
+}
+
+// RCSubscriberEntitlement holds a single entitlement from a RevenueCat subscriber record.
+type RCSubscriberEntitlement struct {
+	EntitlementID          string
+	IsActive               bool
+	ProductIdentifier      string
+	PurchaseDate           time.Time
+	ExpiresDate            *time.Time
+	GracePeriodExpiresDate *time.Time
+}
+
 // PlatformStatsOutput holds the aggregate statistics returned by the admin dashboard.
 type PlatformStatsOutput struct {
 	TotalUsers          int
@@ -156,7 +183,21 @@ type AdminService struct {
 	jwtSecret     string
 	adminTokenTTL time.Duration
 	logger        *slog.Logger
-	rcV2Client    RCMetricsFetcher // nil when V2 not configured
+	rcV2Client    RCMetricsFetcher    // nil when V2 not configured
+	rcV1Client    RCSubscriberFetcher // nil when V1 not configured
+}
+
+// AdminServiceOption configures optional AdminService dependencies.
+type AdminServiceOption func(*AdminService)
+
+// WithRCMetricsFetcher sets the RevenueCat v2 metrics client.
+func WithRCMetricsFetcher(rc RCMetricsFetcher) AdminServiceOption {
+	return func(s *AdminService) { s.rcV2Client = rc }
+}
+
+// WithRCSubscriberFetcher sets the RevenueCat v1 subscriber client.
+func WithRCSubscriberFetcher(rc RCSubscriberFetcher) AdminServiceOption {
+	return func(s *AdminService) { s.rcV1Client = rc }
 }
 
 // NewAdminService creates an AdminService with its required dependencies.
@@ -166,16 +207,19 @@ func NewAdminService(
 	jwtSecret string,
 	adminTokenTTL time.Duration,
 	logger *slog.Logger,
-	rcV2Client RCMetricsFetcher,
+	opts ...AdminServiceOption,
 ) *AdminService {
-	return &AdminService{
+	s := &AdminService{
 		pool:          pool,
 		adminRepo:     adminRepo,
 		jwtSecret:     jwtSecret,
 		adminTokenTTL: adminTokenTTL,
 		logger:        logger,
-		rcV2Client:    rcV2Client,
 	}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // GetRCOverview returns RevenueCat overview metrics from the v2 API.
@@ -321,8 +365,8 @@ func (s *AdminService) GetPlatformStats(ctx context.Context) (PlatformStatsOutpu
 	}, nil
 }
 
-// NormalizeTimeSeriesInput fills in defaults for missing fields.
-func NormalizeTimeSeriesInput(in TimeSeriesInput) TimeSeriesInput {
+// normalizeTimeSeriesInput fills in defaults for missing fields.
+func normalizeTimeSeriesInput(in TimeSeriesInput) TimeSeriesInput {
 	if in.Granularity == "" {
 		switch in.Range {
 		case "30d":
@@ -366,31 +410,31 @@ func toServicePoints(points []repository.TimeSeriesPoint) []TimeSeriesPoint {
 }
 
 // GetUserGrowth returns time-series data for new user registrations.
-func (s *AdminService) GetUserGrowth(ctx context.Context, in TimeSeriesInput) ([]TimeSeriesPoint, error) {
-	in = NormalizeTimeSeriesInput(in)
+func (s *AdminService) GetUserGrowth(ctx context.Context, in TimeSeriesInput) (TimeSeriesOutput, error) {
+	in = normalizeTimeSeriesInput(in)
 	if !validGranularities[in.Granularity] {
-		return nil, ValidationError("Invalid query parameter", apperror.FieldErrors{"granularity": "must be day, week, or month"})
+		return TimeSeriesOutput{}, ValidationError("Invalid query parameter", apperror.FieldErrors{"granularity": "must be day, week, or month"})
 	}
 	points, err := s.adminRepo.GetUserGrowth(ctx, s.pool, timeSeriesParams(in))
 	if err != nil {
 		s.logger.Error("getting user growth", "err", err)
-		return nil, ErrInternal
+		return TimeSeriesOutput{}, ErrInternal
 	}
-	return toServicePoints(points), nil
+	return TimeSeriesOutput{Points: toServicePoints(points), Granularity: in.Granularity}, nil
 }
 
 // GetActiveUsers returns time-series data for distinct active users.
-func (s *AdminService) GetActiveUsers(ctx context.Context, in TimeSeriesInput) ([]TimeSeriesPoint, error) {
-	in = NormalizeTimeSeriesInput(in)
+func (s *AdminService) GetActiveUsers(ctx context.Context, in TimeSeriesInput) (TimeSeriesOutput, error) {
+	in = normalizeTimeSeriesInput(in)
 	if !validGranularities[in.Granularity] {
-		return nil, ValidationError("Invalid query parameter", apperror.FieldErrors{"granularity": "must be day, week, or month"})
+		return TimeSeriesOutput{}, ValidationError("Invalid query parameter", apperror.FieldErrors{"granularity": "must be day, week, or month"})
 	}
 	points, err := s.adminRepo.GetActiveUsers(ctx, s.pool, timeSeriesParams(in))
 	if err != nil {
 		s.logger.Error("getting active users", "err", err)
-		return nil, ErrInternal
+		return TimeSeriesOutput{}, ErrInternal
 	}
-	return toServicePoints(points), nil
+	return TimeSeriesOutput{Points: toServicePoints(points), Granularity: in.Granularity}, nil
 }
 
 // ManageEntitlement grants or revokes a user entitlement via admin override.
@@ -463,4 +507,58 @@ func (s *AdminService) ListEntitlements(ctx context.Context, in ListEntitlements
 		Page:         page,
 		Limit:        limit,
 	}, nil
+}
+
+// GetUserRCSubscription returns a user's live RevenueCat subscriber record.
+func (s *AdminService) GetUserRCSubscription(ctx context.Context, in GetUserDetailInput) (*RCSubscriberOutput, error) {
+	if s.rcV1Client == nil {
+		s.logger.Error("revenuecat v1 not configured")
+		return nil, ErrInternal
+	}
+
+	// GetUserDetail already returns RevenueCatAppUserID — no extra query needed.
+	row, err := s.adminRepo.GetUserDetail(ctx, s.pool, in.UserID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return nil, NotFoundError("User not found")
+	}
+	if err != nil {
+		s.logger.Error("getting user detail for RC subscription", "user_id", in.UserID, "err", err)
+		return nil, ErrInternal
+	}
+
+	if row.RevenueCatAppUserID == nil || *row.RevenueCatAppUserID == "" {
+		return nil, NotFoundError("User has no RevenueCat subscription")
+	}
+	rcAppUserID := *row.RevenueCatAppUserID
+
+	// Fetch live subscriber record from RevenueCat.
+	sub, err := s.rcV1Client.GetSubscriber(ctx, rcAppUserID)
+	if err != nil {
+		s.logger.Error("fetching RC subscriber", "rc_app_user_id", rcAppUserID, "err", err)
+		return nil, ErrInternal
+	}
+
+	return transformSubscriberResponse(rcAppUserID, sub), nil
+}
+
+func transformSubscriberResponse(appUserID string, sub *revenuecat.SubscriberResponse) *RCSubscriberOutput {
+	now := time.Now()
+	entitlements := make([]RCSubscriberEntitlement, 0, len(sub.Subscriber.Entitlements))
+	for id, ent := range sub.Subscriber.Entitlements {
+		derived := revenuecat.DeriveEntitlement(&sub.Subscriber, id, now)
+
+		entitlements = append(entitlements, RCSubscriberEntitlement{
+			EntitlementID:          id,
+			IsActive:               derived.IsActive,
+			ProductIdentifier:      ent.ProductIdentifier,
+			PurchaseDate:           ent.PurchaseDate,
+			ExpiresDate:            ent.ExpiresDate,
+			GracePeriodExpiresDate: ent.GracePeriodExpiresDate,
+		})
+	}
+
+	return &RCSubscriberOutput{
+		AppUserID:    appUserID,
+		Entitlements: entitlements,
+	}
 }

@@ -52,6 +52,16 @@ func writeEmptyJSON(w http.ResponseWriter, logger *slog.Logger, status int, op s
 	writeJSON(w, logger, status, struct{}{}, op)
 }
 
+// formatTimePtr converts a *time.Time to an RFC3339 *string, returning nil
+// for nil input. Used across admin/auth handlers for JSON response fields.
+func formatTimePtr(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := t.UTC().Format(time.RFC3339)
+	return &s
+}
+
 func writeServiceError(w http.ResponseWriter, err error) {
 	var apiErr *service.APIError
 	if errors.As(err, &apiErr) {

@@ -92,10 +92,13 @@ func buildDependencies(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Po
 	if cfg.RevenueCatV2SecretKey != "" && cfg.RevenueCatProjectID != "" {
 		rcMetricsFetcher = revenuecat.NewV2Client(cfg.RevenueCatV2SecretKey, cfg.RevenueCatProjectID)
 	}
-	adminService := service.NewAdminService(pool, adminRepo, cfg.JWTSecret, cfg.AdminJWTAccessTokenTTL, logger, rcMetricsFetcher)
-	adminHandler := handler.NewAdminHandler(adminService, logger)
-
+	var rcV1Client service.RCSubscriberFetcher
 	rcClient := revenuecat.NewClient(cfg.RevenueCatAPIKey)
+	if cfg.RevenueCatAPIKey != "" {
+		rcV1Client = rcClient
+	}
+	adminService := service.NewAdminService(pool, adminRepo, cfg.JWTSecret, cfg.AdminJWTAccessTokenTTL, logger, service.WithRCMetricsFetcher(rcMetricsFetcher), service.WithRCSubscriberFetcher(rcV1Client))
+	adminHandler := handler.NewAdminHandler(adminService, logger)
 	webhookService := service.NewWebhookService(pool, entitlementRepo, rcClient, authRepo, logger, service.WithOverrideChecker(adminRepo))
 	webhookHandler := handler.NewWebhookHandler(webhookService, cfg.RevenueCatWebhookSecret, logger)
 

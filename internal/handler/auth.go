@@ -201,10 +201,7 @@ func subscriptionInfoToResponse(info *service.EntitlementInfo) *subscriptionResp
 		Entitlement: info.Entitlement.String(),
 		IsActive:    info.IsActive,
 	}
-	if info.CurrentPeriodEnd != nil {
-		s := info.CurrentPeriodEnd.UTC().Format(time.RFC3339)
-		resp.CurrentPeriodEnd = &s
-	}
+	resp.CurrentPeriodEnd = formatTimePtr(info.CurrentPeriodEnd)
 	return resp
 }
 

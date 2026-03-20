@@ -64,6 +64,7 @@ func mountRoutes(r chi.Router, cfg *config.Config, logger *slog.Logger, pool *pg
 				r.Get("/stats/user-growth", deps.adminHandler.GetUserGrowth)
 				r.Get("/stats/active-users", deps.adminHandler.GetActiveUsers)
 				r.Post("/users/{id}/entitlements", deps.adminHandler.ManageEntitlement)
+				r.Get("/users/{id}/revenuecat", deps.adminHandler.GetUserRCSubscription)
 				r.Get("/entitlements", deps.adminHandler.ListEntitlements)
 				r.Get("/revenuecat/overview", deps.adminHandler.GetRCOverview)
 				r.Get("/revenuecat/charts/{chart_name}", deps.adminHandler.GetRCChart)

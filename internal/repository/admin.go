@@ -609,3 +609,4 @@ func (r *PgxAdminRepository) UserExists(ctx context.Context, db DBTX, userID str
 	}
 	return exists, nil
 }
+
