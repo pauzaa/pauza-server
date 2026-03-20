@@ -85,8 +85,8 @@ func (c *V2Client) GetOverview(ctx context.Context) (*OverviewMetrics, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, resp.Body)
-		return nil, fmt.Errorf("revenuecat v2: unexpected status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("revenuecat v2: unexpected status %d: %s", resp.StatusCode, body)
 	}
 
 	var raw rcOverviewResponse
@@ -123,8 +123,8 @@ func (c *V2Client) GetChart(ctx context.Context, params ChartParams) (*ChartResp
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, resp.Body)
-		return nil, fmt.Errorf("revenuecat v2: chart unexpected status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("revenuecat v2: chart unexpected status %d: %s", resp.StatusCode, body)
 	}
 
 	var raw rcChartRawResponse
