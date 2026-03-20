@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/IsorilovA/pauza-server/internal/apperror"
 	"github.com/IsorilovA/pauza-server/internal/auth"
 	"github.com/IsorilovA/pauza-server/internal/pagination"
 	"github.com/IsorilovA/pauza-server/internal/repository"
@@ -108,6 +109,18 @@ type AdminEntitlementItem struct {
 	IsActive         bool
 	CurrentPeriodEnd *time.Time
 	UpdatedAt        time.Time
+}
+
+// TimeSeriesInput holds the query parameters for time-series chart endpoints.
+type TimeSeriesInput struct {
+	Granularity string // "day", "week", "month" — empty means auto-select
+	Range       string // "30d", "90d", "1y", "all"
+}
+
+// TimeSeriesPoint is the service-layer representation of a single time-series data point.
+type TimeSeriesPoint struct {
+	Date  time.Time
+	Value int
 }
 
 // PlatformStatsOutput holds the aggregate statistics returned by the admin dashboard.
@@ -268,6 +281,78 @@ func (s *AdminService) GetPlatformStats(ctx context.Context) (PlatformStatsOutpu
 		AvgStreakDays:       row.AvgStreakDays,
 		AvgDailyFocusTimeMS: row.AvgDailyFocusTimeMS,
 	}, nil
+}
+
+// NormalizeTimeSeriesInput fills in defaults for missing fields.
+func NormalizeTimeSeriesInput(in TimeSeriesInput) TimeSeriesInput {
+	if in.Granularity == "" {
+		switch in.Range {
+		case "30d":
+			in.Granularity = "day"
+		case "90d":
+			in.Granularity = "week"
+		default: // "1y", "all"
+			in.Granularity = "month"
+		}
+	}
+	return in
+}
+
+var validGranularities = map[string]bool{"day": true, "week": true, "month": true}
+
+// timeSeriesParams converts a TimeSeriesInput to repository.TimeSeriesParams.
+func timeSeriesParams(in TimeSeriesInput) repository.TimeSeriesParams {
+	now := time.Now()
+	var since time.Time
+	switch in.Range {
+	case "30d":
+		since = now.AddDate(0, 0, -30)
+	case "90d":
+		since = now.AddDate(0, 0, -90)
+	case "1y":
+		since = now.AddDate(-1, 0, 0)
+	default: // "all" or empty → zero time
+	}
+	return repository.TimeSeriesParams{
+		Granularity: in.Granularity,
+		Since:       since,
+	}
+}
+
+func toServicePoints(points []repository.TimeSeriesPoint) []TimeSeriesPoint {
+	out := make([]TimeSeriesPoint, len(points))
+	for i, p := range points {
+		out[i] = TimeSeriesPoint{Date: p.Date, Value: p.Value}
+	}
+	return out
+}
+
+// GetUserGrowth returns time-series data for new user registrations.
+func (s *AdminService) GetUserGrowth(ctx context.Context, in TimeSeriesInput) ([]TimeSeriesPoint, error) {
+	in = NormalizeTimeSeriesInput(in)
+	if !validGranularities[in.Granularity] {
+		return nil, ValidationError("Invalid query parameter", apperror.FieldErrors{"granularity": "must be day, week, or month"})
+	}
+	points, err := s.adminRepo.GetUserGrowth(ctx, s.pool, timeSeriesParams(in))
+	if err != nil {
+		s.logger.Error("getting user growth", "err", err)
+		return nil, ErrInternal
+	}
+	return toServicePoints(points), nil
+}
+
+// GetActiveUsers returns time-series data for distinct active users.
+func (s *AdminService) GetActiveUsers(ctx context.Context, in TimeSeriesInput) ([]TimeSeriesPoint, error) {
+	in = NormalizeTimeSeriesInput(in)
+	if !validGranularities[in.Granularity] {
+		return nil, ValidationError("Invalid query parameter", apperror.FieldErrors{"granularity": "must be day, week, or month"})
+	}
+	points, err := s.adminRepo.GetActiveUsers(ctx, s.pool, timeSeriesParams(in))
+	if err != nil {
+		s.logger.Error("getting active users", "err", err)
+		return nil, ErrInternal
+	}
+	return toServicePoints(points), nil
 }
 
 // ManageEntitlement grants or revokes a user entitlement via admin override.

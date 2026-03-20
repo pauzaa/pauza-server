@@ -71,6 +71,14 @@ func (m *mockAdminService) ListEntitlements(ctx context.Context, in service.List
 	return service.ListEntitlementsOutput{}, nil
 }
 
+func (m *mockAdminService) GetUserGrowth(ctx context.Context, in service.TimeSeriesInput) ([]service.TimeSeriesPoint, error) {
+	return nil, nil
+}
+
+func (m *mockAdminService) GetActiveUsers(ctx context.Context, in service.TimeSeriesInput) ([]service.TimeSeriesPoint, error) {
+	return nil, nil
+}
+
 func newTestAdminHandler(svc *mockAdminService) *AdminHandler {
 	return NewAdminHandler(svc, noopLogger())
 }

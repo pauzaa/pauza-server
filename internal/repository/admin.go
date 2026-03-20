@@ -84,9 +84,21 @@ type AdminEntitlementListRow struct {
 	UpdatedAt        time.Time
 }
 
+// TimeSeriesPoint holds a single date+value pair for time-series chart data.
+type TimeSeriesPoint struct {
+	Date  time.Time
+	Value int
+}
+
 // ---------------------------------------------------------------------------
 // Param types
 // ---------------------------------------------------------------------------
+
+// TimeSeriesParams holds the query parameters for time-series chart endpoints.
+type TimeSeriesParams struct {
+	Granularity string    // "day", "week", "month"
+	Since       time.Time // zero value = no lower bound (range=all)
+}
 
 // ListUsersParams holds pagination and optional search for the admin user listing.
 type ListUsersParams struct {
@@ -123,6 +135,8 @@ type AdminRepository interface {
 	ListUsers(ctx context.Context, db DBTX, params ListUsersParams) ([]AdminUserRow, int, error)
 	GetUserDetail(ctx context.Context, db DBTX, userID string) (AdminUserDetailRow, error)
 	GetPlatformStats(ctx context.Context, db DBTX) (PlatformStatsRow, error)
+	GetUserGrowth(ctx context.Context, db DBTX, params TimeSeriesParams) ([]TimeSeriesPoint, error)
+	GetActiveUsers(ctx context.Context, db DBTX, params TimeSeriesParams) ([]TimeSeriesPoint, error)
 	UpsertEntitlementOverride(ctx context.Context, db DBTX, params UpsertOverrideParams) error
 	DeleteEntitlementOverride(ctx context.Context, db DBTX, userID string, entitlement Entitlement) error
 	GetActiveOverride(ctx context.Context, db DBTX, userID string, entitlement Entitlement) (OverrideRow, error)
@@ -363,6 +377,67 @@ func (r *PgxAdminRepository) GetPlatformStats(ctx context.Context, db DBTX) (Pla
 		return PlatformStatsRow{}, fmt.Errorf("getting platform stats: %w", err)
 	}
 	return s, nil
+}
+
+func queryTimeSeries(ctx context.Context, db DBTX, query string, args []any, op string) ([]TimeSeriesPoint, error) {
+	rows, err := db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	defer rows.Close()
+
+	var points []TimeSeriesPoint
+	for rows.Next() {
+		var p TimeSeriesPoint
+		if err := rows.Scan(&p.Date, &p.Value); err != nil {
+			return nil, fmt.Errorf("%s: scanning row: %w", op, err)
+		}
+		points = append(points, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: iterating rows: %w", op, err)
+	}
+	return points, nil
+}
+
+func (r *PgxAdminRepository) GetUserGrowth(ctx context.Context, db DBTX, params TimeSeriesParams) ([]TimeSeriesPoint, error) {
+	var (
+		query string
+		args  []any
+	)
+	if params.Since.IsZero() {
+		query = `SELECT date_trunc($1, created_at AT TIME ZONE 'UTC')::date AS d, COUNT(*)
+				 FROM users
+				 GROUP BY d ORDER BY d`
+		args = []any{params.Granularity}
+	} else {
+		query = `SELECT date_trunc($1, created_at AT TIME ZONE 'UTC')::date AS d, COUNT(*)
+				 FROM users
+				 WHERE created_at >= $2
+				 GROUP BY d ORDER BY d`
+		args = []any{params.Granularity, params.Since}
+	}
+	return queryTimeSeries(ctx, db, query, args, "getting user growth")
+}
+
+func (r *PgxAdminRepository) GetActiveUsers(ctx context.Context, db DBTX, params TimeSeriesParams) ([]TimeSeriesPoint, error) {
+	var (
+		query string
+		args  []any
+	)
+	if params.Since.IsZero() {
+		query = `SELECT date_trunc($1, to_timestamp(started_at / 1000.0) AT TIME ZONE 'UTC')::date AS d, COUNT(DISTINCT user_id)
+				 FROM restriction_sessions
+				 GROUP BY d ORDER BY d`
+		args = []any{params.Granularity}
+	} else {
+		query = `SELECT date_trunc($1, to_timestamp(started_at / 1000.0) AT TIME ZONE 'UTC')::date AS d, COUNT(DISTINCT user_id)
+				 FROM restriction_sessions
+				 WHERE started_at >= $2
+				 GROUP BY d ORDER BY d`
+		args = []any{params.Granularity, params.Since.UnixMilli()}
+	}
+	return queryTimeSeries(ctx, db, query, args, "getting active users")
 }
 
 func (r *PgxAdminRepository) UpsertEntitlementOverride(ctx context.Context, db DBTX, params UpsertOverrideParams) error {

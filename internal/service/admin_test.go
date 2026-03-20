@@ -94,6 +94,14 @@ func (f *fakeAdminRepo) UserExists(ctx context.Context, db repository.DBTX, user
 	return false, nil
 }
 
+func (f *fakeAdminRepo) GetUserGrowth(ctx context.Context, db repository.DBTX, params repository.TimeSeriesParams) ([]repository.TimeSeriesPoint, error) {
+	return nil, nil
+}
+
+func (f *fakeAdminRepo) GetActiveUsers(ctx context.Context, db repository.DBTX, params repository.TimeSeriesParams) ([]repository.TimeSeriesPoint, error) {
+	return nil, nil
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

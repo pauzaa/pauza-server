@@ -32,16 +32,23 @@ type AdminEntitlementsService interface {
 	ListEntitlements(ctx context.Context, in service.ListEntitlementsInput) (service.ListEntitlementsOutput, error)
 }
 
+type AdminTimeSeriesService interface {
+	GetUserGrowth(ctx context.Context, in service.TimeSeriesInput) ([]service.TimeSeriesPoint, error)
+	GetActiveUsers(ctx context.Context, in service.TimeSeriesInput) ([]service.TimeSeriesPoint, error)
+}
+
 var _ AdminLoginService = (*service.AdminService)(nil)
 var _ AdminUsersService = (*service.AdminService)(nil)
 var _ AdminStatsService = (*service.AdminService)(nil)
 var _ AdminEntitlementsService = (*service.AdminService)(nil)
+var _ AdminTimeSeriesService = (*service.AdminService)(nil)
 
 type AdminService interface {
 	AdminLoginService
 	AdminUsersService
 	AdminStatsService
 	AdminEntitlementsService
+	AdminTimeSeriesService
 }
 
 // AdminHandler handles admin HTTP endpoints.
@@ -139,6 +146,16 @@ type adminEntitlementItemResponse struct {
 type adminListEntitlementsResponse struct {
 	Entitlements []adminEntitlementItemResponse `json:"entitlements"`
 	Pagination   paginationResponse             `json:"pagination"`
+}
+
+type timeSeriesPoint struct {
+	Date  string `json:"date"`
+	Value int    `json:"value"`
+}
+
+type timeSeriesResponse struct {
+	Data        []timeSeriesPoint `json:"data"`
+	Granularity string            `json:"granularity"`
 }
 
 // ---------------------------------------------------------------------------
@@ -384,4 +401,64 @@ func (h *AdminHandler) ListEntitlements(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, h.logger, http.StatusOK, resp, "admin-list-entitlements")
+}
+
+// ---------------------------------------------------------------------------
+// Time-series helpers
+// ---------------------------------------------------------------------------
+
+var validRanges = map[string]bool{"30d": true, "90d": true, "1y": true, "all": true}
+
+func parseTimeSeriesInput(r *http.Request) service.TimeSeriesInput {
+	rangeVal := r.URL.Query().Get("range")
+	if !validRanges[rangeVal] {
+		rangeVal = "30d"
+	}
+
+	return service.TimeSeriesInput{
+		Granularity: r.URL.Query().Get("granularity"), // empty = auto-select in service
+		Range:       rangeVal,
+	}
+}
+
+func toTimeSeriesResponse(points []service.TimeSeriesPoint, granularity string) timeSeriesResponse {
+	data := make([]timeSeriesPoint, len(points))
+	for i, p := range points {
+		data[i] = timeSeriesPoint{
+			Date:  p.Date.Format("2006-01-02"),
+			Value: p.Value,
+		}
+	}
+	return timeSeriesResponse{
+		Data:        data,
+		Granularity: granularity,
+	}
+}
+
+// GetUserGrowth handles GET /api/v1/admin/stats/user-growth.
+func (h *AdminHandler) GetUserGrowth(w http.ResponseWriter, r *http.Request) {
+	in := parseTimeSeriesInput(r)
+
+	points, err := h.svc.GetUserGrowth(r.Context(), in)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	normalized := service.NormalizeTimeSeriesInput(in)
+	writeJSON(w, h.logger, http.StatusOK, toTimeSeriesResponse(points, normalized.Granularity), "admin-user-growth")
+}
+
+// GetActiveUsers handles GET /api/v1/admin/stats/active-users.
+func (h *AdminHandler) GetActiveUsers(w http.ResponseWriter, r *http.Request) {
+	in := parseTimeSeriesInput(r)
+
+	points, err := h.svc.GetActiveUsers(r.Context(), in)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	normalized := service.NormalizeTimeSeriesInput(in)
+	writeJSON(w, h.logger, http.StatusOK, toTimeSeriesResponse(points, normalized.Granularity), "admin-active-users")
 }
