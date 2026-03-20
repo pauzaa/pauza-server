@@ -487,6 +487,8 @@ func rangeToDateStrings(rangeVal string) (string, string) {
 		start = now.AddDate(0, 0, -90)
 	case "1y":
 		start = now.AddDate(-1, 0, 0)
+	case "all":
+		start = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	default: // "30d" or unknown
 		start = now.AddDate(0, 0, -30)
 	}
