@@ -1,6 +1,6 @@
 # API Endpoints Reference
 
-> Derived from source code. This document covers all **42 endpoints** currently
+> Derived from source code. This document covers all **48 endpoints** currently
 > wired in `internal/server/routes.go`.
 
 ---
@@ -328,8 +328,16 @@ RevenueCat webhook payload. Unknown fields are tolerated (forward-compatible).
 | `event.type` | string | Event type (e.g. `INITIAL_PURCHASE`, `RENEWAL`, `CANCELLATION`) |
 | `event.id` | string | Unique event ID |
 | `event.app_user_id` | string | RevenueCat app user ID |
+| `event.original_app_user_id` | string | Original app user ID (before alias) |
+| `event.product_id` | string | Product identifier |
 | `event.entitlement_ids` | string[] | Entitlement identifiers |
+| `event.event_timestamp_ms` | int64 | When the event occurred (Unix ms) |
 | `event.expiration_at_ms` | int64 \| null | Expiration timestamp in ms |
+| `event.environment` | string | `SANDBOX` or `PRODUCTION` |
+| `event.period_type` | string | e.g. `NORMAL`, `TRIAL`, `INTRO` |
+| `event.store` | string | e.g. `APP_STORE`, `PLAY_STORE` |
+| `event.transferred_from` | string[] | App user IDs transferred from (TRANSFER events) |
+| `event.transferred_to` | string[] | App user IDs transferred to (TRANSFER events) |
 | *(additional fields)* | — | Silently ignored |
 
 **Success — 200 OK**
@@ -449,7 +457,7 @@ Get detailed information about a single user.
 
 | Param | Type | Required | Notes |
 |---|---|---|---|
-| `id` | string | yes | Non-empty path segment (not UUID-validated by the handler) |
+| `id` | string | yes | Must be a valid UUID — `parseUUIDParam` returns 422 on invalid format |
 
 **Success — 200 OK**
 
@@ -477,7 +485,7 @@ Get detailed information about a single user.
 
 | Code | When |
 |---|---|
-| `VALIDATION_ERROR` (422) | Missing user ID |
+| `VALIDATION_ERROR` (422) | `id` is not a valid UUID |
 | `UNAUTHORIZED` (401) | Missing or invalid admin JWT |
 | `NOT_FOUND` (404) | User does not exist |
 | `RATE_LIMITED` (429) | Too many requests |
@@ -530,7 +538,7 @@ Grant or revoke an entitlement override for a user.
 
 | Param | Type | Required | Notes |
 |---|---|---|---|
-| `id` | string | yes | Non-empty path segment (not UUID-validated by the handler) |
+| `id` | string | yes | Must be a valid UUID — `parseUUIDParam` returns 422 on invalid format |
 
 **Request body**
 
@@ -552,7 +560,7 @@ Grant or revoke an entitlement override for a user.
 
 | Code | When |
 |---|---|
-| `VALIDATION_ERROR` (422) | Invalid action, missing entitlement, or bad expires_at |
+| `VALIDATION_ERROR` (422) | `id` is not a valid UUID, invalid action, missing entitlement, or bad expires_at |
 | `UNAUTHORIZED` (401) | Missing or invalid admin JWT |
 | `NOT_FOUND` (404) | User does not exist |
 | `RATE_LIMITED` (429) | Too many requests |
@@ -611,6 +619,198 @@ List entitlement records with optional filtering.
 | `UNAUTHORIZED` (401) | Missing or invalid admin JWT |
 | `RATE_LIMITED` (429) | Too many requests |
 | `INTERNAL_ERROR` (500) | Transient server error |
+
+---
+
+### `GET /api/v1/admin/stats/user-growth`
+
+Return a time-series of new user registrations (cumulative new accounts per
+bucket).
+
+| Property | Value |
+|---|---|
+| **Auth** | Admin JWT |
+| **Rate limit** | `admin` tier — per admin user ID (default 30 req/min) |
+
+**Query parameters**
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `range` | string | `30d` | One of `30d`, `90d`, `1y`, `all`; invalid values silently default to `30d` |
+| `granularity` | string | auto | One of `day`, `week`, `month`; when omitted the service auto-selects (`day` for 30d, `week` for 90d, `month` for 1y/all). Invalid explicit values return 422. |
+
+**Success — 200 OK**
+
+```json
+{
+  "data": [
+    { "date": "2025-01-15", "value": 12 }
+  ],
+  "granularity": "day"
+}
+```
+
+**Errors**
+
+| Code | When |
+|---|---|
+| `VALIDATION_ERROR` (422) | `granularity` is an explicit invalid value (not `day`, `week`, or `month`) |
+| `UNAUTHORIZED` (401) | Missing or invalid admin JWT |
+| `RATE_LIMITED` (429) | Too many requests |
+| `INTERNAL_ERROR` (500) | Transient server error |
+
+---
+
+### `GET /api/v1/admin/stats/active-users`
+
+Return a time-series of distinct active users per bucket (users who performed
+at least one sync in the period).
+
+| Property | Value |
+|---|---|
+| **Auth** | Admin JWT |
+| **Rate limit** | `admin` tier — per admin user ID (default 30 req/min) |
+
+**Query parameters**
+
+Same as `GET /api/v1/admin/stats/user-growth`.
+
+**Success — 200 OK**
+
+Same shape as `GET /api/v1/admin/stats/user-growth`.
+
+**Errors**
+
+Same as `GET /api/v1/admin/stats/user-growth`.
+
+---
+
+### `GET /api/v1/admin/revenuecat/overview`
+
+Return high-level RevenueCat subscription metrics pulled live from the
+RevenueCat v2 API. Requires the server to be configured with a RevenueCat v2
+secret key; returns 500 if the key is absent or the upstream call fails.
+
+| Property | Value |
+|---|---|
+| **Auth** | Admin JWT |
+| **Rate limit** | `admin` tier — per admin user ID (default 30 req/min) |
+
+**Success — 200 OK**
+
+```json
+{
+  "mrr": 99900,
+  "arr": 1198800,
+  "active_subscribers": 250,
+  "active_trials": 30
+}
+```
+
+`mrr` and `arr` are in **cents** (dollars × 100, rounded).
+
+**Errors**
+
+| Code | When |
+|---|---|
+| `UNAUTHORIZED` (401) | Missing or invalid admin JWT |
+| `RATE_LIMITED` (429) | Too many requests |
+| `INTERNAL_ERROR` (500) | RevenueCat v2 not configured or upstream call failed |
+
+---
+
+### `GET /api/v1/admin/revenuecat/charts/{chart_name}`
+
+Return a time-series chart from the RevenueCat v2 API for the given chart name
+and optional date range.
+
+| Property | Value |
+|---|---|
+| **Auth** | Admin JWT |
+| **Rate limit** | `admin` tier — per admin user ID (default 30 req/min) |
+
+**Path parameters**
+
+| Param | Type | Required | Notes |
+|---|---|---|---|
+| `chart_name` | string | yes | One of `revenue`, `customers_new`, `customers_active`, `churn`; 422 on other values |
+
+**Query parameters**
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `range` | string | `30d` | One of `30d`, `90d`, `1y`, `all`; invalid values silently default to `30d` |
+
+**Success — 200 OK**
+
+```json
+{
+  "name": "revenue",
+  "data": [
+    { "date": "2025-01-15", "value": 4900 }
+  ]
+}
+```
+
+For `revenue` charts, `value` is in **cents**. For count-based charts (`customers_new`, `customers_active`, `churn`), `value` is an integer count.
+
+**Errors**
+
+| Code | When |
+|---|---|
+| `VALIDATION_ERROR` (422) | `chart_name` is not one of the allowed values |
+| `UNAUTHORIZED` (401) | Missing or invalid admin JWT |
+| `RATE_LIMITED` (429) | Too many requests |
+| `INTERNAL_ERROR` (500) | RevenueCat v2 not configured or upstream call failed |
+
+---
+
+### `GET /api/v1/admin/users/{id}/revenuecat`
+
+Return the live RevenueCat subscriber record for a user, showing their
+entitlement state as reported directly by RevenueCat (v1 API). The user must
+have a non-empty `revenuecat_app_user_id` in the database.
+
+| Property | Value |
+|---|---|
+| **Auth** | Admin JWT |
+| **Rate limit** | `admin` tier — per admin user ID (default 30 req/min) |
+
+**Path parameters**
+
+| Param | Type | Required | Notes |
+|---|---|---|---|
+| `id` | string | yes | Must be a valid UUID — `parseUUIDParam` returns 422 on invalid format |
+
+**Success — 200 OK**
+
+```json
+{
+  "app_user_id": "rc_abc123",
+  "entitlements": [
+    {
+      "entitlement_id": "premium",
+      "is_active": true,
+      "product_identifier": "annual_premium",
+      "purchase_date": "2025-01-15T08:30:00Z",
+      "expires_date": "2026-01-15T08:30:00Z",
+      "grace_period_expires_date": null
+    }
+  ]
+}
+```
+
+`expires_date` and `grace_period_expires_date` may be `null`.
+
+**Errors**
+
+| Code | When |
+|---|---|
+| `VALIDATION_ERROR` (422) | `id` is not a valid UUID |
+| `UNAUTHORIZED` (401) | Missing or invalid admin JWT |
+| `NOT_FOUND` (404) | User does not exist or has no RevenueCat subscription |
+| `RATE_LIMITED` (429) | Too many requests |
+| `INTERNAL_ERROR` (500) | RevenueCat v1 not configured or upstream call failed |
 
 ---
 
@@ -1351,6 +1551,8 @@ Get streak and focus-time statistics for a friend.
 }
 ```
 
+`daily_trends` may be `null` (not `[]`) when there are no records — Go nil slice serialisation.
+
 **Errors**
 
 | Code | When |
@@ -1376,7 +1578,7 @@ Search for users by username prefix.
 
 | Param | Type | Required | Validation |
 |---|---|---|---|
-| `q` | string | yes | At least 3 characters |
+| `q` | string | yes | At least 3 characters, max 50 characters |
 
 **Success — 200 OK**
 
@@ -1397,7 +1599,7 @@ Search for users by username prefix.
 
 | Code | When |
 |---|---|
-| `VALIDATION_ERROR` (422) | Query `q` is less than 3 characters |
+| `VALIDATION_ERROR` (422) | Query `q` is less than 3 characters or exceeds 50 characters |
 | `UNAUTHORIZED` (401) | Missing or invalid JWT |
 | `SUBSCRIPTION_REQUIRED` (403) | No active premium subscription |
 | `RATE_LIMITED` (429) | Too many requests |
@@ -1624,7 +1826,7 @@ Each table key is **optional**. When present, it must contain:
 | `mode_id` | string | yes | Non-empty |
 | `action` | string | yes | `"START"`, `"PAUSE"`, `"RESUME"`, or `"END"` |
 | `source` | string | yes | `"manual"` or `"schedule"` |
-| `reason` | string | yes | Non-empty |
+| `reason` | string | yes | `"manual"`, `"nfc"`, `"qr"`, or `"timer"` (enforced by `UnmarshalJSON`) |
 | `occurred_at` | int64 | yes | Unix ms |
 | `created_at` | int64 | yes | Unix ms |
 
