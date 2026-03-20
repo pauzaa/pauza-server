@@ -11,7 +11,14 @@ import (
 	"github.com/IsorilovA/pauza-server/internal/auth"
 	"github.com/IsorilovA/pauza-server/internal/pagination"
 	"github.com/IsorilovA/pauza-server/internal/repository"
+	"github.com/IsorilovA/pauza-server/internal/revenuecat"
 )
+
+// RCMetricsFetcher abstracts the RevenueCat v2 metrics calls.
+type RCMetricsFetcher interface {
+	GetOverview(ctx context.Context) (*revenuecat.OverviewMetrics, error)
+	GetChart(ctx context.Context, params revenuecat.ChartParams) (*revenuecat.ChartResponse, error)
+}
 
 // ---------------------------------------------------------------------------
 // Input / output types
@@ -149,6 +156,7 @@ type AdminService struct {
 	jwtSecret     string
 	adminTokenTTL time.Duration
 	logger        *slog.Logger
+	rcV2Client    RCMetricsFetcher // nil when V2 not configured
 }
 
 // NewAdminService creates an AdminService with its required dependencies.
@@ -158,6 +166,7 @@ func NewAdminService(
 	jwtSecret string,
 	adminTokenTTL time.Duration,
 	logger *slog.Logger,
+	rcV2Client RCMetricsFetcher,
 ) *AdminService {
 	return &AdminService{
 		pool:          pool,
@@ -165,7 +174,36 @@ func NewAdminService(
 		jwtSecret:     jwtSecret,
 		adminTokenTTL: adminTokenTTL,
 		logger:        logger,
+		rcV2Client:    rcV2Client,
 	}
+}
+
+// GetRCOverview returns RevenueCat overview metrics from the v2 API.
+func (s *AdminService) GetRCOverview(ctx context.Context) (*revenuecat.OverviewMetrics, error) {
+	if s.rcV2Client == nil {
+		s.logger.Error("revenuecat v2 not configured")
+		return nil, ErrInternal
+	}
+	metrics, err := s.rcV2Client.GetOverview(ctx)
+	if err != nil {
+		s.logger.Error("fetching revenuecat overview", "err", err)
+		return nil, ErrInternal
+	}
+	return metrics, nil
+}
+
+// GetRCChart returns RevenueCat chart data from the v2 API.
+func (s *AdminService) GetRCChart(ctx context.Context, params revenuecat.ChartParams) (*revenuecat.ChartResponse, error) {
+	if s.rcV2Client == nil {
+		s.logger.Error("revenuecat v2 not configured")
+		return nil, ErrInternal
+	}
+	chart, err := s.rcV2Client.GetChart(ctx, params)
+	if err != nil {
+		s.logger.Error("fetching revenuecat chart", "chart", params.ChartName, "err", err)
+		return nil, ErrInternal
+	}
+	return chart, nil
 }
 
 // Login authenticates an admin by username and password. It avoids leaking

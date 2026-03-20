@@ -88,7 +88,11 @@ func buildDependencies(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Po
 	socialService := service.NewSocialService(pool, repository.NewSocialRepository(), pushSender, logger)
 	socialHandler := handler.NewSocialHandler(socialService, logger)
 
-	adminService := service.NewAdminService(pool, adminRepo, cfg.JWTSecret, cfg.AdminJWTAccessTokenTTL, logger)
+	var rcMetricsFetcher service.RCMetricsFetcher
+	if cfg.RevenueCatV2SecretKey != "" && cfg.RevenueCatProjectID != "" {
+		rcMetricsFetcher = revenuecat.NewV2Client(cfg.RevenueCatV2SecretKey, cfg.RevenueCatProjectID)
+	}
+	adminService := service.NewAdminService(pool, adminRepo, cfg.JWTSecret, cfg.AdminJWTAccessTokenTTL, logger, rcMetricsFetcher)
 	adminHandler := handler.NewAdminHandler(adminService, logger)
 
 	rcClient := revenuecat.NewClient(cfg.RevenueCatAPIKey)

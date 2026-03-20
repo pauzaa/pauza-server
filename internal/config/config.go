@@ -43,6 +43,8 @@ type Config struct {
 	// RevenueCat
 	RevenueCatAPIKey        string `envconfig:"REVENUECAT_API_KEY" required:"true"`
 	RevenueCatWebhookSecret string `envconfig:"REVENUECAT_WEBHOOK_SECRET" required:"true"`
+	RevenueCatV2SecretKey   string `envconfig:"REVENUECAT_V2_SECRET_KEY"`
+	RevenueCatProjectID     string `envconfig:"REVENUECAT_PROJECT_ID"`
 
 	// Firebase (optional; enables push notifications when configured)
 	FirebaseServiceAccountJSON string `envconfig:"FIREBASE_SERVICE_ACCOUNT_JSON"`

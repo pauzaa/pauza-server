@@ -8,9 +8,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/IsorilovA/pauza-server/internal/apperror"
 	"github.com/IsorilovA/pauza-server/internal/domain"
 	"github.com/IsorilovA/pauza-server/internal/pagination"
+	"github.com/IsorilovA/pauza-server/internal/revenuecat"
 	"github.com/IsorilovA/pauza-server/internal/service"
 )
 
@@ -37,11 +40,17 @@ type AdminTimeSeriesService interface {
 	GetActiveUsers(ctx context.Context, in service.TimeSeriesInput) ([]service.TimeSeriesPoint, error)
 }
 
+type AdminRCService interface {
+	GetRCOverview(ctx context.Context) (*revenuecat.OverviewMetrics, error)
+	GetRCChart(ctx context.Context, params revenuecat.ChartParams) (*revenuecat.ChartResponse, error)
+}
+
 var _ AdminLoginService = (*service.AdminService)(nil)
 var _ AdminUsersService = (*service.AdminService)(nil)
 var _ AdminStatsService = (*service.AdminService)(nil)
 var _ AdminEntitlementsService = (*service.AdminService)(nil)
 var _ AdminTimeSeriesService = (*service.AdminService)(nil)
+var _ AdminRCService = (*service.AdminService)(nil)
 
 type AdminService interface {
 	AdminLoginService
@@ -49,6 +58,7 @@ type AdminService interface {
 	AdminStatsService
 	AdminEntitlementsService
 	AdminTimeSeriesService
+	AdminRCService
 }
 
 // AdminHandler handles admin HTTP endpoints.
@@ -461,4 +471,64 @@ func (h *AdminHandler) GetActiveUsers(w http.ResponseWriter, r *http.Request) {
 
 	normalized := service.NormalizeTimeSeriesInput(in)
 	writeJSON(w, h.logger, http.StatusOK, toTimeSeriesResponse(points, normalized.Granularity), "admin-active-users")
+}
+
+// GetRCOverview handles GET /api/v1/admin/revenuecat/overview.
+func (h *AdminHandler) GetRCOverview(w http.ResponseWriter, r *http.Request) {
+	overview, err := h.svc.GetRCOverview(r.Context())
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, h.logger, http.StatusOK, overview, "admin-rc-overview")
+}
+
+var allowedChartNames = map[string]bool{
+	"revenue":          true,
+	"customers_new":    true,
+	"customers_active": true,
+	"churn":            true,
+}
+
+// rangeToDateStrings converts a range string (e.g. "30d") to start/end YYYY-MM-DD date strings.
+func rangeToDateStrings(rangeVal string) (string, string) {
+	now := time.Now().UTC()
+	end := now.Format("2006-01-02")
+
+	var start time.Time
+	switch rangeVal {
+	case "90d":
+		start = now.AddDate(0, 0, -90)
+	case "1y":
+		start = now.AddDate(-1, 0, 0)
+	default: // "30d" or unknown
+		start = now.AddDate(0, 0, -30)
+	}
+	return start.Format("2006-01-02"), end
+}
+
+// GetRCChart handles GET /api/v1/admin/revenuecat/charts/{chart_name}.
+func (h *AdminHandler) GetRCChart(w http.ResponseWriter, r *http.Request) {
+	chartName := chi.URLParam(r, "chart_name")
+	if !allowedChartNames[chartName] {
+		apperror.ValidationFieldErrors(w, "Invalid query parameter", apperror.FieldErrors{
+			"chart_name": "must be one of: revenue, customers_new, customers_active, churn",
+		})
+		return
+	}
+
+	rangeVal := r.URL.Query().Get("range")
+	startDate, endDate := rangeToDateStrings(rangeVal)
+
+	chart, err := h.svc.GetRCChart(r.Context(), revenuecat.ChartParams{
+		ChartName: chartName,
+		StartDate: startDate,
+		EndDate:   endDate,
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, h.logger, http.StatusOK, chart, "admin-rc-chart")
 }
