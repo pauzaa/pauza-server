@@ -11,7 +11,31 @@ import (
 	"github.com/IsorilovA/pauza-server/internal/auth"
 	"github.com/IsorilovA/pauza-server/internal/pagination"
 	"github.com/IsorilovA/pauza-server/internal/repository"
+	"github.com/IsorilovA/pauza-server/internal/revenuecat"
 )
+
+// ---------------------------------------------------------------------------
+// Fake RC metrics fetcher
+// ---------------------------------------------------------------------------
+
+type fakeRCMetricsFetcher struct {
+	overviewFn func(ctx context.Context) (*revenuecat.OverviewMetrics, error)
+	chartFn    func(ctx context.Context, params revenuecat.ChartParams) (*revenuecat.ChartResponse, error)
+}
+
+func (f *fakeRCMetricsFetcher) GetOverview(ctx context.Context) (*revenuecat.OverviewMetrics, error) {
+	if f.overviewFn != nil {
+		return f.overviewFn(ctx)
+	}
+	return &revenuecat.OverviewMetrics{}, nil
+}
+
+func (f *fakeRCMetricsFetcher) GetChart(ctx context.Context, params revenuecat.ChartParams) (*revenuecat.ChartResponse, error) {
+	if f.chartFn != nil {
+		return f.chartFn(ctx, params)
+	}
+	return &revenuecat.ChartResponse{}, nil
+}
 
 // ---------------------------------------------------------------------------
 // Fake admin repository
@@ -116,6 +140,18 @@ func newTestAdminService(adminRepo *fakeAdminRepo) *AdminService {
 		testJWTSecret,
 		testAdminTokenTTL,
 		slog.New(slog.NewTextHandler(devNull{}, &slog.HandlerOptions{Level: slog.LevelError})),
+		nil,
+	)
+}
+
+func newTestAdminServiceWithRC(adminRepo *fakeAdminRepo, rc RCMetricsFetcher) *AdminService {
+	return NewAdminService(
+		&fakePool{},
+		adminRepo,
+		testJWTSecret,
+		testAdminTokenTTL,
+		slog.New(slog.NewTextHandler(devNull{}, &slog.HandlerOptions{Level: slog.LevelError})),
+		rc,
 	)
 }
 
@@ -815,5 +851,144 @@ func TestNormalizePagination(t *testing.T) {
 					tt.page, tt.limit, gotLimit, tt.wantLimit)
 			}
 		})
+	}
+}
+
+// =========================================================================
+// GetRCOverview tests
+// =========================================================================
+
+func TestGetRCOverview_HappyPath(t *testing.T) {
+	t.Parallel()
+
+	fetcher := &fakeRCMetricsFetcher{
+		overviewFn: func(_ context.Context) (*revenuecat.OverviewMetrics, error) {
+			return &revenuecat.OverviewMetrics{
+				MRR:               4999,
+				ARR:               59988,
+				ActiveSubscribers: 42,
+				ActiveTrials:      7,
+			}, nil
+		},
+	}
+
+	svc := newTestAdminServiceWithRC(&fakeAdminRepo{}, fetcher)
+
+	out, err := svc.GetRCOverview(context.Background())
+	if err != nil {
+		t.Fatalf("GetRCOverview() error = %v, want nil", err)
+	}
+	if out.MRR != 4999 {
+		t.Errorf("MRR = %d, want 4999", out.MRR)
+	}
+	if out.ActiveSubscribers != 42 {
+		t.Errorf("ActiveSubscribers = %d, want 42", out.ActiveSubscribers)
+	}
+}
+
+func TestGetRCOverview_NilClient_ReturnsInternal(t *testing.T) {
+	t.Parallel()
+
+	svc := newTestAdminService(&fakeAdminRepo{})
+
+	_, err := svc.GetRCOverview(context.Background())
+	if !errors.Is(err, ErrInternal) {
+		t.Fatalf("GetRCOverview() error = %v, want ErrInternal", err)
+	}
+}
+
+func TestGetRCOverview_FetchError_ReturnsInternal(t *testing.T) {
+	t.Parallel()
+
+	fetcher := &fakeRCMetricsFetcher{
+		overviewFn: func(_ context.Context) (*revenuecat.OverviewMetrics, error) {
+			return nil, errors.New("upstream error")
+		},
+	}
+
+	svc := newTestAdminServiceWithRC(&fakeAdminRepo{}, fetcher)
+
+	_, err := svc.GetRCOverview(context.Background())
+	if !errors.Is(err, ErrInternal) {
+		t.Fatalf("GetRCOverview() error = %v, want ErrInternal", err)
+	}
+}
+
+// =========================================================================
+// GetRCChart tests
+// =========================================================================
+
+func TestGetRCChart_HappyPath(t *testing.T) {
+	t.Parallel()
+
+	fetcher := &fakeRCMetricsFetcher{
+		overviewFn: func(_ context.Context) (*revenuecat.OverviewMetrics, error) {
+			return &revenuecat.OverviewMetrics{}, nil
+		},
+		chartFn: func(_ context.Context, params revenuecat.ChartParams) (*revenuecat.ChartResponse, error) {
+			if params.ChartName != "revenue" {
+				t.Errorf("ChartName = %q, want %q", params.ChartName, "revenue")
+			}
+			return &revenuecat.ChartResponse{
+				Name: "revenue",
+				Data: []revenuecat.ChartPoint{{Date: "2026-03-01", Value: 4999}},
+			}, nil
+		},
+	}
+
+	svc := newTestAdminServiceWithRC(&fakeAdminRepo{}, fetcher)
+
+	out, err := svc.GetRCChart(context.Background(), revenuecat.ChartParams{
+		ChartName: "revenue",
+		StartDate: "2026-02-18",
+		EndDate:   "2026-03-20",
+	})
+	if err != nil {
+		t.Fatalf("GetRCChart() error = %v, want nil", err)
+	}
+	if out.Name != "revenue" {
+		t.Errorf("Name = %q, want %q", out.Name, "revenue")
+	}
+	if len(out.Data) != 1 {
+		t.Fatalf("len(Data) = %d, want 1", len(out.Data))
+	}
+}
+
+func TestGetRCChart_NilClient_ReturnsInternal(t *testing.T) {
+	t.Parallel()
+
+	svc := newTestAdminService(&fakeAdminRepo{})
+
+	_, err := svc.GetRCChart(context.Background(), revenuecat.ChartParams{
+		ChartName: "revenue",
+		StartDate: "2026-02-18",
+		EndDate:   "2026-03-20",
+	})
+	if !errors.Is(err, ErrInternal) {
+		t.Fatalf("GetRCChart() error = %v, want ErrInternal", err)
+	}
+}
+
+func TestGetRCChart_FetchError_ReturnsInternal(t *testing.T) {
+	t.Parallel()
+
+	fetcher := &fakeRCMetricsFetcher{
+		overviewFn: func(_ context.Context) (*revenuecat.OverviewMetrics, error) {
+			return &revenuecat.OverviewMetrics{}, nil
+		},
+		chartFn: func(_ context.Context, _ revenuecat.ChartParams) (*revenuecat.ChartResponse, error) {
+			return nil, errors.New("upstream error")
+		},
+	}
+
+	svc := newTestAdminServiceWithRC(&fakeAdminRepo{}, fetcher)
+
+	_, err := svc.GetRCChart(context.Background(), revenuecat.ChartParams{
+		ChartName: "revenue",
+		StartDate: "2026-02-18",
+		EndDate:   "2026-03-20",
+	})
+	if !errors.Is(err, ErrInternal) {
+		t.Fatalf("GetRCChart() error = %v, want ErrInternal", err)
 	}
 }

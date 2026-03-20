@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/IsorilovA/pauza-server/internal/apperror"
+	"github.com/IsorilovA/pauza-server/internal/revenuecat"
 	"github.com/IsorilovA/pauza-server/internal/service"
 )
 
@@ -27,6 +28,7 @@ type mockAdminService struct {
 	getPlatformStatsFn  func(ctx context.Context) (service.PlatformStatsOutput, error)
 	manageEntitlementFn func(ctx context.Context, in service.ManageEntitlementInput) (service.MessageOutput, error)
 	listEntitlementsFn  func(ctx context.Context, in service.ListEntitlementsInput) (service.ListEntitlementsOutput, error)
+	getRCChartFn        func(ctx context.Context, in revenuecat.ChartParams) (*revenuecat.ChartResponse, error)
 }
 
 func (m *mockAdminService) Login(ctx context.Context, in service.LoginInput) (service.LoginOutput, error) {
@@ -77,6 +79,17 @@ func (m *mockAdminService) GetUserGrowth(ctx context.Context, in service.TimeSer
 
 func (m *mockAdminService) GetActiveUsers(ctx context.Context, in service.TimeSeriesInput) ([]service.TimeSeriesPoint, error) {
 	return nil, nil
+}
+
+func (m *mockAdminService) GetRCOverview(ctx context.Context) (*revenuecat.OverviewMetrics, error) {
+	return &revenuecat.OverviewMetrics{}, nil
+}
+
+func (m *mockAdminService) GetRCChart(ctx context.Context, in revenuecat.ChartParams) (*revenuecat.ChartResponse, error) {
+	if m.getRCChartFn != nil {
+		return m.getRCChartFn(ctx, in)
+	}
+	return &revenuecat.ChartResponse{}, nil
 }
 
 func newTestAdminHandler(svc *mockAdminService) *AdminHandler {
@@ -789,6 +802,112 @@ func TestAdminListEntitlements_ServiceError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/entitlements", nil)
 	rec := httptest.NewRecorder()
 	h.ListEntitlements(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
+// =========================================================================
+// RangeToDateStrings tests
+// =========================================================================
+
+func TestRangeToDateStrings(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"30d", "30d"},
+		{"90d", "90d"},
+		{"1y", "1y"},
+		{"default", "unknown"},
+		{"empty", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			start, end := rangeToDateStrings(tt.input)
+			if start == "" || end == "" {
+				t.Errorf("rangeToDateStrings(%q) returned empty strings", tt.input)
+			}
+			if start >= end {
+				t.Errorf("rangeToDateStrings(%q): start %q >= end %q", tt.input, start, end)
+			}
+		})
+	}
+}
+
+// =========================================================================
+// GetRCChart handler tests
+// =========================================================================
+
+func TestGetRCChart_ValidChartName(t *testing.T) {
+	t.Parallel()
+
+	var gotInput revenuecat.ChartParams
+	h := newTestAdminHandler(&mockAdminService{
+		getRCChartFn: func(_ context.Context, in revenuecat.ChartParams) (*revenuecat.ChartResponse, error) {
+			gotInput = in
+			return &revenuecat.ChartResponse{
+				Name: "revenue",
+				Data: []revenuecat.ChartPoint{{Date: "2026-03-01", Value: 4999}},
+			}, nil
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/revenuecat/charts/revenue?range=30d", nil)
+	req = withChiURLParam(req, "chart_name", "revenue")
+	rec := httptest.NewRecorder()
+	h.GetRCChart(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if gotInput.ChartName != "revenue" {
+		t.Errorf("ChartName = %q, want %q", gotInput.ChartName, "revenue")
+	}
+
+	var body revenuecat.ChartResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Name != "revenue" {
+		t.Errorf("name = %q, want %q", body.Name, "revenue")
+	}
+	if len(body.Data) != 1 {
+		t.Fatalf("len(data) = %d, want 1", len(body.Data))
+	}
+}
+
+func TestGetRCChart_InvalidChartName(t *testing.T) {
+	t.Parallel()
+
+	h := newTestAdminHandler(&mockAdminService{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/revenuecat/charts/invalid", nil)
+	req = withChiURLParam(req, "chart_name", "invalid")
+	rec := httptest.NewRecorder()
+	h.GetRCChart(rec, req)
+
+	assertValidationEnvelope(t, rec, []string{"chart_name"})
+}
+
+func TestGetRCChart_ServiceError(t *testing.T) {
+	t.Parallel()
+
+	h := newTestAdminHandler(&mockAdminService{
+		getRCChartFn: func(_ context.Context, _ revenuecat.ChartParams) (*revenuecat.ChartResponse, error) {
+			return nil, service.ErrInternal
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/revenuecat/charts/revenue", nil)
+	req = withChiURLParam(req, "chart_name", "revenue")
+	rec := httptest.NewRecorder()
+	h.GetRCChart(rec, req)
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
