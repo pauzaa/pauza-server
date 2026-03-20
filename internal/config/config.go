@@ -76,6 +76,7 @@ type Config struct {
 	AdminJWTAccessTokenTTL time.Duration `envconfig:"ADMIN_JWT_ACCESS_TOKEN_TTL" default:"1h"`
 	AdminRateLimit         int           `envconfig:"ADMIN_RATE_LIMIT" default:"30"`
 	AdminRateWindow        time.Duration `envconfig:"ADMIN_RATE_WINDOW" default:"1m"`
+	AdminCORSOrigins       string        `envconfig:"ADMIN_CORS_ORIGINS" default:"http://localhost:5173"`
 
 	// AI analysis (optional; endpoints are disabled when AIProvider is empty)
 	AIProvider   string        `envconfig:"AI_PROVIDER"`
@@ -381,6 +382,23 @@ func (c *Config) AIAPIKey() string {
 	default:
 		return ""
 	}
+}
+
+// ParseAdminCORSOrigins parses the comma-separated AdminCORSOrigins string
+// into a slice of origin strings suitable for the CORS middleware.
+func (c *Config) ParseAdminCORSOrigins() []string {
+	raw := strings.TrimSpace(c.AdminCORSOrigins)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	origins := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			origins = append(origins, trimmed)
+		}
+	}
+	return origins
 }
 
 // ParseTrustedProxies parses the comma-separated TrustedProxies string into
