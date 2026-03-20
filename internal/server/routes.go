@@ -49,8 +49,7 @@ func mountRoutes(r chi.Router, cfg *config.Config, logger *slog.Logger, pool *pg
 				AllowedOrigins:   cfg.ParseAdminCORSOrigins(),
 				AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 				AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Request-Id"},
-				AllowCredentials: false,
-				MaxAge:           300,
+				MaxAge: 300,
 			}))
 
 			r.With(authmw.RateLimit(limiters.admin, cfg.AdminRateLimit, authmw.IPKey)).Post("/login", deps.adminHandler.Login)
@@ -62,6 +61,8 @@ func mountRoutes(r chi.Router, cfg *config.Config, logger *slog.Logger, pool *pg
 				r.Get("/users", deps.adminHandler.ListUsers)
 				r.Get("/users/{id}", deps.adminHandler.GetUserDetail)
 				r.Get("/stats", deps.adminHandler.GetPlatformStats)
+				r.Get("/stats/user-growth", deps.adminHandler.GetUserGrowth)
+				r.Get("/stats/active-users", deps.adminHandler.GetActiveUsers)
 				r.Post("/users/{id}/entitlements", deps.adminHandler.ManageEntitlement)
 				r.Get("/entitlements", deps.adminHandler.ListEntitlements)
 			})
