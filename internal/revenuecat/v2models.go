@@ -2,8 +2,10 @@ package revenuecat
 
 import (
 	"encoding/json"
-	"fmt"
+	"log/slog"
 	"math"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -80,26 +82,49 @@ type ChartResponse struct {
 }
 
 // rcChartRawResponse matches the RevenueCat v2 API response for chart endpoints.
+// Values may contain null elements, so we use json.RawMessage for flexible parsing.
 type rcChartRawResponse struct {
-	Values [][]json.Number `json:"values"`
-	Yaxis  string          `json:"yaxis"`
+	Values [][]json.RawMessage `json:"values"`
+	Yaxis  string              `json:"yaxis"`
+}
+
+// parseRawFloat attempts to parse a json.RawMessage as a float64.
+// Handles both bare numbers (42, 49.99) and quoted strings ("42", "49.99").
+// Returns 0, false for null or unparseable values.
+func parseRawFloat(raw json.RawMessage) (float64, bool) {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return 0, false
+	}
+	// Try bare number first.
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return f, true
+	}
+	// Try quoted string (e.g. "49.99").
+	var str string
+	if json.Unmarshal(raw, &str) == nil {
+		if f, err := strconv.ParseFloat(str, 64); err == nil {
+			return f, true
+		}
+	}
+	return 0, false
 }
 
 // transformChart converts the raw RC chart response into our simplified format.
-// Returns an error if the response contained data points but none could be parsed,
-// which indicates a format change in the upstream API.
+// Null or unparseable data points are skipped. If every point fails, an empty
+// chart is returned with a warning log instead of an error.
 func transformChart(name string, raw rcChartRawResponse) (ChartResponse, error) {
 	points := make([]ChartPoint, 0, len(raw.Values))
 	for _, pair := range raw.Values {
 		if len(pair) < 2 {
 			continue
 		}
-		tsFloat, err := pair[0].Float64()
-		if err != nil {
+		tsFloat, ok := parseRawFloat(pair[0])
+		if !ok {
 			continue
 		}
-		valFloat, err := pair[1].Float64()
-		if err != nil {
+		valFloat, ok := parseRawFloat(pair[1])
+		if !ok {
 			continue
 		}
 
@@ -115,7 +140,8 @@ func transformChart(name string, raw rcChartRawResponse) (ChartResponse, error) 
 		points = append(points, ChartPoint{Date: date, Value: value})
 	}
 	if len(points) == 0 && len(raw.Values) > 0 {
-		return ChartResponse{}, fmt.Errorf("all %d data points failed to parse for chart %q", len(raw.Values), name)
+		slog.Warn("all data points failed to parse for chart",
+			"chart", name, "count", len(raw.Values))
 	}
 	return ChartResponse{Name: name, Data: points}, nil
 }

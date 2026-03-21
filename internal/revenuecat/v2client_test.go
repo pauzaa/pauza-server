@@ -130,9 +130,9 @@ func TestTransformChart_Revenue(t *testing.T) {
 	t.Parallel()
 
 	raw := rcChartRawResponse{
-		Values: [][]json.Number{
-			{json.Number("1709251200000"), json.Number("49.99")},
-			{json.Number("1709337600000"), json.Number("100.00")},
+		Values: [][]json.RawMessage{
+			{json.RawMessage(`1709251200000`), json.RawMessage(`49.99`)},
+			{json.RawMessage(`1709337600000`), json.RawMessage(`100.00`)},
 		},
 		Yaxis: "$",
 	}
@@ -163,9 +163,9 @@ func TestTransformChart_Count(t *testing.T) {
 	t.Parallel()
 
 	raw := rcChartRawResponse{
-		Values: [][]json.Number{
-			{json.Number("1709251200000"), json.Number("42")},
-			{json.Number("1709337600000"), json.Number("7")},
+		Values: [][]json.RawMessage{
+			{json.RawMessage(`1709251200000`), json.RawMessage(`42`)},
+			{json.RawMessage(`1709337600000`), json.RawMessage(`7`)},
 		},
 		Yaxis: "#",
 	}
@@ -189,20 +189,51 @@ func TestTransformChart_Count(t *testing.T) {
 	}
 }
 
+func TestTransformChart_NullValues(t *testing.T) {
+	t.Parallel()
+
+	raw := rcChartRawResponse{
+		Values: [][]json.RawMessage{
+			{json.RawMessage(`1709251200000`), json.RawMessage(`49.99`)},
+			{json.RawMessage(`1709337600000`), json.RawMessage(`null`)},
+			{json.RawMessage(`null`), json.RawMessage(`10.00`)},
+			{json.RawMessage(`1709510400000`), json.RawMessage(`25.00`)},
+		},
+		Yaxis: "$",
+	}
+
+	out, err := transformChart("revenue", raw)
+	if err != nil {
+		t.Fatalf("transformChart() error = %v", err)
+	}
+	if len(out.Data) != 2 {
+		t.Fatalf("len(Data) = %d, want 2 (null pairs skipped)", len(out.Data))
+	}
+	if out.Data[0].Value != 4999 {
+		t.Errorf("Data[0].Value = %d, want 4999", out.Data[0].Value)
+	}
+	if out.Data[1].Value != 2500 {
+		t.Errorf("Data[1].Value = %d, want 2500", out.Data[1].Value)
+	}
+}
+
 func TestTransformChart_AllPointsMalformed(t *testing.T) {
 	t.Parallel()
 
 	raw := rcChartRawResponse{
-		Values: [][]json.Number{
-			{json.Number("not_a_number"), json.Number("42")},
-			{json.Number("also_bad")},
+		Values: [][]json.RawMessage{
+			{json.RawMessage(`"not_a_number"`), json.RawMessage(`42`)},
+			{json.RawMessage(`"also_bad"`)},
 		},
 		Yaxis: "#",
 	}
 
-	_, err := transformChart("revenue", raw)
-	if err == nil {
-		t.Fatal("transformChart() expected error when all points fail to parse")
+	out, err := transformChart("revenue", raw)
+	if err != nil {
+		t.Fatalf("transformChart() should not return error, got %v", err)
+	}
+	if len(out.Data) != 0 {
+		t.Errorf("len(Data) = %d, want 0 (all malformed)", len(out.Data))
 	}
 }
 
@@ -242,10 +273,13 @@ func TestV2Client_GetChart(t *testing.T) {
 		if ed := r.URL.Query().Get("end_date"); ed != "2026-03-20" {
 			t.Errorf("end_date = %q, want %q", ed, "2026-03-20")
 		}
+		if rt := r.URL.Query().Get("realtime"); rt != "false" {
+			t.Errorf("realtime = %q, want %q", rt, "false")
+		}
 
 		resp := rcChartRawResponse{
-			Values: [][]json.Number{
-				{json.Number("1709251200000"), json.Number("49.99")},
+			Values: [][]json.RawMessage{
+				{json.RawMessage(`1709251200000`), json.RawMessage(`49.99`)},
 			},
 			Yaxis: "$",
 		}

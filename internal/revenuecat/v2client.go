@@ -106,7 +106,7 @@ func (c *V2Client) GetChart(ctx context.Context, params ChartParams) (*ChartResp
 		return &cached, nil
 	}
 
-	url := fmt.Sprintf("%s/projects/%s/charts/%s?start_date=%s&end_date=%s",
+	url := fmt.Sprintf("%s/projects/%s/charts/%s?start_date=%s&end_date=%s&realtime=false",
 		c.baseURL, c.projectID, params.ChartName, params.StartDate, params.EndDate)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
