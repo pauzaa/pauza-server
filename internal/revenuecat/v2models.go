@@ -128,7 +128,7 @@ func transformChart(name string, raw rcChartRawResponse) (ChartResponse, error) 
 			continue
 		}
 
-		date := time.UnixMilli(int64(tsFloat)).UTC().Format("2006-01-02")
+		date := time.Unix(int64(tsFloat), 0).UTC().Format("2006-01-02")
 
 		var value int
 		if raw.Yaxis == "$" {

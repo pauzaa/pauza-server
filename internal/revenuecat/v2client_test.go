@@ -131,8 +131,8 @@ func TestTransformChart_Revenue(t *testing.T) {
 
 	raw := rcChartRawResponse{
 		Values: [][]json.RawMessage{
-			{json.RawMessage(`1709251200000`), json.RawMessage(`49.99`)},
-			{json.RawMessage(`1709337600000`), json.RawMessage(`100.00`)},
+			{json.RawMessage(`1709251200`), json.RawMessage(`49.99`)},
+			{json.RawMessage(`1709337600`), json.RawMessage(`100.00`)},
 		},
 		Yaxis: "$",
 	}
@@ -148,14 +148,14 @@ func TestTransformChart_Revenue(t *testing.T) {
 	if len(out.Data) != 2 {
 		t.Fatalf("len(Data) = %d, want 2", len(out.Data))
 	}
+	if out.Data[0].Date != "2024-03-01" {
+		t.Errorf("Data[0].Date = %q, want %q", out.Data[0].Date, "2024-03-01")
+	}
 	if out.Data[0].Value != 4999 {
 		t.Errorf("Data[0].Value = %d, want 4999 (49.99 * 100)", out.Data[0].Value)
 	}
 	if out.Data[1].Value != 10000 {
 		t.Errorf("Data[1].Value = %d, want 10000", out.Data[1].Value)
-	}
-	if out.Data[0].Date == "" {
-		t.Error("Data[0].Date is empty")
 	}
 }
 
@@ -164,8 +164,8 @@ func TestTransformChart_Count(t *testing.T) {
 
 	raw := rcChartRawResponse{
 		Values: [][]json.RawMessage{
-			{json.RawMessage(`1709251200000`), json.RawMessage(`42`)},
-			{json.RawMessage(`1709337600000`), json.RawMessage(`7`)},
+			{json.RawMessage(`1709251200`), json.RawMessage(`42`)},
+			{json.RawMessage(`1709337600`), json.RawMessage(`7`)},
 		},
 		Yaxis: "#",
 	}
@@ -194,10 +194,10 @@ func TestTransformChart_NullValues(t *testing.T) {
 
 	raw := rcChartRawResponse{
 		Values: [][]json.RawMessage{
-			{json.RawMessage(`1709251200000`), json.RawMessage(`49.99`)},
-			{json.RawMessage(`1709337600000`), json.RawMessage(`null`)},
+			{json.RawMessage(`1709251200`), json.RawMessage(`49.99`)},
+			{json.RawMessage(`1709337600`), json.RawMessage(`null`)},
 			{json.RawMessage(`null`), json.RawMessage(`10.00`)},
-			{json.RawMessage(`1709510400000`), json.RawMessage(`25.00`)},
+			{json.RawMessage(`1709510400`), json.RawMessage(`25.00`)},
 		},
 		Yaxis: "$",
 	}
