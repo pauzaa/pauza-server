@@ -103,6 +103,8 @@ func mountRoutes(r chi.Router, cfg *config.Config, logger *slog.Logger, pool *pg
 				r.Get("/friends/search", deps.socialHandler.SearchUsers)
 				r.Get("/leaderboard/streaks", deps.socialHandler.LeaderboardStreaks)
 				r.Get("/leaderboard/focus-time", deps.socialHandler.LeaderboardFocusTime)
+				r.Post("/emergency-stop", deps.emergencyHandler.UseEmergencyStop)
+				r.Get("/emergency-stops/remaining", deps.emergencyHandler.GetRemainingStops)
 			})
 
 			r.With(authmw.RateLimit(limiters.sync, cfg.SyncRateLimit, authmw.UserIDKey)).Post("/sync", deps.syncHandler.Sync)

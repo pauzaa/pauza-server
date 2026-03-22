@@ -110,10 +110,11 @@ func (a *RestrictionLifecycleAction) UnmarshalJSON(data []byte) error {
 type RestrictionLifecycleReason string
 
 const (
-	RestrictionLifecycleReasonManual RestrictionLifecycleReason = "manual"
-	RestrictionLifecycleReasonNFC    RestrictionLifecycleReason = "nfc"
-	RestrictionLifecycleReasonQR     RestrictionLifecycleReason = "qr"
-	RestrictionLifecycleReasonTimer  RestrictionLifecycleReason = "timer"
+	RestrictionLifecycleReasonManual    RestrictionLifecycleReason = "manual"
+	RestrictionLifecycleReasonNFC       RestrictionLifecycleReason = "nfc"
+	RestrictionLifecycleReasonQR        RestrictionLifecycleReason = "qr"
+	RestrictionLifecycleReasonTimer     RestrictionLifecycleReason = "timer"
+	RestrictionLifecycleReasonEmergency RestrictionLifecycleReason = "emergency"
 )
 
 func (r *RestrictionLifecycleReason) UnmarshalJSON(data []byte) error {
@@ -121,7 +122,7 @@ func (r *RestrictionLifecycleReason) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	v, err := parseEnum("lifecycle reason", raw, RestrictionLifecycleReasonManual, RestrictionLifecycleReasonNFC, RestrictionLifecycleReasonQR, RestrictionLifecycleReasonTimer)
+	v, err := parseEnum("lifecycle reason", raw, RestrictionLifecycleReasonManual, RestrictionLifecycleReasonNFC, RestrictionLifecycleReasonQR, RestrictionLifecycleReasonTimer, RestrictionLifecycleReasonEmergency)
 	if err != nil {
 		return err
 	}

@@ -11,6 +11,7 @@ import (
 var ErrConflict = errors.New("conflict")
 var ErrNotFound = errors.New("not found")
 var ErrUnauthorized = errors.New("unauthorized")
+var ErrForbidden = errors.New("forbidden")
 var ErrRateLimited = errors.New("rate limited")
 var ErrSubscriptionRequired = errors.New("subscription required")
 var ErrInternal = errors.New("internal error")
@@ -49,6 +50,10 @@ func apiError(code string, cause error, message string) error {
 
 func UnauthorizedError(message string) error {
 	return apiError(apperror.CodeUnauthorized, ErrUnauthorized, message)
+}
+
+func ForbiddenError(message string) error {
+	return apiError(apperror.CodeForbidden, ErrForbidden, message)
 }
 
 func ConflictError(message string) error {

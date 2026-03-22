@@ -1,6 +1,6 @@
 # API Endpoints Reference
 
-> Derived from source code. This document covers all **46 endpoints** currently
+> Derived from source code. This document covers all **48 endpoints** currently
 > wired in `internal/server/routes.go`.
 
 ---
@@ -1711,6 +1711,70 @@ Same shape as `GET /api/v1/leaderboard/streaks`.
 **Errors**
 
 Same as `GET /api/v1/leaderboard/streaks`.
+
+---
+
+## Emergency Stop (`/api/v1/emergency-stop`)
+
+Safety valve for users who lose access to their NFC chip or QR code while a
+mode with that unlock condition is active. Each user gets **3 lifetime**
+emergency stops. The endpoint is online-only — the client calls it to get
+authorization, then ends the session locally.
+
+### `POST /api/v1/emergency-stop`
+
+Use one emergency stop. Decrements the user's remaining count.
+
+| Property | Value |
+|---|---|
+| **Auth** | User JWT |
+| **Rate limit** | `general-api` tier — per user ID (default 60 req/min) |
+
+**Request body:** none
+
+**Success — 200 OK**
+
+```json
+{
+  "remaining_emergency_stops": 2
+}
+```
+
+**Errors**
+
+| Code | When |
+|---|---|
+| `FORBIDDEN` (403) | No emergency stops remaining |
+| `UNAUTHORIZED` (401) | Missing or invalid JWT |
+| `RATE_LIMITED` (429) | Too many requests |
+| `INTERNAL_ERROR` (500) | Transient server error |
+
+---
+
+### `GET /api/v1/emergency-stops/remaining`
+
+Check how many emergency stops the user has left.
+
+| Property | Value |
+|---|---|
+| **Auth** | User JWT |
+| **Rate limit** | `general-api` tier — per user ID (default 60 req/min) |
+
+**Success — 200 OK**
+
+```json
+{
+  "remaining_emergency_stops": 3
+}
+```
+
+**Errors**
+
+| Code | When |
+|---|---|
+| `UNAUTHORIZED` (401) | Missing or invalid JWT |
+| `RATE_LIMITED` (429) | Too many requests |
+| `INTERNAL_ERROR` (500) | Transient server error |
 
 ---
 

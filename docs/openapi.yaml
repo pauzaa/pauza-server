@@ -31,6 +31,8 @@ tags:
     description: Admin dashboard endpoints
   - name: AI
     description: AI-powered usage analysis (premium, rate-limited)
+  - name: Emergency
+    description: Emergency stop for modes with NFC/QR unlock conditions (3 lifetime uses)
 
 # ---------------------------------------------------------------------------
 # Security schemes
@@ -74,6 +76,18 @@ components:
   # Reusable schemas
   # -------------------------------------------------------------------------
   schemas:
+    # -- Emergency Stop -----------------------------------------------------
+    EmergencyStopResponse:
+      type: object
+      required: [remaining_emergency_stops]
+      properties:
+        remaining_emergency_stops:
+          type: integer
+          minimum: 0
+          maximum: 3
+          description: Number of emergency stops the user has left (out of 3 lifetime total)
+          example: 2
+
     # -- Error envelope -----------------------------------------------------
     ErrorResponse:
       type: object
@@ -989,7 +1003,7 @@ components:
         reason:
           type: string
           minLength: 1
-          enum: [manual, nfc, qr, timer]
+          enum: [manual, nfc, qr, timer, emergency]
         occurred_at:
           type: integer
           format: int64
@@ -3270,6 +3284,68 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LeaderboardResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # =========================================================================
+  # Emergency Stop
+  # =========================================================================
+  /api/v1/emergency-stop:
+    post:
+      operationId: useEmergencyStop
+      tags: [Emergency]
+      summary: Use one emergency stop
+      description: |
+        Decrements the user's remaining emergency stop count. Each user gets 3
+        lifetime emergency stops to bypass NFC/QR unlock conditions when they
+        lose access to the chip or code. The client calls this endpoint to get
+        authorization, then ends the active session locally with reason
+        "emergency". Requires internet connectivity.
+      security:
+        - UserJWT: []
+      responses:
+        "200":
+          description: Emergency stop authorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmergencyStopResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: No emergency stops remaining
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: FORBIDDEN
+                  message: No emergency stops remaining
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/emergency-stops/remaining:
+    get:
+      operationId: getRemainingEmergencyStops
+      tags: [Emergency]
+      summary: Get remaining emergency stops
+      description: Returns how many emergency stops the user has left (out of 3 lifetime total).
+      security:
+        - UserJWT: []
+      responses:
+        "200":
+          description: Remaining count
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmergencyStopResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "429":
