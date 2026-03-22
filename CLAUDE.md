@@ -43,7 +43,7 @@ Support packages (`auth`, `middleware`, `ratelimit`, `mail`, `push`, `revenuecat
 
 - `cmd/server/main.go` — startup orchestration: config → DB → mail → Redis → push → `server.New()` → background cleanup → graceful shutdown
 - `internal/server/server.go` + `routes.go` — HTTP server, middleware stack, route mounting
-- `internal/config/config.go` — all env vars (95+) with defaults and validation via `envconfig`
+- `internal/config/config.go` — all env vars (~50) with defaults and validation via `envconfig`
 
 ### Key Patterns
 
