@@ -30,7 +30,7 @@ func insertUser(t *testing.T, pool DBTX, id, email, username string) {
 
 func TestAdminEntitlementOverride_ConsistentResolution(t *testing.T) {
 	pool := testAdminPool(t)
-	adminRepo := NewAdminRepository()
+	adminRepo := NewPgxAdminRepository()
 	socialRepo := NewSocialRepository()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
