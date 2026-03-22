@@ -115,6 +115,7 @@ jobs:
             set -eu
             cd ${{ secrets.DEPLOY_PATH }}
             export IMAGE_TAG=sha-${{ github.sha }}
+            sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=$IMAGE_TAG/" .env.prod
             COMPOSE_ARGS="--env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml"
 
             if [ "${{ secrets.DEPLOY_MODE }}" = "shared-traefik" ]; then
