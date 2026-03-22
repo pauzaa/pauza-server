@@ -522,10 +522,12 @@ func TestManageEntitlement_Grant_HappyPath(t *testing.T) {
 
 	svc := newTestAdminService(adminRepo)
 
+	expiresAt := time.Now().Add(24 * time.Hour)
 	out, err := svc.ManageEntitlement(context.Background(), ManageEntitlementInput{
 		UserID:      "user-001",
 		Entitlement: repository.EntitlementPremium,
 		Action:      repository.AdminOverrideGrant,
+		ExpiresAt:   &expiresAt,
 	})
 	if err != nil {
 		t.Fatalf("ManageEntitlement() error = %v, want nil", err)

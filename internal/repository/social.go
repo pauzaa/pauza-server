@@ -70,19 +70,13 @@ type EntitlementListRow struct {
 
 func (r *SocialRepository) EffectivePremiumActive(ctx context.Context, db DBTX, userID string) (bool, error) {
 	var active bool
-	err := db.QueryRow(ctx, `
-		SELECT CASE
-			WHEN o.action = 'grant' AND (o.expires_at IS NULL OR o.expires_at > now()) THEN true
-			WHEN o.action = 'revoke' AND (o.expires_at IS NULL OR o.expires_at > now()) THEN false
-			ELSE COALESCE(e.is_active, false)
-		END
+	err := db.QueryRow(ctx,
+		fmt.Sprintf(`SELECT %s
 		FROM users u
-		LEFT JOIN admin_entitlement_overrides o
-		  ON o.user_id = u.id AND o.entitlement = 'premium'
-		LEFT JOIN user_entitlements e
-		  ON e.user_id = u.id AND e.entitlement = 'premium'
-		WHERE u.id = $1
-	`, userID).Scan(&active)
+		%s
+		WHERE u.id = $1`, premiumCaseSQL("o", "e"), premiumJoinSQL("u.id", "o", "e")),
+		userID,
+	).Scan(&active)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, ErrNotFound

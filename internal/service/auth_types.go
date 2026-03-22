@@ -119,6 +119,7 @@ type EntitlementInfo struct {
 	Entitlement      domain.Entitlement
 	IsActive         bool
 	CurrentPeriodEnd *time.Time
+	Source           string
 }
 
 type RefreshInput struct {

@@ -180,3 +180,11 @@ func unmarshalEnumJSON[T ~string](data []byte, parse func(string) (T, error)) (T
 	}
 	return parse(raw)
 }
+
+// EntitlementSource indicates where an entitlement status originates from.
+type EntitlementSource = string
+
+const (
+	EntitlementSourceRevenueCat    EntitlementSource = "revenuecat"
+	EntitlementSourceAdminOverride EntitlementSource = "admin_override"
+)

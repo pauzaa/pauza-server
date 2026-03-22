@@ -67,6 +67,7 @@ type EntitlementRow struct {
 	Entitlement      string
 	IsActive         bool
 	CurrentPeriodEnd *time.Time
+	Source           string
 }
 
 // UserRepository defines user read/write operations used by auth-adjacent
@@ -604,14 +605,18 @@ func (r *PgxAuthRepository) GetEntitlementSnapshot(ctx context.Context, db DBTX,
 		          WHEN o.action = 'revoke' THEN false
 		          ELSE s.is_active
 		        END AS is_active,
-		        s.current_period_end
+		        s.current_period_end,
+		        CASE
+		          WHEN o.action IS NOT NULL THEN 'admin_override'
+		          ELSE 'revenuecat'
+		        END AS source
 		 FROM (SELECT 1) AS base
 		 LEFT JOIN snapshot  s ON true
 		 LEFT JOIN override  o ON true
 		 WHERE s.is_active IS NOT NULL
 		    OR o.action IS NOT NULL`,
 		userID,
-	).Scan(&e.Entitlement, &e.IsActive, &e.CurrentPeriodEnd)
+	).Scan(&e.Entitlement, &e.IsActive, &e.CurrentPeriodEnd, &e.Source)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return EntitlementRow{}, ErrNotFound
 	}

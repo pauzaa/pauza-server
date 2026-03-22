@@ -286,7 +286,7 @@ components:
 
     SubscriptionResponse:
       type: object
-      required: [entitlement, is_active, current_period_end]
+      required: [entitlement, is_active, current_period_end, source]
       properties:
         entitlement:
           type: string
@@ -297,6 +297,10 @@ components:
           format: int64
           description: Unix timestamp in milliseconds
           nullable: true
+        source:
+          type: string
+          enum: [revenuecat, admin_override]
+          description: Origin of the entitlement status.
 
     UpdateMeRequest:
       type: object
@@ -1651,7 +1655,9 @@ components:
       type: object
       additionalProperties: false
       required: [action, entitlement]
-      description: Unknown JSON fields are rejected.
+      description: >-
+        Unknown JSON fields are rejected. When action is "grant",
+        expires_at is required (permanent grants are not allowed).
       properties:
         action:
           type: string
@@ -1662,8 +1668,9 @@ components:
         expires_at:
           type: integer
           format: int64
-          nullable: true
-          description: Unix timestamp in milliseconds; must be in the future when provided.
+          description: >-
+            Unix timestamp in milliseconds; must be in the future.
+            Required when action is "grant", optional for "revoke".
 
     AdminEntitlementItem:
       type: object

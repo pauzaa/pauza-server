@@ -104,9 +104,10 @@ type userResponse struct {
 }
 
 type subscriptionResponse struct {
-	Entitlement      string  `json:"entitlement"`
-	IsActive         bool    `json:"is_active"`
+	Entitlement      string `json:"entitlement"`
+	IsActive         bool   `json:"is_active"`
 	CurrentPeriodEnd *int64 `json:"current_period_end"`
+	Source           string `json:"source"`
 }
 
 type refreshRequest struct {
@@ -199,6 +200,7 @@ func subscriptionInfoToResponse(info *service.EntitlementInfo) *subscriptionResp
 	resp := &subscriptionResponse{
 		Entitlement: info.Entitlement.String(),
 		IsActive:    info.IsActive,
+		Source:      info.Source,
 	}
 	resp.CurrentPeriodEnd = toUnixMsPtr(info.CurrentPeriodEnd)
 	return resp

@@ -1120,7 +1120,7 @@ func TestNew_AdminProtectedRoutesRequireAuth(t *testing.T) {
 		{"get_user_detail", http.MethodGet, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001", ""},
 		{"get_stats", http.MethodGet, "/api/v1/admin/stats", ""},
 		{"manage_entitlement", http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
-			`{"action":"grant","entitlement":"premium"}`},
+			`{"action":"grant","entitlement":"premium","expires_at":4102444800000}`},
 		{"list_entitlements", http.MethodGet, "/api/v1/admin/entitlements", ""},
 	}
 
@@ -1174,7 +1174,7 @@ func TestNew_AdminProtectedRoutesRejectUserJWT(t *testing.T) {
 		{"get_user_detail", http.MethodGet, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001", ""},
 		{"get_stats", http.MethodGet, "/api/v1/admin/stats", ""},
 		{"manage_entitlement", http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
-			`{"action":"grant","entitlement":"premium"}`},
+			`{"action":"grant","entitlement":"premium","expires_at":4102444800000}`},
 		{"list_entitlements", http.MethodGet, "/api/v1/admin/entitlements", ""},
 	}
 
@@ -1223,7 +1223,7 @@ func TestNew_AdminProtectedRoutesAcceptAdminJWT(t *testing.T) {
 		{"get_user_detail", http.MethodGet, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001", ""},
 		{"get_stats", http.MethodGet, "/api/v1/admin/stats", ""},
 		{"manage_entitlement", http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
-			`{"action":"grant","entitlement":"premium"}`},
+			`{"action":"grant","entitlement":"premium","expires_at":4102444800000}`},
 		{"list_entitlements", http.MethodGet, "/api/v1/admin/entitlements", ""},
 	}
 

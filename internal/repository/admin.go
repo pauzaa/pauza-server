@@ -222,22 +222,14 @@ func (r *PgxAdminRepository) ListUsers(ctx context.Context, db DBTX, params List
 
 	query := fmt.Sprintf(
 		`SELECT u.id, u.email, u.name, u.username, u.profile_picture_url, u.created_at,
-		        CASE
-		          WHEN o.action = 'grant'  THEN true
-		          WHEN o.action = 'revoke' THEN false
-		          ELSE COALESCE(e.is_active, false)
-		        END AS is_premium,
+		        %s AS is_premium,
 		        COUNT(*) OVER() AS total_count
 		 FROM users u
-		 LEFT JOIN user_entitlements e
-		   ON e.user_id = u.id AND e.entitlement = 'premium'
-		 LEFT JOIN admin_entitlement_overrides o
-		   ON o.user_id = u.id AND o.entitlement = 'premium'
-		   AND (o.expires_at IS NULL OR o.expires_at > now())
+		 %s
 		 %s
 		 ORDER BY u.created_at DESC
 		 LIMIT $%d OFFSET $%d`,
-		whereSQL, argIdx, argIdx+1,
+		premiumCaseSQL("_po", "_pe"), premiumJoinSQL("u.id", "_po", "_pe"), whereSQL, argIdx, argIdx+1,
 	)
 	args = append(args, params.Limit, params.Offset)
 
@@ -270,13 +262,9 @@ func (r *PgxAdminRepository) ListUsers(ctx context.Context, db DBTX, params List
 func (r *PgxAdminRepository) GetUserDetail(ctx context.Context, db DBTX, userID string) (AdminUserDetailRow, error) {
 	var d AdminUserDetailRow
 	err := db.QueryRow(ctx,
-		`SELECT u.id, u.email, u.name, u.username, u.profile_picture_url,
+		fmt.Sprintf(`SELECT u.id, u.email, u.name, u.username, u.profile_picture_url,
 		        u.leaderboard_visible, u.created_at,
-		        CASE
-		          WHEN o.action = 'grant'  THEN true
-		          WHEN o.action = 'revoke' THEN false
-		          ELSE COALESCE(e.is_active, false)
-		        END AS is_premium,
+		        %s AS is_premium,
 		        e.current_period_end,
 		        e.revenuecat_app_user_id,
 		        (SELECT COUNT(*)
@@ -295,7 +283,7 @@ func (r *PgxAdminRepository) GetUserDetail(ctx context.Context, db DBTX, userID 
 		 LEFT JOIN admin_entitlement_overrides o
 		   ON o.user_id = u.id AND o.entitlement = 'premium'
 		   AND (o.expires_at IS NULL OR o.expires_at > now())
-		 WHERE u.id = $1`,
+		 WHERE u.id = $1`, premiumCaseSQL("o", "e")),
 		userID,
 	).Scan(
 		&d.ID, &d.Email, &d.Name, &d.Username, &d.ProfilePictureURL,
@@ -330,18 +318,12 @@ func (r *PgxAdminRepository) GetPlatformStats(ctx context.Context, db DBTX) (Pla
 
 	safeGo(g, func() error {
 		return db.QueryRow(ctx,
-			`SELECT COUNT(*)
+			fmt.Sprintf(`SELECT COUNT(*)
 			 FROM users u
-			 LEFT JOIN user_entitlements ue
-			   ON ue.user_id = u.id AND ue.entitlement = 'premium'
-			 LEFT JOIN admin_entitlement_overrides o
-			   ON o.user_id = u.id AND o.entitlement = 'premium'
-			   AND (o.expires_at IS NULL OR o.expires_at > now())
-			 WHERE CASE
-			         WHEN o.action = 'grant'  THEN true
-			         WHEN o.action = 'revoke' THEN false
-			         ELSE COALESCE(ue.is_active, false)
-			       END = true`,
+			 %s
+			 WHERE %s = true`,
+				premiumJoinSQL("u.id", "_po", "_pe"),
+				premiumCaseSQL("_po", "_pe")),
 		).Scan(&s.PremiumUsers)
 	})
 
@@ -501,16 +483,12 @@ func (r *PgxAdminRepository) ListEntitlements(ctx context.Context, db DBTX, para
 	//   active grant  -> true
 	//   active revoke -> false
 	//   else          -> stored is_active
-	const baseCTE = `WITH merged AS (
+	baseCTE := fmt.Sprintf(`WITH merged AS (
 		-- Snapshot rows, with any active override applied.
 		SELECT
 		  e.user_id,
 		  e.entitlement,
-		  CASE
-		    WHEN o.action = 'grant'  THEN true
-		    WHEN o.action = 'revoke' THEN false
-		    ELSE e.is_active
-		  END                                       AS is_active,
+		  %s AS is_active,
 		  e.current_period_end,
 		  COALESCE(o.updated_at, e.updated_at)     AS updated_at
 		FROM user_entitlements e
@@ -534,7 +512,7 @@ func (r *PgxAdminRepository) ListEntitlements(ctx context.Context, db DBTX, para
 		    SELECT 1 FROM user_entitlements e2
 		    WHERE e2.user_id = o2.user_id AND e2.entitlement = o2.entitlement
 		  )
-	)`
+	)`, premiumCaseSQL("o", "e"))
 
 	var (
 		whereClauses []string

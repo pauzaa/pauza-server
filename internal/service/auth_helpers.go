@@ -311,5 +311,6 @@ func (s *AuthService) lookupEntitlementSnapshot(ctx context.Context, userID stri
 		Entitlement:      domain.Entitlement(row.Entitlement),
 		IsActive:         row.IsActive,
 		CurrentPeriodEnd: row.CurrentPeriodEnd,
+		Source:           row.Source,
 	}, nil
 }

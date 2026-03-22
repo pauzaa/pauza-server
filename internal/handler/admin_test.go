@@ -584,8 +584,9 @@ func TestAdminManageEntitlement_ServiceNotFound(t *testing.T) {
 		},
 	})
 
+	body := fmt.Sprintf(`{"action":"grant","entitlement":"premium","expires_at":%d}`, time.Now().Add(24*time.Hour).UnixMilli())
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000099/entitlements",
-		strings.NewReader(`{"action":"grant","entitlement":"premium"}`))
+		strings.NewReader(body))
 	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000099")
 	rec := httptest.NewRecorder()
 	h.ManageEntitlement(rec, req)
@@ -605,8 +606,9 @@ func TestAdminManageEntitlement_ServiceInvalidAction(t *testing.T) {
 		},
 	})
 
+	body := fmt.Sprintf(`{"action":"grant","entitlement":"premium","expires_at":%d}`, time.Now().Add(24*time.Hour).UnixMilli())
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
-		strings.NewReader(`{"action":"grant","entitlement":"premium"}`))
+		strings.NewReader(body))
 	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000001")
 	rec := httptest.NewRecorder()
 	h.ManageEntitlement(rec, req)
@@ -626,8 +628,9 @@ func TestAdminManageEntitlement_ServiceInvalidEntitlement(t *testing.T) {
 		},
 	})
 
+	body := fmt.Sprintf(`{"action":"grant","entitlement":"premium","expires_at":%d}`, time.Now().Add(24*time.Hour).UnixMilli())
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
-		strings.NewReader(`{"action":"grant","entitlement":"premium"}`))
+		strings.NewReader(body))
 	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000001")
 	rec := httptest.NewRecorder()
 	h.ManageEntitlement(rec, req)
@@ -645,8 +648,9 @@ func TestAdminManageEntitlement_Success(t *testing.T) {
 		},
 	})
 
+	body := fmt.Sprintf(`{"action":"grant","entitlement":"premium","expires_at":%d}`, time.Now().Add(24*time.Hour).UnixMilli())
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
-		strings.NewReader(`{"action":"grant","entitlement":"premium"}`))
+		strings.NewReader(body))
 	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000001")
 	rec := httptest.NewRecorder()
 	h.ManageEntitlement(rec, req)
@@ -654,12 +658,12 @@ func TestAdminManageEntitlement_Success(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	var body messageResponse
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+	var resp messageResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.Message != "Entitlement premium granted for user" {
-		t.Errorf("message = %q", body.Message)
+	if resp.Message != "Entitlement premium granted for user" {
+		t.Errorf("message = %q", resp.Message)
 	}
 }
 
@@ -1016,4 +1020,22 @@ func TestGetUserRCSubscription_NoRCID(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
+}
+
+// =========================================================================
+// ManageEntitlement handler tests
+// =========================================================================
+
+func TestManageEntitlement_GrantWithoutExpiresAt_Returns422(t *testing.T) {
+	t.Parallel()
+	h := newTestAdminHandler(&mockAdminService{})
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/admin/users/00000000-0000-0000-0000-000000000001/entitlements",
+		strings.NewReader(`{"action":"grant","entitlement":"premium"}`))
+	req = withChiURLParam(req, "id", "00000000-0000-0000-0000-000000000001")
+	rec := httptest.NewRecorder()
+	h.ManageEntitlement(rec, req)
+
+	assertValidationEnvelope(t, rec, []string{"expires_at"})
 }

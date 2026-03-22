@@ -1,6 +1,6 @@
 # API Endpoints Reference
 
-> Derived from source code. This document covers all **48 endpoints** currently
+> Derived from source code. This document covers all **46 endpoints** currently
 > wired in `internal/server/routes.go`.
 
 ---
@@ -227,9 +227,17 @@ The `subscription` field, when present:
 {
   "entitlement": "premium",
   "is_active": true,
-  "current_period_end": 1739607000000
+  "current_period_end": 1739607000000,
+  "source": "revenuecat"
 }
 ```
+
+| Field | Type | Description |
+|---|---|---|
+| `entitlement` | string | Always `"premium"` |
+| `is_active` | boolean | Whether the entitlement is currently active |
+| `current_period_end` | int64 \| null | Unix ms timestamp of the current billing period end |
+| `source` | string | Origin of the entitlement status: `"revenuecat"` or `"admin_override"` |
 
 **Errors**
 
@@ -546,7 +554,7 @@ Grant or revoke an entitlement override for a user.
 |---|---|---|---|
 | `action` | string | yes | `"grant"` or `"revoke"` |
 | `entitlement` | string | yes | Must be `"premium"` (the only accepted value) |
-| `expires_at` | int64 \| null | no | Unix ms (int64), must be in the future |
+| `expires_at` | int64 | yes (for grants) | Unix ms (int64), must be in the future. Required when `action` is `"grant"`, optional for `"revoke"` |
 
 **Success — 200 OK**
 
@@ -615,7 +623,7 @@ List entitlement records with optional filtering.
 
 | Code | When |
 |---|---|
-| `VALIDATION_ERROR` (422) | Invalid `is_active` value |
+| `VALIDATION_ERROR` (422) | Invalid `is_active` value or invalid `entitlement` value |
 | `UNAUTHORIZED` (401) | Missing or invalid admin JWT |
 | `RATE_LIMITED` (429) | Too many requests |
 | `INTERNAL_ERROR` (500) | Transient server error |
@@ -842,6 +850,10 @@ Get the authenticated user's profile.
   "subscription": null
 }
 ```
+
+The `subscription` object, when present, has the same shape as documented under
+[`POST /api/v1/auth/verify`](#post-apiv1authverify) (includes `entitlement`,
+`is_active`, `current_period_end`, and `source`).
 
 **Errors**
 

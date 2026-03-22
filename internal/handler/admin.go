@@ -317,6 +317,9 @@ func (h *AdminHandler) ManageEntitlement(w http.ResponseWriter, r *http.Request)
 	if req.Entitlement == domain.EntitlementUnknown {
 		fields["entitlement"] = "entitlement must be premium"
 	}
+	if req.Action == domain.AdminOverrideGrant && req.ExpiresAt == nil {
+		fields["expires_at"] = "expires_at is required for grant actions"
+	}
 	var expiresAt *time.Time
 	if req.ExpiresAt != nil {
 		if *req.ExpiresAt <= 0 {
