@@ -84,6 +84,8 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		apperror.NotFound(w, "Not found")
 	case errors.Is(err, service.ErrSubscriptionRequired):
 		apperror.SubscriptionRequired(w, "Subscription required")
+	case errors.Is(err, service.ErrForbidden):
+		apperror.Forbidden(w, "Forbidden")
 	case errors.Is(err, service.ErrUnauthorized):
 		apperror.Unauthorized(w, "Unauthorized")
 	case errors.Is(err, service.ErrRateLimited):

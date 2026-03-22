@@ -1,0 +1,1 @@
+ALTER TABLE users ADD COLUMN emergency_stops_used INTEGER NOT NULL DEFAULT 0;

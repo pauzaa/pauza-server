@@ -27,6 +27,7 @@ type appDependencies struct {
 	adminHandler     *handler.AdminHandler
 	webhookHandler   *handler.WebhookHandler
 	aiHandler        *handler.AIHandler // nil when AI_PROVIDER is not configured
+	emergencyHandler *handler.EmergencyHandler
 	sessionValidator authmw.SessionValidator
 }
 
@@ -109,6 +110,10 @@ func buildDependencies(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Po
 		aiHandler = handler.NewAIHandler(aiService, logger)
 	}
 
+	emergencyRepo := repository.NewPgxEmergencyStopRepository()
+	emergencyService := service.NewEmergencyStopService(pool, emergencyRepo, logger)
+	emergencyHandler := handler.NewEmergencyHandler(emergencyService, logger)
+
 	var sv *sessionValidator
 	if pool != nil {
 		sv = &sessionValidator{repo: authRepo, pool: pool}
@@ -123,6 +128,7 @@ func buildDependencies(cfg *config.Config, logger *slog.Logger, pool *pgxpool.Po
 		adminHandler:     adminHandler,
 		webhookHandler:   webhookHandler,
 		aiHandler:        aiHandler,
+		emergencyHandler: emergencyHandler,
 		sessionValidator: sv,
 	}
 }
