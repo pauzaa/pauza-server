@@ -1003,7 +1003,7 @@ components:
         reason:
           type: string
           minLength: 1
-          enum: [manual, nfc, qr, timer, emergency]
+          enum: [manual, nfc, qr, timer, emergency, schedule]
         occurred_at:
           type: integer
           format: int64

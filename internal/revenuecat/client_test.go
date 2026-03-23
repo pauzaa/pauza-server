@@ -266,7 +266,7 @@ func TestGetSubscriber_HappyPath(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(respBody)
+		_ = json.NewEncoder(w).Encode(respBody)
 	}))
 	defer srv.Close()
 
@@ -299,7 +299,7 @@ func TestGetSubscriber_404_Distinguishable(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(`{"code":7000,"message":"Subscriber not found."}`))
+		_, _ = w.Write([]byte(`{"code":7000,"message":"Subscriber not found."}`))
 	}))
 	defer srv.Close()
 
@@ -326,7 +326,7 @@ func TestGetSubscriber_500_ReturnsError(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"code":7999,"message":"Internal server error."}`))
+		_, _ = w.Write([]byte(`{"code":7999,"message":"Internal server error."}`))
 	}))
 	defer srv.Close()
 
@@ -350,7 +350,7 @@ func TestGetSubscriber_InvalidJSON_ReturnsError(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{invalid json`))
+		_, _ = w.Write([]byte(`{invalid json`))
 	}))
 	defer srv.Close()
 
@@ -389,7 +389,7 @@ func TestGetSubscriber_AuthHeaderSent(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(revenuecat.SubscriberResponse{
+		_ = json.NewEncoder(w).Encode(revenuecat.SubscriberResponse{
 			Subscriber: revenuecat.Subscriber{
 				Entitlements: map[string]revenuecat.EntitlementObj{},
 			},
@@ -418,7 +418,7 @@ func TestGetSubscriber_PathEscaping(t *testing.T) {
 		receivedDecodedPath = r.URL.Path
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(revenuecat.SubscriberResponse{
+		_ = json.NewEncoder(w).Encode(revenuecat.SubscriberResponse{
 			Subscriber: revenuecat.Subscriber{
 				Entitlements: map[string]revenuecat.EntitlementObj{},
 			},
@@ -470,7 +470,7 @@ func TestGetSubscriber_HTTPMethod(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(revenuecat.SubscriberResponse{
+		_ = json.NewEncoder(w).Encode(revenuecat.SubscriberResponse{
 			Subscriber: revenuecat.Subscriber{
 				Entitlements: map[string]revenuecat.EntitlementObj{},
 			},
@@ -565,7 +565,7 @@ func TestGetSubscriber_401_ReturnsAPIError(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"code":7001,"message":"Invalid API key."}`))
+		_, _ = w.Write([]byte(`{"code":7001,"message":"Invalid API key."}`))
 	}))
 	defer srv.Close()
 

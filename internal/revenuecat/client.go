@@ -78,7 +78,7 @@ func (c *Client) GetSubscriber(ctx context.Context, appUserID string) (*Subscrib
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, resp.Body)
+		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil, &APIError{StatusCode: resp.StatusCode, AppUserID: appUserID}
 	}
 

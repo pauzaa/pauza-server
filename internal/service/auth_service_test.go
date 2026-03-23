@@ -33,21 +33,6 @@ func newTestService(repo *fakeAuthRepo, sender *fakeSender) *AuthService {
 	)
 }
 
-func newTestServiceWithPool(pool *fakePool, repo *fakeAuthRepo, sender *fakeSender) *AuthService {
-	return NewAuthService(
-		pool,
-		repo,
-		repo,
-		repo,
-		repo, // sessions
-		repo,
-		sender,
-		"test-jwt-secret-abcdefghijklmnopqrstuvwxyz",
-		15*time.Minute,
-		7*24*time.Hour,
-		slog.New(slog.NewTextHandler(devNull{}, &slog.HandlerOptions{Level: slog.LevelError})),
-	)
-}
 
 type devNull struct{}
 

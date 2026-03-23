@@ -32,7 +32,7 @@ func (s *EmergencyStopService) UseEmergencyStop(ctx context.Context, userID stri
 		s.logger.Error("beginning emergency stop transaction", "err", err)
 		return EmergencyStopOutput{}, ErrInternal
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	used, err := s.repo.GetEmergencyStopsUsedForUpdate(ctx, tx, userID)
 	if err != nil {

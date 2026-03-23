@@ -27,7 +27,7 @@ type messagingClient interface {
 var newMessagingClient = func(ctx context.Context, serviceAccountJSON string) (messagingClient, error) {
 	var opts []option.ClientOption
 	if strings.TrimSpace(serviceAccountJSON) != "" {
-		opts = append(opts, option.WithCredentialsJSON([]byte(serviceAccountJSON)))
+		opts = append(opts, option.WithAuthCredentialsJSON(option.ServiceAccount, []byte(serviceAccountJSON)))
 	}
 
 	app, err := firebase.NewApp(ctx, nil, opts...)

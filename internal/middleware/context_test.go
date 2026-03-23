@@ -56,7 +56,7 @@ func TestUserFromContext_WrongType(t *testing.T) {
 	// Storing a non-AuthUser value under a different key should not confuse
 	// UserFromContext. This tests that the typed context key prevents
 	// collisions with plain string keys.
-	ctx := context.WithValue(context.Background(), "pauza.auth.user", "not-an-AuthUser")
+	ctx := context.WithValue(context.Background(), "pauza.auth.user", "not-an-AuthUser") //nolint:staticcheck // intentionally using string key to test typed-key collision resistance
 	_, ok := middleware.UserFromContext(ctx)
 	if ok {
 		t.Error("UserFromContext should return false for wrong value type / key type")

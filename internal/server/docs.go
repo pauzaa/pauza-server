@@ -22,7 +22,7 @@ const docsHTML = `<!DOCTYPE html>
 func docsPageHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(docsHTML))
+		_, _ = w.Write([]byte(docsHTML))
 	}
 }
 
@@ -31,6 +31,6 @@ func docsSpecHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/yaml")
 		w.Header().Set("Cache-Control", "public, max-age=3600")
-		w.Write(spec)
+		_, _ = w.Write(spec)
 	}
 }

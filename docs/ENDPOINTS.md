@@ -1902,7 +1902,7 @@ Each table key is **optional**. When present, it must contain:
 | `mode_id` | string | yes | Non-empty |
 | `action` | string | yes | `"START"`, `"PAUSE"`, `"RESUME"`, or `"END"` |
 | `source` | string | yes | `"manual"` or `"schedule"` |
-| `reason` | string | yes | `"manual"`, `"nfc"`, `"qr"`, or `"timer"` (enforced by `UnmarshalJSON`) |
+| `reason` | string | yes | `"manual"`, `"nfc"`, `"qr"`, `"timer"`, `"emergency"`, or `"schedule"` (enforced by `UnmarshalJSON`) |
 | `occurred_at` | int64 | yes | Unix ms |
 | `created_at` | int64 | yes | Unix ms |
 

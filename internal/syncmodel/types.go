@@ -115,6 +115,7 @@ const (
 	RestrictionLifecycleReasonQR        RestrictionLifecycleReason = "qr"
 	RestrictionLifecycleReasonTimer     RestrictionLifecycleReason = "timer"
 	RestrictionLifecycleReasonEmergency RestrictionLifecycleReason = "emergency"
+	RestrictionLifecycleReasonSchedule  RestrictionLifecycleReason = "schedule"
 )
 
 func (r *RestrictionLifecycleReason) UnmarshalJSON(data []byte) error {
@@ -122,7 +123,7 @@ func (r *RestrictionLifecycleReason) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	v, err := parseEnum("lifecycle reason", raw, RestrictionLifecycleReasonManual, RestrictionLifecycleReasonNFC, RestrictionLifecycleReasonQR, RestrictionLifecycleReasonTimer, RestrictionLifecycleReasonEmergency)
+	v, err := parseEnum("lifecycle reason", raw, RestrictionLifecycleReasonManual, RestrictionLifecycleReasonNFC, RestrictionLifecycleReasonQR, RestrictionLifecycleReasonTimer, RestrictionLifecycleReasonEmergency, RestrictionLifecycleReasonSchedule)
 	if err != nil {
 		return err
 	}
