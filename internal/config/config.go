@@ -96,6 +96,7 @@ type Config struct {
 	// expired non-revoked and revoked refresh tokens are kept before the
 	// cleanup job deletes them. It is mapped to CleanupConfig.RefreshTokenMaxAge.
 	RefreshTokenRevokedRetention time.Duration `envconfig:"REFRESH_TOKEN_REVOKED_RETENTION" default:"168h"`
+	SessionMaxAge                time.Duration `envconfig:"SESSION_MAX_AGE" default:"168h"`
 }
 
 // validLogLevels enumerates accepted LOG_LEVEL values.
@@ -145,6 +146,7 @@ func (c *Config) validate() error {
 		{name: "CLEANUP_INTERVAL", value: c.CleanupInterval},
 		{name: "OTP_RETENTION_PERIOD", value: c.OTPRetentionPeriod},
 		{name: "REFRESH_TOKEN_REVOKED_RETENTION", value: c.RefreshTokenRevokedRetention},
+		{name: "SESSION_MAX_AGE", value: c.SessionMaxAge},
 	}); err != nil {
 		return err
 	}

@@ -9,7 +9,6 @@
 | --- | --- | --- |
 | OpenAPI contract | `docs/openapi.yaml` | canonical request/response schemas and endpoint descriptions |
 | Endpoint reference | `docs/ENDPOINTS.md` | human-readable endpoint behavior, auth and error details |
-| Deployment guidance | `docs/deployment_finalizing.md` | production setup and rollout checklist |
 
 ## CONVENTIONS
 - Update `docs/openapi.yaml` when endpoint shapes, required fields, auth, or rate-limit semantics change.

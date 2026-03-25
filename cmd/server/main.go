@@ -129,6 +129,7 @@ func main() {
 		Interval:           cfg.CleanupInterval,
 		OTPRetention:       cfg.OTPRetentionPeriod,
 		RefreshTokenMaxAge: cfg.RefreshTokenRevokedRetention,
+		SessionMaxAge:      cfg.SessionMaxAge,
 	})
 
 	// 9. Start HTTP server in a goroutine; report fatal errors via channel
