@@ -1861,6 +1861,7 @@ components:
           items:
             $ref: "#/components/schemas/AppUsageItem"
           minItems: 1
+          maxItems: 500
         total_screen_time_ms:
           type: integer
           format: int64
@@ -1878,10 +1879,17 @@ components:
           type: array
           items:
             type: integer
+            minimum: 0
+            maximum: 6
         start_minute:
           type: integer
+          minimum: 0
+          maximum: 1439
         end_minute:
           type: integer
+          minimum: 0
+          maximum: 1439
+          description: Must be greater than start_minute.
 
     SuggestScheduleRequest:
       type: object
@@ -1893,6 +1901,7 @@ components:
           items:
             $ref: "#/components/schemas/AppUsageItem"
           minItems: 1
+          maxItems: 500
         current_schedules:
           type: array
           items:
@@ -1911,10 +1920,12 @@ components:
         started_at:
           type: integer
           format: int64
+          minimum: 1
           description: Must be > 0.
         ended_at:
           type: integer
           format: int64
+          minimum: 1
           description: Must be > 0 and greater than started_at.
         pause_count:
           type: integer
@@ -1937,10 +1948,12 @@ components:
           items:
             $ref: "#/components/schemas/AppUsageItem"
           minItems: 1
+          maxItems: 500
         focus_sessions:
           type: array
           items:
             $ref: "#/components/schemas/FocusSessionSummary"
+          maxItems: 100
         total_screen_time_ms:
           type: integer
           format: int64
@@ -1993,6 +2006,8 @@ components:
           format: date
         time_of_day_minute:
           type: integer
+          minimum: 0
+          maximum: 1439
           description: Minute of day (0-1439) when the user first unlocked their phone.
 
     DetectAddictionRequest:
@@ -2005,15 +2020,18 @@ components:
           items:
             $ref: "#/components/schemas/DayAppUsage"
           minItems: 1
+          maxItems: 365
         daily_screen_time_history:
           type: array
           items:
             $ref: "#/components/schemas/DayScreenTime"
           minItems: 1
+          maxItems: 365
         first_unlock_times:
           type: array
           items:
             $ref: "#/components/schemas/DayFirstUnlock"
+          maxItems: 365
 
     AnalysisResponse:
       type: object
