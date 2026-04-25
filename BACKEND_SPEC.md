@@ -1534,6 +1534,8 @@ List users with search and pagination.
 
 Get detailed user info including entitlement state, friend count, and replication activity.
 
+`current_period_end` in this response is the **effective** premium end time for the admin UI: if an unexpired admin grant override is active, it is the override’s `expires_at`; otherwise it matches the RevenueCat snapshot in `user_entitlements.current_period_end`.
+
 #### `GET /api/v1/admin/stats`
 
 Aggregate platform statistics.

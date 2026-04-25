@@ -28,6 +28,24 @@ func insertUser(t *testing.T, pool DBTX, id, email, username string) {
 	}
 }
 
+func assertPeriodEndClose(t *testing.T, label string, got, want *time.Time) {
+	t.Helper()
+	if want == nil {
+		if got != nil {
+			t.Errorf("[%s] CurrentPeriodEnd = %v, want nil", label, got)
+		}
+		return
+	}
+	if got == nil {
+		t.Fatalf("[%s] CurrentPeriodEnd = nil, want %v", label, want)
+	}
+	gotU := got.UTC().Truncate(time.Second)
+	wantU := want.UTC().Truncate(time.Second)
+	if !gotU.Equal(wantU) {
+		t.Errorf("[%s] CurrentPeriodEnd = %v, want %v", label, gotU, wantU)
+	}
+}
+
 func TestAdminEntitlementOverride_ConsistentResolution(t *testing.T) {
 	pool := testAdminPool(t)
 	adminRepo := NewPgxAdminRepository()
@@ -40,7 +58,7 @@ func TestAdminEntitlementOverride_ConsistentResolution(t *testing.T) {
 	insertUser(t, pool, userID, "alice@example.com", "alice")
 
 	// Helper to check all queries agree on premium status.
-	assertAllConsistent := func(t *testing.T, label string, wantPremium bool) {
+	assertAllConsistent := func(t *testing.T, label string, wantPremium bool, wantPeriodEnd *time.Time) {
 		t.Helper()
 
 		// ListUsers
@@ -63,6 +81,9 @@ func TestAdminEntitlementOverride_ConsistentResolution(t *testing.T) {
 		if detail.IsPremium != wantPremium {
 			t.Errorf("[%s] GetUserDetail.IsPremium = %v, want %v", label, detail.IsPremium, wantPremium)
 		}
+		if wantPeriodEnd != nil {
+			assertPeriodEndClose(t, label+" detail", detail.CurrentPeriodEnd, wantPeriodEnd)
+		}
 
 		// ListEntitlements — only returns rows if there's a snapshot or override.
 		ents, _, err := adminRepo.ListEntitlements(ctx, pool, ListEntitlementsParams{
@@ -80,6 +101,9 @@ func TestAdminEntitlementOverride_ConsistentResolution(t *testing.T) {
 			if ents[0].IsActive != wantPremium {
 				t.Errorf("[%s] ListEntitlements.IsActive = %v, want %v", label, ents[0].IsActive, wantPremium)
 			}
+			if wantPeriodEnd != nil {
+				assertPeriodEndClose(t, label+" list", ents[0].CurrentPeriodEnd, wantPeriodEnd)
+			}
 		}
 
 		// EffectivePremiumActive
@@ -93,10 +117,10 @@ func TestAdminEntitlementOverride_ConsistentResolution(t *testing.T) {
 	}
 
 	// 1. No override, no snapshot → not premium.
-	assertAllConsistent(t, "baseline", false)
+	assertAllConsistent(t, "baseline", false, nil)
 
 	// 2. Grant with future expiry → premium.
-	futureExpiry := time.Now().Add(24 * time.Hour)
+	futureExpiry := time.Now().Add(24 * time.Hour).UTC()
 	err := adminRepo.UpsertEntitlementOverride(ctx, pool, UpsertOverrideParams{
 		UserID:      userID,
 		Entitlement: EntitlementPremium,
@@ -106,7 +130,7 @@ func TestAdminEntitlementOverride_ConsistentResolution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertEntitlementOverride(grant): %v", err)
 	}
-	assertAllConsistent(t, "grant-future", true)
+	assertAllConsistent(t, "grant-future", true, &futureExpiry)
 
 	// 3. Grant with past expiry → not premium.
 	pastExpiry := time.Now().Add(-1 * time.Hour)
@@ -119,7 +143,7 @@ func TestAdminEntitlementOverride_ConsistentResolution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertEntitlementOverride(grant-past): %v", err)
 	}
-	assertAllConsistent(t, "grant-past-expiry", false)
+	assertAllConsistent(t, "grant-past-expiry", false, nil)
 
 	// 4. Grant then revoke → not premium.
 	err = adminRepo.UpsertEntitlementOverride(ctx, pool, UpsertOverrideParams{
@@ -140,7 +164,7 @@ func TestAdminEntitlementOverride_ConsistentResolution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertEntitlementOverride(revoke): %v", err)
 	}
-	assertAllConsistent(t, "grant-then-revoke", false)
+	assertAllConsistent(t, "grant-then-revoke", false, nil)
 
 	// 5. Grant override-only (no user_entitlements row) → premium.
 	err = adminRepo.UpsertEntitlementOverride(ctx, pool, UpsertOverrideParams{
@@ -152,5 +176,58 @@ func TestAdminEntitlementOverride_ConsistentResolution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertEntitlementOverride(override-only): %v", err)
 	}
-	assertAllConsistent(t, "override-only-grant", true)
+	assertAllConsistent(t, "override-only-grant", true, &futureExpiry)
+}
+
+func TestGetUserDetail_AdminGrantOverridesSnapshotPeriodEnd(t *testing.T) {
+	pool := testAdminPool(t)
+	adminRepo := NewPgxAdminRepository()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	userID := "00000000-0000-0000-0000-000000000002"
+	insertUser(t, pool, userID, "bob@example.com", "bob")
+
+	rcEnd := time.Now().Add(10 * 24 * time.Hour).UTC()
+	_, err := pool.Exec(ctx, `
+		INSERT INTO user_entitlements (user_id, entitlement, is_active, current_period_end)
+		VALUES ($1, 'premium', true, $2)
+	`, userID, rcEnd)
+	if err != nil {
+		t.Fatalf("insert user_entitlements: %v", err)
+	}
+
+	overrideEnd := time.Now().Add(30 * 24 * time.Hour).UTC()
+	err = adminRepo.UpsertEntitlementOverride(ctx, pool, UpsertOverrideParams{
+		UserID:      userID,
+		Entitlement: EntitlementPremium,
+		Action:      AdminOverrideGrant,
+		ExpiresAt:   &overrideEnd,
+	})
+	if err != nil {
+		t.Fatalf("UpsertEntitlementOverride: %v", err)
+	}
+
+	detail, err := adminRepo.GetUserDetail(ctx, pool, userID)
+	if err != nil {
+		t.Fatalf("GetUserDetail: %v", err)
+	}
+	if !detail.IsPremium {
+		t.Fatal("GetUserDetail.IsPremium = false, want true")
+	}
+	assertPeriodEndClose(t, "grant-overrides-rc", detail.CurrentPeriodEnd, &overrideEnd)
+
+	ents, _, err := adminRepo.ListEntitlements(ctx, pool, ListEntitlementsParams{
+		Entitlement: EntitlementPremium,
+		Limit:       10,
+		Offset:      0,
+	})
+	if err != nil {
+		t.Fatalf("ListEntitlements: %v", err)
+	}
+	if len(ents) != 1 {
+		t.Fatalf("ListEntitlements: got %d rows, want 1", len(ents))
+	}
+	assertPeriodEndClose(t, "list grant-overrides-rc", ents[0].CurrentPeriodEnd, &overrideEnd)
 }

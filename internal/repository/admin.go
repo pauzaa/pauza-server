@@ -265,7 +265,7 @@ func (r *PgxAdminRepository) GetUserDetail(ctx context.Context, db DBTX, userID 
 		fmt.Sprintf(`SELECT u.id, u.email, u.name, u.username, u.profile_picture_url,
 		        u.leaderboard_visible, u.created_at,
 		        %s AS is_premium,
-		        e.current_period_end,
+		        %s AS current_period_end,
 		        e.revenuecat_app_user_id,
 		        (SELECT COUNT(*)
 		         FROM friendships f
@@ -283,7 +283,7 @@ func (r *PgxAdminRepository) GetUserDetail(ctx context.Context, db DBTX, userID 
 		 LEFT JOIN admin_entitlement_overrides o
 		   ON o.user_id = u.id AND o.entitlement = 'premium'
 		   AND (o.expires_at IS NULL OR o.expires_at > now())
-		 WHERE u.id = $1`, premiumCaseSQL("o", "e")),
+		 WHERE u.id = $1`, premiumCaseSQL("o", "e"), premiumDisplayPeriodEndSQL("o", "e")),
 		userID,
 	).Scan(
 		&d.ID, &d.Email, &d.Name, &d.Username, &d.ProfilePictureURL,
@@ -489,7 +489,7 @@ func (r *PgxAdminRepository) ListEntitlements(ctx context.Context, db DBTX, para
 		  e.user_id,
 		  e.entitlement,
 		  %s AS is_active,
-		  e.current_period_end,
+		  %s AS current_period_end,
 		  COALESCE(o.updated_at, e.updated_at)     AS updated_at
 		FROM user_entitlements e
 		LEFT JOIN admin_entitlement_overrides o
@@ -504,7 +504,7 @@ func (r *PgxAdminRepository) ListEntitlements(ctx context.Context, db DBTX, para
 		  o2.user_id,
 		  o2.entitlement,
 		  (o2.action = 'grant')                    AS is_active,
-		  NULL                                      AS current_period_end,
+		  %s                                       AS current_period_end,
 		  o2.updated_at
 		FROM admin_entitlement_overrides o2
 		WHERE (o2.expires_at IS NULL OR o2.expires_at > now())
@@ -512,7 +512,7 @@ func (r *PgxAdminRepository) ListEntitlements(ctx context.Context, db DBTX, para
 		    SELECT 1 FROM user_entitlements e2
 		    WHERE e2.user_id = o2.user_id AND e2.entitlement = o2.entitlement
 		  )
-	)`, premiumCaseSQL("o", "e"))
+	)`, premiumCaseSQL("o", "e"), premiumDisplayPeriodEndSQL("o", "e"), premiumOverrideOnlyDisplayPeriodEndSQL("o2"))
 
 	var (
 		whereClauses []string
@@ -587,4 +587,3 @@ func (r *PgxAdminRepository) UserExists(ctx context.Context, db DBTX, userID str
 	}
 	return exists, nil
 }
-

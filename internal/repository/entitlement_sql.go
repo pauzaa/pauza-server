@@ -28,3 +28,27 @@ func premiumCaseSQL(overrideAlias, entitlementAlias string) string {
 		overrideAlias, entitlementAlias,
 	)
 }
+
+// premiumDisplayPeriodEndSQL returns the expiry timestamp shown in admin UIs:
+// an active grant override uses override.expires_at; otherwise the RevenueCat snapshot.
+func premiumDisplayPeriodEndSQL(overrideAlias, entitlementAlias string) string {
+	return fmt.Sprintf(
+		`CASE
+		   WHEN %[1]s.action = 'grant' THEN %[1]s.expires_at
+		   ELSE %[2]s.current_period_end
+		 END`,
+		overrideAlias, entitlementAlias,
+	)
+}
+
+// premiumOverrideOnlyDisplayPeriodEndSQL is for ListEntitlements rows that have no
+// user_entitlements snapshot (override-only branch).
+func premiumOverrideOnlyDisplayPeriodEndSQL(overrideAlias string) string {
+	return fmt.Sprintf(
+		`CASE
+		   WHEN %[1]s.action = 'grant' THEN %[1]s.expires_at
+		   ELSE NULL
+		 END`,
+		overrideAlias,
+	)
+}
