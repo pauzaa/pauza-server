@@ -269,6 +269,53 @@ func TestRequestLogger_EmitsStructuredFields(t *testing.T) {
 	if _, ok := entry["remote_addr"]; !ok {
 		t.Error("expected 'remote_addr' field in log entry")
 	}
+	if _, ok := entry["response"]; ok {
+		t.Error("did not expect successful response body in log entry")
+	}
+}
+
+func TestRequestLogger_LogsErrorResponseBody(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		apperror.ValidationFieldErrors(w, "Invalid request body", apperror.FieldErrors{
+			"period": "period must be daily or weekly",
+		})
+	})
+	h := requestLogger(logger)(inner)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai/usage-analysis", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("expected valid JSON log entry, got: %q: %v", buf.String(), err)
+	}
+
+	if status, ok := entry["status"].(float64); !ok || int(status) != http.StatusUnprocessableEntity {
+		t.Errorf("expected status %d, got: %v", http.StatusUnprocessableEntity, entry["status"])
+	}
+	if truncated, ok := entry["response_truncated"].(bool); !ok || truncated {
+		t.Errorf("response_truncated = %v, want false", entry["response_truncated"])
+	}
+
+	response, ok := entry["response"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected structured response object in log entry, got: %T %[1]v", entry["response"])
+	}
+	errObj, ok := response["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected response.error object, got: %T %[1]v", response["error"])
+	}
+	if code, _ := errObj["code"].(string); code != apperror.CodeValidationError {
+		t.Errorf("response.error.code = %q, want %q", code, apperror.CodeValidationError)
+	}
+	if message, _ := errObj["message"].(string); message != "Invalid request body" {
+		t.Errorf("response.error.message = %q, want %q", message, "Invalid request body")
+	}
 }
 
 // TestRequestLogger_LevelByStatus tests the requestLogger middleware

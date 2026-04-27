@@ -2144,7 +2144,7 @@ services:
 Migrations remain a separate release step, for example:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api ./pauza-migrate
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod run --rm api ./pauza-migrate
 ```
 
 ### 12.2 Environment Variables

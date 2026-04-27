@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -32,6 +34,9 @@ func respondRequestID(next http.Handler) http.Handler {
 // defaultMaxBodySize is the defense-in-depth limit for request bodies (1 MiB).
 const defaultMaxBodySize = 1 << 20
 
+// maxLoggedResponseBodySize caps failed-response body capture for request logs.
+const maxLoggedResponseBodySize = 8 << 10
+
 // limitBody returns a middleware that caps request bodies to defaultMaxBodySize bytes.
 // Handlers that read past the limit will receive an io error from the reader.
 func limitBody(next http.Handler) http.Handler {
@@ -51,12 +56,15 @@ func limitBodySize(size int64) func(http.Handler) http.Handler {
 
 // requestLogger returns a middleware that logs every HTTP request using the
 // provided slog.Logger with structured fields: method, path, status, duration,
-// bytes written, request_id, and remote_addr.
+// bytes written, request_id, remote_addr, and failed JSON response bodies.
 func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
-			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			ww := &loggedResponseWriter{
+				WrapResponseWriter: middleware.NewWrapResponseWriter(w, r.ProtoMajor),
+				limit:              maxLoggedResponseBodySize,
+			}
 
 			next.ServeHTTP(ww, r)
 
@@ -73,7 +81,7 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 				level = slog.LevelWarn
 			}
 
-			logger.LogAttrs(r.Context(), level, "http request",
+			attrs := []slog.Attr{
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
 				slog.Int("status", status),
@@ -81,9 +89,52 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 				slog.Duration("duration", time.Since(start)),
 				slog.String("request_id", middleware.GetReqID(r.Context())),
 				slog.String("remote_addr", r.RemoteAddr),
-			)
+			}
+			if status >= 400 {
+				attrs = append(attrs, ww.responseLogAttrs()...)
+			}
+
+			logger.LogAttrs(r.Context(), level, "http request", attrs...)
 		})
 	}
+}
+
+type loggedResponseWriter struct {
+	middleware.WrapResponseWriter
+	body      bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (w *loggedResponseWriter) Write(p []byte) (int, error) {
+	if w.body.Len() < w.limit {
+		remaining := w.limit - w.body.Len()
+		if len(p) > remaining {
+			w.body.Write(p[:remaining])
+			w.truncated = true
+		} else {
+			w.body.Write(p)
+		}
+	} else if len(p) > 0 {
+		w.truncated = true
+	}
+	return w.WrapResponseWriter.Write(p)
+}
+
+func (w *loggedResponseWriter) responseLogAttrs() []slog.Attr {
+	if w.body.Len() == 0 {
+		return nil
+	}
+
+	attrs := []slog.Attr{slog.Bool("response_truncated", w.truncated)}
+	body := w.body.Bytes()
+
+	var parsed any
+	if err := json.Unmarshal(body, &parsed); err == nil {
+		return append(attrs, slog.Any("response", parsed))
+	}
+
+	return append(attrs, slog.String("response", string(body)))
 }
 
 // New creates and configures the HTTP server with all routes and middleware.
